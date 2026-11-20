@@ -1,0 +1,6 @@
+Worker-AI-Reverse/
+test-key.txt
+.probe/
+.deno/
+.superpowers/
+*.log

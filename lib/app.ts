@@ -1,0 +1,454 @@
+import type { AccountStore } from "./accounts.ts";
+import type { Archiver } from "./archive.ts";
+import { readCookie, type SessionSigner, timingSafeEqual } from "./auth.ts";
+import { ApiError } from "./errors.ts";
+import {
+  addWarnings,
+  errorResponse,
+  htmlResponse,
+  jsonResponse,
+  methodNotAllowed,
+  normalizePath,
+  readJsonBody,
+} from "./http.ts";
+import { IMAGE_PARAM_MODE_TTL_MS } from "./limits.ts";
+import type { RequestLogInput, RequestLogStore } from "./logs.ts";
+import { imageModelList } from "./model-catalog.ts";
+import type { ModelUsageStore } from "./model-usage.ts";
+import type { AccountPool, GatewayOptions } from "./pool.ts";
+import {
+  agnesPayload,
+  type ImageEndpoint,
+  mergeNormalizedResponses,
+  normalizeAgnesResponse,
+  type NormalizedResponse,
+  type ParsedImageRequest,
+  parseImageRequestJson,
+  parseImageRequestMultipart,
+  type ProtocolDefaults,
+} from "./protocol.ts";
+import type { AppSettings, SettingsStore } from "./settings.ts";
+import { formatPixel } from "./size.ts";
+
+export const SESSION_COOKIE = "agnes_session";
+
+export interface AdminRouter {
+  matches(path: string): boolean;
+  handle(request: Request, path: string): Promise<Response>;
+}
+
+export interface HandlerOptions {
+  pool: AccountPool;
+  store: AccountStore;
+  settings: SettingsStore;
+  admin: AdminRouter;
+  logs: RequestLogStore;
+  modelUsage: ModelUsageStore;
+  archiver: Archiver;
+  apiKey: string;
+  session: SessionSigner;
+  renderAdminPage?: () => string;
+  renderLoginPage?: () => string;
+  corsAllowedOrigins?: string[];
+  readyCheck?: () => Promise<void>;
+  now?: () => Date;
+}
+
+interface SubRequestSuccess {
+  status: number;
+  account: { id: number; name: string };
+  normalized: NormalizedResponse;
+}
+
+interface AttemptRecord {
+  index: number;
+  account: string | null;
+  status: number;
+  error?: string;
+}
+
+const JSON_TYPE = "application/json; charset=utf-8";
+
+function bearerToken(request: Request): string | null {
+  const header = request.headers.get("authorization") ?? "";
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return match ? match[1].trim() : null;
+}
+
+function parseJsonOrDefaults(settings: AppSettings): ProtocolDefaults {
+  return {
+    defaultSize: settings.defaultSize,
+    defaultRatio: settings.defaultRatio,
+    defaultResponseFormat: settings.defaultResponseFormat,
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function errorStatus(error: unknown): number {
+  return error instanceof ApiError ? error.status : 500;
+}
+
+export function createHandler(options: HandlerOptions): (request: Request) => Promise<Response> {
+  const now = options.now ?? (() => new Date());
+  const corsAllowed = options.corsAllowedOrigins ?? [];
+  const renderAdminPage = options.renderAdminPage ?? (() => "<h1>Agnes console</h1>");
+  const renderLoginPage = options.renderLoginPage ?? (() => "<h1>Login</h1>");
+
+  // `auto` mode keeps the last working placement for ten minutes.
+  let topLevelUntil = 0;
+
+  const authorized = (request: Request): boolean => {
+    const token = bearerToken(request);
+    return token !== null && timingSafeEqual(token, options.apiKey);
+  };
+
+  const hasAdminAccess = async (request: Request): Promise<boolean> => {
+    if (authorized(request)) return true;
+    const token = readCookie(request, SESSION_COOKIE);
+    if (!token) return false;
+    return await options.session.verify(token, now());
+  };
+
+  const applyCors = (request: Request, response: Response): Response => {
+    const origin = request.headers.get("origin");
+    if (!origin || !corsAllowed.includes(origin)) return response;
+    const headers = new Headers(response.headers);
+    headers.set("access-control-allow-origin", origin);
+    headers.set("vary", "Origin");
+    return new Response(response.body, { status: response.status, headers });
+  };
+
+  async function writeLog(
+    input: Omit<
+      RequestLogInput,
+      "ts" | "endpoint" | "path" | "model" | "accountId" | "accountName" | "durationMs"
+    >,
+    parsed: ParsedImageRequest,
+    path: string,
+    startedAt: number,
+    account: { id: number; name: string } | null,
+  ): Promise<void> {
+    const ts = now().toISOString();
+    try {
+      await options.logs.record({
+        ts,
+        endpoint: parsed.endpoint,
+        path,
+        model: parsed.model,
+        accountId: account?.id ?? null,
+        accountName: account?.name ?? null,
+        durationMs: Date.now() - startedAt,
+        ...input,
+      });
+      await options.modelUsage.record({
+        model: parsed.model,
+        endpoint: parsed.endpoint,
+        day: ts.slice(0, 10),
+        ok: input.ok,
+        images: input.images,
+        at: ts,
+      });
+    } catch (error) {
+      console.error("request bookkeeping failed:", error);
+    }
+  }
+
+  async function handleImageRequest(
+    parsed: ParsedImageRequest,
+    settings: AppSettings,
+    path: string,
+    startedAt: number,
+  ): Promise<Response> {
+    const preferredMode = (): "nested" | "top_level" => {
+      if (settings.imageParamMode !== "auto") return settings.imageParamMode;
+      return now().getTime() < topLevelUntil ? "top_level" : "nested";
+    };
+
+    const gatewayOptions: GatewayOptions = {
+      timeoutMs: settings.requestTimeoutMs,
+      maxAttempts: settings.maxAttempts,
+    };
+
+    const attempt = async (
+      mode: "nested" | "top_level",
+    ): Promise<{ result: SubRequestSuccess; warnings: string[] }> => {
+      const gateway = options.pool.gateway(settings.agnesBaseUrl, undefined, gatewayOptions);
+      const result = await gateway.generate(agnesPayload(parsed, mode));
+      const normalized = normalizeAgnesResponse(result.body, parsed);
+      return {
+        result: {
+          status: result.status,
+          account: result.account,
+          normalized,
+        },
+        warnings: normalized.warnings,
+      };
+    };
+
+    const runOnce = async (): Promise<SubRequestSuccess> => {
+      const mode = preferredMode();
+      let outcome: { result: SubRequestSuccess; warnings: string[] };
+      try {
+        outcome = await attempt(mode);
+      } catch (error) {
+        const shouldRetry = parsed.endpoint === "edits" &&
+          settings.imageParamMode === "auto" &&
+          mode === "nested" &&
+          error instanceof ApiError &&
+          error.status === 400;
+        if (!shouldRetry) throw error;
+        outcome = await attempt("top_level");
+        topLevelUntil = now().getTime() + IMAGE_PARAM_MODE_TTL_MS;
+      }
+
+      try {
+        await options.store.addImages(
+          outcome.result.account.id,
+          outcome.result.normalized.images.length,
+        );
+      } catch (error) {
+        console.error("account usage bookkeeping failed:", error);
+      }
+
+      try {
+        await options.archiver.archive({
+          ts: now().toISOString(),
+          endpoint: parsed.endpoint,
+          model: parsed.model,
+          accountId: outcome.result.account.id,
+          accountName: outcome.result.account.name,
+          prompt: parsed.prompt,
+          size: formatPixel(parsed.size.pixel),
+          tier: parsed.size.tier,
+          ratio: parsed.size.ratio,
+          images: outcome.result.normalized.images,
+        });
+      } catch (error) {
+        console.error("archive failed:", error);
+      }
+
+      return outcome.result;
+    };
+
+    const settled = await Promise.allSettled(
+      Array.from({ length: parsed.n }, () => runOnce()),
+    );
+
+    const successes: SubRequestSuccess[] = [];
+    const failures: unknown[] = [];
+    const attempts: AttemptRecord[] = [];
+
+    settled.forEach((outcome, index) => {
+      if (outcome.status === "fulfilled") {
+        successes.push(outcome.value);
+        attempts.push({
+          index,
+          account: outcome.value.account.name,
+          status: outcome.value.status,
+        });
+      } else {
+        failures.push(outcome.reason);
+        attempts.push({
+          index,
+          account: null,
+          status: errorStatus(outcome.reason),
+          error: errorMessage(outcome.reason),
+        });
+      }
+    });
+
+    if (successes.length === 0) {
+      const first = failures[0];
+      await writeLog(
+        {
+          status: errorStatus(first),
+          ok: false,
+          requested: parsed.n,
+          images: 0,
+          failed: failures.length,
+          size: `${parsed.size.tier} ${parsed.size.ratio}`,
+          error: errorMessage(first),
+          attempts,
+        },
+        parsed,
+        path,
+        startedAt,
+        null,
+      );
+      throw first;
+    }
+
+    const merged = mergeNormalizedResponses(successes.map((success) => success.normalized));
+    const headers = new Headers();
+    headers.set("content-type", JSON_TYPE);
+    headers.set("x-agnes-requested", String(parsed.n));
+    headers.set("x-agnes-succeeded", String(successes.length));
+    headers.set("x-agnes-failed", String(failures.length));
+    headers.set("x-agnes-resolved-size", `${parsed.size.tier} ${parsed.size.ratio}`);
+    if (failures.length > 0) {
+      const statuses = [...new Set(failures.map((failure) => errorStatus(failure)))];
+      headers.set("x-agnes-failure-statuses", statuses.join(","));
+    }
+
+    const warnings = [...parsed.warnings, ...merged.warnings];
+    if (failures.length > 0) warnings.push("partial-success");
+    addWarnings(headers, warnings);
+
+    const ok = failures.length === 0;
+    await writeLog(
+      {
+        status: 200,
+        ok,
+        requested: parsed.n,
+        images: merged.images.length,
+        failed: failures.length,
+        size: `${parsed.size.tier} ${parsed.size.ratio}`,
+        error: failures.length > 0
+          ? failures.map((failure) => errorMessage(failure)).join("; ")
+          : null,
+        attempts,
+      },
+      parsed,
+      path,
+      startedAt,
+      successes[0].account,
+    );
+
+    return jsonResponse(merged.body, { status: 200, headers });
+  }
+
+  async function handleDataPlane(
+    request: Request,
+    path: string,
+    startedAt: number,
+  ): Promise<Response> {
+    if (path === "/v1/models") {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return methodNotAllowed(["GET", "HEAD"]);
+      }
+      const models = imageModelList().map((model) => ({
+        id: model.id,
+        object: "model",
+        created: 0,
+        owned_by: "agnes",
+        size_mode: model.sizeMode,
+      }));
+      return jsonResponse({ object: "list", data: models });
+    }
+
+    if (
+      path === "/v1/images/generations" || path === "/v1/images/edits" || path === "/v1/images/edit"
+    ) {
+      if (request.method !== "POST") return methodNotAllowed(["POST"]);
+      if (!authorized(request)) {
+        return errorResponse(
+          new ApiError(401, "invalid API key", "invalid_request_error", null, "invalid_api_key"),
+        );
+      }
+
+      const settings = await options.settings.read();
+      const defaults = parseJsonOrDefaults(settings);
+      const endpoint: ImageEndpoint = path === "/v1/images/generations" ? "generations" : "edits";
+      const contentType = request.headers.get("content-type") ?? "";
+
+      let parsed: ParsedImageRequest;
+      if (endpoint === "edits" && contentType.toLowerCase().startsWith("multipart/form-data")) {
+        parsed = await parseImageRequestMultipart(request, defaults);
+      } else {
+        if (
+          endpoint === "generations" && contentType.toLowerCase().startsWith("multipart/form-data")
+        ) {
+          throw new ApiError(
+            400,
+            "generations requires an application/json body",
+            "invalid_request_error",
+            null,
+            "unsupported_content_type",
+          );
+        }
+        parsed = parseImageRequestJson(await readJsonBody(request), endpoint, defaults);
+      }
+
+      return await handleImageRequest(parsed, settings, path, startedAt);
+    }
+
+    throw new ApiError(404, "not found", "invalid_request_error", null, "unknown_path");
+  }
+
+  return async function handler(request: Request): Promise<Response> {
+    const startedAt = Date.now();
+    const url = new URL(request.url);
+    const path = normalizePath(url.pathname);
+
+    if (request.method === "OPTIONS") {
+      const origin = request.headers.get("origin");
+      if (origin && corsAllowed.includes(origin)) {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            "access-control-allow-origin": origin,
+            "access-control-allow-methods": "GET, POST, OPTIONS",
+            "access-control-allow-headers": "authorization, content-type",
+            "access-control-max-age": "600",
+            "vary": "Origin",
+          },
+        });
+      }
+      return new Response(null, { status: 204 });
+    }
+
+    if (path === "/") {
+      return new Response(null, { status: 302, headers: { location: "/admin" } });
+    }
+
+    if (path === "/health") {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return methodNotAllowed(["GET", "HEAD"]);
+      }
+      if (url.searchParams.get("deep") === "1" && options.readyCheck) {
+        try {
+          await options.readyCheck();
+        } catch (error) {
+          return errorResponse(
+            new ApiError(503, `database unavailable: ${errorMessage(error)}`, "server_error"),
+          );
+        }
+      }
+      return jsonResponse({ status: "ok" });
+    }
+
+    if (path === "/admin") {
+      if (await hasAdminAccess(request)) {
+        return htmlResponse(renderAdminPage());
+      }
+      return htmlResponse(renderLoginPage());
+    }
+
+    if (path.startsWith("/admin/")) {
+      if (options.admin.matches(path)) {
+        return await options.admin.handle(request, path);
+      }
+      return errorResponse(
+        new ApiError(404, "not found", "invalid_request_error", null, "unknown_path"),
+      );
+    }
+
+    if (path.startsWith("/v1/")) {
+      const response = await (async () => {
+        try {
+          return await handleDataPlane(request, path, startedAt);
+        } catch (error) {
+          return errorResponse(error);
+        }
+      })();
+      return applyCors(request, response);
+    }
+
+    return errorResponse(
+      new ApiError(404, "not found", "invalid_request_error", null, "unknown_path"),
+    );
+  };
+}

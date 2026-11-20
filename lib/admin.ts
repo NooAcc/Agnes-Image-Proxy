@@ -1,0 +1,472 @@
+import type { AccountRecord, AccountStore, AccountSummary } from "./accounts.ts";
+import { maskKey } from "./accounts.ts";
+import type { SessionSigner } from "./auth.ts";
+import { readCookie, timingSafeEqual } from "./auth.ts";
+import { ApiError } from "./errors.ts";
+import type { GalleryStore } from "./gallery.ts";
+import {
+  asObject,
+  bytesResponse,
+  errorResponse,
+  jsonResponse,
+  methodNotAllowed,
+  readJsonBody,
+} from "./http.ts";
+import { GALLERY_PAGE_MAX, GALLERY_PAGE_SIZE, LOG_LIST_LIMIT, SESSION_TTL_MS } from "./limits.ts";
+import type { RequestLogStore } from "./logs.ts";
+import { imageModelList } from "./model-catalog.ts";
+import type { ModelUsageStore } from "./model-usage.ts";
+import { type AgnesClientFactory, classifyFailure } from "./pool.ts";
+import { type AppSettings, type SettingsStore, validateSettings } from "./settings.ts";
+
+export const SESSION_PATH = "/admin/api/session";
+export const SESSION_COOKIE = "agnes_session";
+
+const ACCOUNT_ITEM = /^\/admin\/api\/accounts\/(\d+)$/;
+const ACCOUNT_TEST = /^\/admin\/api\/accounts\/(\d+)\/test$/;
+const ACCOUNT_RESET = /^\/admin\/api\/accounts\/(\d+)\/reset$/;
+const GALLERY_PATH = /^\/admin\/api\/gallery(?:\/\d+(?:\/content)?)?$/;
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+export interface AdminApiOptions {
+  store: AccountStore;
+  settings: SettingsStore;
+  logs: RequestLogStore;
+  modelUsage: ModelUsageStore;
+  gallery: GalleryStore;
+  apiKey: string;
+  session: SessionSigner;
+  createClient: AgnesClientFactory;
+  now?: () => Date;
+}
+
+export interface AdminApi {
+  matches(path: string): boolean;
+  handle(request: Request, path: string): Promise<Response>;
+}
+
+export function sessionCookie(
+  token: string,
+  maxAgeSeconds: number,
+  secure: boolean,
+  now: Date,
+): string {
+  const expires = new Date(now.getTime() + maxAgeSeconds * 1000).toUTCString();
+  let cookie = `${SESSION_COOKIE}=${token}; Path=/admin; HttpOnly; SameSite=Lax; ` +
+    `Max-Age=${maxAgeSeconds}; Expires=${expires}`;
+  if (secure) cookie += "; Secure";
+  return cookie;
+}
+
+function summaryOf(record: AccountRecord): AccountSummary {
+  const { apiKey, ...rest } = record;
+  return { ...rest, apiKeyMasked: maskKey(apiKey) };
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+export function createAdminApi(options: AdminApiOptions): AdminApi {
+  const now = options.now ?? (() => new Date());
+  const settings: SettingsStore = options.settings;
+
+  const matches = (path: string): boolean =>
+    path === SESSION_PATH ||
+    path === "/admin/api/accounts" ||
+    path === "/admin/api/accounts/test" ||
+    path === "/admin/api/accounts/import" ||
+    path === "/admin/api/settings" ||
+    path === "/admin/api/logs" ||
+    path === "/admin/api/overview" ||
+    ACCOUNT_ITEM.test(path) ||
+    ACCOUNT_TEST.test(path) ||
+    ACCOUNT_RESET.test(path) ||
+    GALLERY_PATH.test(path);
+
+  const authorized = async (request: Request): Promise<boolean> => {
+    const header = request.headers.get("authorization") ?? "";
+    const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+    if (match && timingSafeEqual(match[1].trim(), options.apiKey)) return true;
+    const token = readCookie(request, SESSION_COOKIE);
+    if (!token) return false;
+    return await options.session.verify(token, now());
+  };
+
+  const unauthorized = () =>
+    errorResponse(new ApiError(401, "unauthorized", "invalid_request_error", null, "unauthorized"));
+
+  const handleSession = async (request: Request): Promise<Response> => {
+    if (request.method === "POST") {
+      let body: unknown;
+      try {
+        body = await readJsonBody(request);
+      } catch {
+        throw new ApiError(400, "invalid login body", "invalid_request_error");
+      }
+      const key = asObject(body)?.key;
+      if (typeof key !== "string" || !timingSafeEqual(key, options.apiKey)) {
+        return errorResponse(
+          new ApiError(401, "invalid API key", "invalid_request_error", null, "invalid_api_key"),
+        );
+      }
+      const token = await options.session.issue(now());
+      const secure = new URL(request.url).protocol === "https:";
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "set-cookie": sessionCookie(token, SESSION_TTL_MS / 1000, secure, now()),
+        },
+      });
+    }
+
+    if (request.method === "DELETE") {
+      const secure = new URL(request.url).protocol === "https:";
+      return new Response(null, {
+        status: 204,
+        headers: { "set-cookie": sessionCookie("", 0, secure, now()) },
+      });
+    }
+
+    return methodNotAllowed(["POST", "DELETE"]);
+  };
+
+  const probeAccount = async (
+    record: AccountRecord,
+    current: AppSettings,
+  ): Promise<Record<string, unknown>> => {
+    try {
+      const client = options.createClient({
+        baseUrl: current.agnesBaseUrl,
+        apiKey: record.apiKey,
+        timeoutMs: current.requestTimeoutMs,
+      });
+      await client.generate({
+        path: "/images/generations",
+        body: {
+          model: current.probeModel,
+          prompt: "ping",
+          size: "1K",
+          ratio: "1:1",
+          extra_body: { response_format: "url" },
+        },
+      });
+      await options.store.markHealthy(record.id);
+      return { ok: true, account: summaryOf(record) };
+    } catch (error) {
+      const classification = classifyFailure(error);
+      try {
+        await options.store.recordFailure(
+          record.id,
+          classification.accountProblem ? classification.cooldownMs : 0,
+        );
+      } catch (bookkeepingError) {
+        console.error("probe bookkeeping failed:", bookkeepingError);
+      }
+      return {
+        ok: false,
+        account: summaryOf(record),
+        status: error instanceof ApiError ? error.status : 500,
+        error: message(error),
+      };
+    }
+  };
+
+  const handleAccounts = async (request: Request): Promise<Response> => {
+    if (request.method === "GET") {
+      return jsonResponse(await options.store.list());
+    }
+    if (request.method === "POST") {
+      const body = asObject(await readJsonBody(request));
+      const name = typeof body?.name === "string" ? body.name : "";
+      const apiKey = typeof body?.apiKey === "string" ? body.apiKey : "";
+      const created = await options.store.create({ name, apiKey });
+      return jsonResponse(summaryOf(created), { status: 201 });
+    }
+    return methodNotAllowed(["GET", "POST"]);
+  };
+
+  const handleAccountItem = async (
+    request: Request,
+    id: number,
+  ): Promise<Response> => {
+    if (request.method === "PATCH") {
+      const body = asObject(await readJsonBody(request)) ?? {};
+      const patch: { name?: string; enabled?: boolean } = {};
+      if (typeof body.name === "string") patch.name = body.name;
+      if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+      return jsonResponse(summaryOf(await options.store.update(id, patch)));
+    }
+    if (request.method === "DELETE") {
+      const removed = await options.store.remove(id);
+      if (!removed) throw new ApiError(404, "account not found", "invalid_request_error", "id");
+      return new Response(null, { status: 204 });
+    }
+    return methodNotAllowed(["PATCH", "DELETE"]);
+  };
+
+  const handleAccountTest = async (request: Request, id: number): Promise<Response> => {
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    const record = await options.store.get(id);
+    if (!record) throw new ApiError(404, "account not found", "invalid_request_error", "id");
+    return jsonResponse(await probeAccount(record, await settings.read()));
+  };
+
+  const handleAccountReset = async (request: Request, id: number): Promise<Response> => {
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    const reset = await options.store.resetHealth(id);
+    if (!reset) throw new ApiError(404, "account not found", "invalid_request_error", "id");
+    const record = await options.store.get(id);
+    return jsonResponse(record ? summaryOf(record) : null);
+  };
+
+  const handleTestAll = async (request: Request): Promise<Response> => {
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    const current = await settings.read();
+    const enabled = (await options.store.list()).filter((account) => account.enabled);
+    const records: AccountRecord[] = [];
+    for (const account of enabled) {
+      const record = await options.store.get(account.id);
+      if (record) records.push(record);
+    }
+    const results = await mapLimit(
+      records,
+      current.probeConcurrency,
+      (record) => probeAccount(record, current),
+    );
+    return jsonResponse({ results });
+  };
+
+  const handleImport = async (request: Request): Promise<Response> => {
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    const body = asObject(await readJsonBody(request));
+    const text = typeof body?.text === "string" ? body.text : "";
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+    const results: Record<string, unknown>[] = [];
+    for (const line of lines) {
+      const comma = line.indexOf(",");
+      const name = comma === -1 ? "" : line.slice(0, comma).trim();
+      const apiKey = comma === -1 ? "" : line.slice(comma + 1).trim();
+      if (name === "" || apiKey === "") {
+        results.push({ line, ok: false, error: "expected name,key" });
+        continue;
+      }
+      try {
+        const created = await options.store.create({ name, apiKey });
+        results.push({ line, ok: true, account: summaryOf(created) });
+      } catch (error) {
+        results.push({ line, ok: false, error: message(error) });
+      }
+    }
+    return jsonResponse({ results });
+  };
+
+  const handleSettings = async (request: Request): Promise<Response> => {
+    if (request.method === "GET") return jsonResponse(await settings.read());
+    if (request.method === "PUT") {
+      const body = asObject(await readJsonBody(request));
+      if (!body) {
+        throw new ApiError(
+          400,
+          "settings must be an object",
+          "invalid_request_error",
+          null,
+          "invalid_setting",
+        );
+      }
+      const next = validateSettings({ ...(await settings.read()), ...body });
+      await settings.write(next);
+      return jsonResponse(next);
+    }
+    return methodNotAllowed(["GET", "PUT"]);
+  };
+
+  const handleLogs = async (request: Request): Promise<Response> => {
+    if (request.method === "GET") return jsonResponse(await options.logs.list(LOG_LIST_LIMIT));
+    if (request.method === "DELETE") {
+      await options.logs.clear();
+      return new Response(null, { status: 204 });
+    }
+    return methodNotAllowed(["GET", "DELETE"]);
+  };
+
+  const handleGallery = async (request: Request): Promise<Response> => {
+    const url = new URL(request.url);
+    if (request.method === "GET") {
+      const rawLimit = url.searchParams.get("limit");
+      let limit = GALLERY_PAGE_SIZE;
+      if (rawLimit !== null) {
+        const parsed = Number(rawLimit);
+        if (!Number.isInteger(parsed) || parsed < 1 || parsed > GALLERY_PAGE_MAX) {
+          throw new ApiError(
+            400,
+            `limit must be an integer between 1 and ${GALLERY_PAGE_MAX}`,
+            "invalid_request_error",
+            "limit",
+          );
+        }
+        limit = parsed;
+      }
+      const rawBefore = url.searchParams.get("before");
+      let before: number | null = null;
+      if (rawBefore !== null) {
+        const parsed = Number(rawBefore);
+        if (!Number.isInteger(parsed) || parsed < 1) {
+          throw new ApiError(
+            400,
+            "before must be a positive integer",
+            "invalid_request_error",
+            "before",
+          );
+        }
+        before = parsed;
+      }
+      return jsonResponse(await options.gallery.list(before, limit));
+    }
+    if (request.method === "DELETE") {
+      await options.gallery.clear();
+      return new Response(null, { status: 204 });
+    }
+    return methodNotAllowed(["GET", "DELETE"]);
+  };
+
+  const handleGalleryContent = async (request: Request, id: number): Promise<Response> => {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return methodNotAllowed(["GET", "HEAD"]);
+    }
+    const content = await options.gallery.content(id);
+    if (!content) {
+      throw new ApiError(404, "image not found", "invalid_request_error", "id");
+    }
+    return bytesResponse(content.bytes, content.mime);
+  };
+
+  const handleGalleryItem = async (request: Request, id: number): Promise<Response> => {
+    if (request.method !== "DELETE") return methodNotAllowed(["DELETE"]);
+    const removed = await options.gallery.remove(id);
+    if (!removed) {
+      throw new ApiError(404, "image not found", "invalid_request_error", "id");
+    }
+    return new Response(null, { status: 204 });
+  };
+
+  const handleOverview = async (request: Request): Promise<Response> => {
+    if (request.method !== "GET") return methodNotAllowed(["GET"]);
+    const url = new URL(request.url);
+    const day = url.searchParams.get("day") ?? now().toISOString().slice(0, 10);
+    const parsedDay = new Date(`${day}T00:00:00Z`);
+    if (
+      !DAY_PATTERN.test(day) || Number.isNaN(parsedDay.getTime()) ||
+      parsedDay.toISOString().slice(0, 10) !== day
+    ) {
+      throw new ApiError(400, "day must be YYYY-MM-DD", "invalid_request_error", "day");
+    }
+
+    const usage = await options.modelUsage.byDay(day);
+    const models = imageModelList().map((model) => {
+      const row = usage.get(model.id);
+      return {
+        id: model.id,
+        sizeMode: model.sizeMode,
+        requests: row?.requests ?? 0,
+        errors: row?.errors ?? 0,
+        images: row?.images ?? 0,
+        lastUsedAt: row?.lastUsedAt ?? null,
+      };
+    });
+    for (const [model, row] of usage) {
+      if (models.some((item) => item.id === model)) continue;
+      models.push({
+        id: model,
+        sizeMode: "tier" as const,
+        requests: row.requests,
+        errors: row.errors,
+        images: row.images,
+        lastUsedAt: row.lastUsedAt,
+      });
+    }
+
+    const totals = models.reduce(
+      (accumulator, model) => ({
+        requests: accumulator.requests + model.requests,
+        errors: accumulator.errors + model.errors,
+        images: accumulator.images + model.images,
+      }),
+      { requests: 0, errors: 0, images: 0 },
+    );
+
+    const accounts = await options.store.list();
+    return jsonResponse({
+      day,
+      totals,
+      accounts: {
+        total: accounts.length,
+        enabled: accounts.filter((account) => account.enabled).length,
+        healthy: accounts.filter((account) => account.enabled && account.status === "healthy")
+          .length,
+        degraded: accounts.filter((account) => account.status === "degraded").length,
+      },
+      settings: await settings.read(),
+      models,
+    });
+  };
+
+  return {
+    matches,
+
+    async handle(request, path) {
+      if (!matches(path)) {
+        throw new ApiError(404, "not found", "invalid_request_error", null, "unknown_path");
+      }
+      try {
+        if (path === SESSION_PATH) return await handleSession(request);
+
+        if (!(await authorized(request))) return unauthorized();
+
+        if (path === "/admin/api/accounts") return await handleAccounts(request);
+        if (path === "/admin/api/accounts/test") return await handleTestAll(request);
+        if (path === "/admin/api/accounts/import") return await handleImport(request);
+        if (path === "/admin/api/settings") return await handleSettings(request);
+        if (path === "/admin/api/logs") return await handleLogs(request);
+        if (path === "/admin/api/overview") return await handleOverview(request);
+        if (path === "/admin/api/gallery") return await handleGallery(request);
+
+        const galleryContent = /^\/admin\/api\/gallery\/(\d+)\/content$/.exec(path);
+        if (galleryContent) {
+          return await handleGalleryContent(request, Number(galleryContent[1]));
+        }
+        const galleryItem = /^\/admin\/api\/gallery\/(\d+)$/.exec(path);
+        if (galleryItem) return await handleGalleryItem(request, Number(galleryItem[1]));
+
+        const item = ACCOUNT_ITEM.exec(path);
+        if (item) return await handleAccountItem(request, Number(item[1]));
+        const test = ACCOUNT_TEST.exec(path);
+        if (test) return await handleAccountTest(request, Number(test[1]));
+        const reset = ACCOUNT_RESET.exec(path);
+        if (reset) return await handleAccountReset(request, Number(reset[1]));
+      } catch (error) {
+        return errorResponse(error);
+      }
+
+      throw new ApiError(404, "not found", "invalid_request_error", null, "unknown_path");
+    },
+  };
+}
