@@ -203,7 +203,6 @@ export const OVERVIEW_SCRIPT = String.raw`
       var left = A.el("div");
       var name = A.el("div", "model-name");
       name.append(A.el("span", "mono", model.id));
-      name.append(A.el("span", "tag", model.sizeMode === "exact" ? "exact" : "tier"));
       left.append(name);
       var stats = A.el("div", "model-stats");
       stats.append(metric("成功", model.requests));

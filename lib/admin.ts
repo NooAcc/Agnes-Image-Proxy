@@ -393,11 +393,10 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
     }
 
     const usage = await options.modelUsage.byDay(day);
-    const models = imageModelList().map((model) => {
-      const row = usage.get(model.id);
+    const models = imageModelList().map((id) => {
+      const row = usage.get(id);
       return {
-        id: model.id,
-        sizeMode: model.sizeMode,
+        id,
         requests: row?.requests ?? 0,
         errors: row?.errors ?? 0,
         images: row?.images ?? 0,
@@ -408,7 +407,6 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
       if (models.some((item) => item.id === model)) continue;
       models.push({
         id: model,
-        sizeMode: "tier" as const,
         requests: row.requests,
         errors: row.errors,
         images: row.images,

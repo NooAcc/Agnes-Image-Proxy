@@ -148,7 +148,6 @@ Deno.test("models, health, root redirect and unknown paths", async () => {
   assertEquals(body.data.map((model: { id: string }) => model.id), [
     "agnes-image-2.5-flash",
     "agnes-image-2.1-flash",
-    "agnes-image-2.0-flash",
   ]);
 
   assertEquals((await call("/health")).status, 200);

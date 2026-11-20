@@ -329,12 +329,11 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       if (request.method !== "GET" && request.method !== "HEAD") {
         return methodNotAllowed(["GET", "HEAD"]);
       }
-      const models = imageModelList().map((model) => ({
-        id: model.id,
+      const models = imageModelList().map((id) => ({
+        id,
         object: "model",
         created: 0,
         owned_by: "agnes",
-        size_mode: model.sizeMode,
       }));
       return jsonResponse({ object: "list", data: models });
     }

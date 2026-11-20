@@ -8,7 +8,6 @@ import {
   MAX_INPUT_IMAGES,
   MAX_REQUEST_BYTES,
 } from "./limits.ts";
-import { sizeModeFor } from "./model-catalog.ts";
 import { formatPixel, type ResolvedSize, resolveSize, type SizeTier } from "./size.ts";
 import type { PixelSize } from "./size.ts";
 import type { ResponseFormat } from "./settings.ts";
@@ -278,12 +277,8 @@ export function agnesPayload(
     prompt: request.prompt,
   };
 
-  if (sizeModeFor(request.model) === "exact") {
-    body.size = formatPixel(request.size.pixel);
-  } else {
-    body.size = request.size.tier;
-    body.ratio = request.size.ratio;
-  }
+  body.size = request.size.tier;
+  body.ratio = request.size.ratio;
 
   const extra: Record<string, unknown> = { ...request.extraBody };
   delete extra.image;

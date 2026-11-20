@@ -272,10 +272,10 @@ Deno.test("overview merges the catalog with usage", async () => {
   const body = await response.json();
   assertEquals(typeof body.totals.requests, "number");
   assertEquals(body.totals.images, 2);
-  assertEquals(body.models.length, 3);
+  assertEquals(body.models.length, 2);
   const flash = body.models.find((model: { id: string }) => model.id === "agnes-image-2.5-flash");
   assertEquals(flash.requests, 1);
-  const unused = body.models.find((model: { id: string }) => model.id === "agnes-image-2.0-flash");
+  const unused = body.models.find((model: { id: string }) => model.id === "agnes-image-2.1-flash");
   assertEquals(unused.requests, 0);
   assertEquals(body.settings.defaultSize, "1K");
   assertEquals(typeof body.accounts.total, "number");

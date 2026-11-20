@@ -26,7 +26,7 @@ const backup = await harness.store.create({
 });
 await harness.store.recordFailure(backup.id, 15 * 60 * 1000);
 
-const models = ["agnes-image-2.5-flash", "agnes-image-2.1-flash", "agnes-image-2.0-flash"];
+const models = ["agnes-image-2.5-flash", "agnes-image-2.1-flash"];
 for (let i = 0; i < 20; i++) {
   const ok = i % 5 !== 0;
   const requested = i % 4 === 0 ? 3 : 1;

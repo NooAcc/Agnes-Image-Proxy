@@ -89,19 +89,6 @@ Deno.test("tier payload requests base64 at the top level", () => {
   });
 });
 
-Deno.test("exact models receive pixel sizes without a ratio", () => {
-  const payload = agnesPayload(
-    parse({ model: "agnes-image-2.0-flash", prompt: "p", size: "1024x1024" }),
-    "nested",
-  );
-  assertEquals(payload.body, {
-    model: "agnes-image-2.0-flash",
-    prompt: "p",
-    size: "1024x1024",
-    return_base64: true,
-  });
-});
-
 Deno.test("url responses move response_format into extra_body", () => {
   const payload = agnesPayload(
     parse({ model: "m", prompt: "p", size: "1024x1024", response_format: "url" }),
