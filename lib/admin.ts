@@ -12,7 +12,13 @@ import {
   methodNotAllowed,
   readJsonBody,
 } from "./http.ts";
-import { GALLERY_PAGE_MAX, GALLERY_PAGE_SIZE, LOG_LIST_LIMIT, SESSION_TTL_MS } from "./limits.ts";
+import {
+  GALLERY_PAGE_MAX,
+  GALLERY_PAGE_SIZE,
+  LOG_LIST_LIMIT,
+  OVERVIEW_TREND_DAYS,
+  SESSION_TTL_MS,
+} from "./limits.ts";
 import type { RequestLogStore } from "./logs.ts";
 import { imageModelList } from "./model-catalog.ts";
 import type { ModelUsageStore } from "./model-usage.ts";
@@ -65,6 +71,12 @@ function summaryOf(record: AccountRecord): AccountSummary {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function shiftDay(day: string, offsetDays: number): string {
+  const date = new Date(`${day}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
 }
 
 async function mapLimit<T, R>(
@@ -414,6 +426,22 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
     );
 
     const accounts = await options.store.list();
+
+    const range = await options.modelUsage.byRange(
+      shiftDay(day, -(OVERVIEW_TREND_DAYS - 1)),
+      day,
+    );
+    const trend = Array.from({ length: OVERVIEW_TREND_DAYS }, (_, index) => {
+      const dayKey = shiftDay(day, index - (OVERVIEW_TREND_DAYS - 1));
+      const row = range.get(dayKey);
+      return {
+        day: dayKey,
+        requests: row?.requests ?? 0,
+        errors: row?.errors ?? 0,
+        images: row?.images ?? 0,
+      };
+    });
+
     return jsonResponse({
       day,
       totals,
@@ -426,6 +454,7 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
       },
       settings: await settings.read(),
       models,
+      trend,
     });
   };
 

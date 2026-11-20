@@ -16,9 +16,17 @@ export interface ModelUsageRow {
   lastUsedAt: string;
 }
 
+export interface ModelUsageTotals {
+  requests: number;
+  errors: number;
+  images: number;
+}
+
 export interface ModelUsageStore {
   record(input: ModelUsageInput): Promise<void>;
   byDay(day: string): Promise<Map<string, ModelUsageRow>>;
+  /** Daily totals across every model for an inclusive UTC day range. */
+  byRange(startDay: string, endDay: string): Promise<Map<string, ModelUsageTotals>>;
 }
 
 export function createModelUsageStore(sql: SqlExecutor): ModelUsageStore {
@@ -53,6 +61,25 @@ export function createModelUsageStore(sql: SqlExecutor): ModelUsageStore {
         });
       }
       return rows;
+    },
+
+    async byRange(startDay, endDay) {
+      const result = await sql.execute(
+        `SELECT day, SUM(requests) AS requests, SUM(errors) AS errors, SUM(images) AS images
+           FROM model_usage_daily
+          WHERE day >= ? AND day <= ?
+          GROUP BY day`,
+        [startDay, endDay],
+      );
+      const days = new Map<string, ModelUsageTotals>();
+      for (const row of result.rows) {
+        days.set(String(row.day), {
+          requests: Number(row.requests),
+          errors: Number(row.errors),
+          images: Number(row.images),
+        });
+      }
+      return days;
     },
   };
 }

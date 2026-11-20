@@ -1,216 +1,473 @@
 import { icon } from "./icons.ts";
 
-/** Gallery timeline section for the console. */
-export function renderGallerySection(): string {
-  return `
-<section class="panel" data-section="gallery">
-  <div class="panel-head">
-    <div>
-      <h1>图片</h1>
-      <p>每次成功生成并返回给客户端的输出图；按 UTC 日期分组，点击查看大图与提示词。</p>
+/** Gallery section: archived output images grouped by UTC day. */
+export const GALLERY_HTML = `
+<section class="panel" data-section="gallery" data-title="图片">
+  <div class="section-head">
+    <div class="section-lead">
+      <h2>图片时间线</h2>
+      <p>每次成功生成并返回给客户端的输出图；按 UTC 日期分组，点击图片查看大图与提示词。</p>
     </div>
     <div class="toolbar">
+      <button class="btn" data-action="refresh-gallery" type="button">${
+  icon("refresh")
+}刷新</button>
       <button class="btn danger" data-action="clear-gallery" type="button">${
-    icon("trash")
-  }清空全部</button>
+  icon("trash")
+}清空全部</button>
     </div>
   </div>
-  <div class="gallery-empty empty" data-role="gallery-empty">还没有归档图片。生成的输出图会自动出现在这里。</div>
-  <div class="gallery-grid" data-role="gallery-grid"></div>
-  <div class="gallery-sentinel muted" data-role="gallery-sentinel">向下滚动加载更多</div>
-  <dialog data-role="gallery-dialog">
-    <div class="dialog-body">
-      <div class="dialog-head">
-        <h1>图片详情</h1>
-        <button class="btn ghost" type="button" data-action="close-gallery-dialog">${
-    icon("close")
-  }</button>
-      </div>
-      <img class="gallery-preview" data-role="gallery-dialog-image" alt="生成图片">
-      <p class="muted" data-role="gallery-dialog-meta"></p>
+  <div class="filter-bar">
+    <div class="search">
+      ${icon("search")}
+      <input class="input" data-role="gallery-search" type="search" placeholder="搜索提示词、模型或账号…" aria-label="搜索图片">
     </div>
-  </dialog>
+    <span class="logs-status" data-role="gallery-status">加载中…</span>
+  </div>
+  <div class="empty card" data-role="gallery-empty" hidden>
+    ${icon("image")}
+    <strong>还没有归档图片</strong>
+    <span data-role="gallery-empty-text">成功生成的输出图会自动出现在这里。</span>
+  </div>
+  <div class="gallery-grid" data-role="gallery-grid"></div>
+  <div class="gallery-sentinel" data-role="gallery-sentinel">向下滚动加载更多</div>
 </section>`;
-}
 
-/** Client script for the gallery timeline. Uses IntersectionObserver for paging. */
+export const GALLERY_DIALOGS = `
+<dialog class="lightbox" data-role="gallery-dialog" aria-labelledby="gallery-dialog-title">
+  <div class="lightbox-body">
+    <div class="dialog-head">
+      <h2 id="gallery-dialog-title">图片详情</h2>
+      <div class="toolbar">
+        <span class="muted mono" data-role="gallery-counter"></span>
+        <button class="icon-btn" type="button" data-action="close-gallery-dialog" aria-label="关闭">${
+  icon("close")
+}</button>
+      </div>
+    </div>
+    <div class="lightbox-stage">
+      <button class="lightbox-nav prev" type="button" data-action="gallery-prev" aria-label="上一张">${
+  icon("chevronLeft")
+}</button>
+      <img data-role="gallery-dialog-image" alt="生成图片">
+      <button class="lightbox-nav next" type="button" data-action="gallery-next" aria-label="下一张">${
+  icon("chevronRight")
+}</button>
+    </div>
+    <div class="lightbox-foot">
+      <div class="lightbox-info">
+        <p class="lightbox-prompt" data-role="gallery-dialog-prompt"></p>
+        <p class="lightbox-meta" data-role="gallery-dialog-meta"></p>
+      </div>
+      <div class="lightbox-actions">
+        <button class="btn small" type="button" data-action="gallery-copy">${
+  icon("copy")
+}复制提示词</button>
+        <a class="btn small" data-role="gallery-download" download>${icon("download")}下载</a>
+        <button class="btn small danger" type="button" data-action="gallery-delete">${
+  icon("trash")
+}删除</button>
+      </div>
+    </div>
+  </div>
+</dialog>`;
+
 export const GALLERY_SCRIPT = String.raw`
 (function () {
   "use strict";
-  // Card buttons carry data-action="delete-image"; they are handled below.
-  var state = { before: null, loading: false, exhausted: false, lastDay: null, loaded: false };
+  var A = window.Agnes;
+  var section = document.querySelector('[data-section="gallery"]');
+  if (!section) return;
 
-  function bySelector(selector) { return document.querySelector(selector); }
-  function el(tag, className, text) {
-    var node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text !== undefined && text !== null) node.textContent = String(text);
-    return node;
-  }
-  function fmtTime(value) {
-    if (!value) return "";
-    try { return new Date(value).toLocaleString(); } catch (error) { return String(value); }
-  }
-  function dayOf(value) {
-    return typeof value === "string" && value.length >= 10 ? value.slice(0, 10) : "未知日期";
+  var state = {
+    items: [],
+    visible: [],
+    before: null,
+    loading: false,
+    exhausted: false,
+    loaded: false,
+    lastDay: null,
+    query: "",
+    current: 0,
+    generation: 0,
+  };
+
+  function node(role) { return document.querySelector('[data-role="' + role + '"]'); }
+  function active() { return section.classList.contains("is-active"); }
+
+  function extensionOf(mime) {
+    if (mime === "image/jpeg") return "jpg";
+    if (mime === "image/webp") return "webp";
+    return "png";
   }
 
-  function metaText(item) {
+  function fmtBytes(size) {
+    var bytes = Number(size);
+    if (!bytes) return "";
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  function metaParts(item) {
     var parts = [];
     if (item.model) parts.push(item.model);
     if (item.size) parts.push(item.size);
     if (item.accountName) parts.push(item.accountName);
-    parts.push(fmtTime(item.ts));
-    if (item.byteSize) parts.push(Math.round(item.byteSize / 1024) + " KB");
-    return parts.join(" · ");
+    var bytes = fmtBytes(item.byteSize);
+    if (bytes) parts.push(bytes);
+    parts.push(A.fmtRelative(item.ts));
+    return parts;
   }
 
-  function openDialog(item, src) {
-    var dialog = bySelector('[data-role="gallery-dialog"]');
-    var image = bySelector('[data-role="gallery-dialog-image"]');
-    var meta = bySelector('[data-role="gallery-dialog-meta"]');
-    if (!dialog || !image || !meta) return;
-    image.src = src;
-    meta.textContent = (item.prompt || "(无提示词)") + " — " + metaText(item);
-    dialog.showModal();
+  function cardMetaParts(item) {
+    return [item.model, item.size, A.fmtRelative(item.ts)].filter(Boolean);
+  }
+
+  function metaText(item) {
+    return metaParts(item).join(" · ");
+  }
+
+  function searchText(item) {
+    return [item.prompt, item.model, item.accountName].filter(Boolean).join(" ").toLowerCase();
+  }
+
+  function filteredItems() {
+    var query = state.query.trim().toLowerCase();
+    if (!query) return state.items;
+    return state.items.filter(function (item) {
+      return searchText(item).indexOf(query) !== -1;
+    });
   }
 
   function buildCard(item) {
-    var card = el("article", "gallery-card");
+    var card = A.el("article", "gallery-card");
     card.setAttribute("data-id", String(item.id));
-    var media = el("div", "gallery-media");
+    var media = A.el("div", "gallery-media");
+
     if (item.archived) {
+      var open = A.el("button", "gallery-open");
+      open.type = "button";
+      open.setAttribute("data-action", "open-image");
+      open.setAttribute("data-id", String(item.id));
+      open.setAttribute("aria-label", "查看图片：" + (item.prompt || "生成图片"));
       var image = document.createElement("img");
       image.loading = "lazy";
+      image.decoding = "async";
       image.alt = item.prompt || "生成图片";
       image.src = "/admin/api/gallery/" + item.id + "/content";
-      image.addEventListener("click", function () { openDialog(item, image.src); });
-      media.append(image);
+      open.append(image);
+      media.append(open);
+
+      var overlay = A.el("div", "gallery-overlay");
+      var download = A.el("a", "icon-btn");
+      download.href = "/admin/api/gallery/" + item.id + "/content";
+      download.setAttribute("download", "agnes-" + item.id + "." + extensionOf(item.mime));
+      download.setAttribute("aria-label", "下载图片");
+      download.title = "下载图片";
+      download.append(A.icon("download"));
+      var remove = A.el("button", "icon-btn danger");
+      remove.type = "button";
+      remove.setAttribute("data-action", "delete-image");
+      remove.setAttribute("data-id", String(item.id));
+      remove.setAttribute("aria-label", "删除图片");
+      remove.title = "删除图片";
+      remove.append(A.icon("trash"));
+      overlay.append(download);
+      overlay.append(remove);
+      media.append(overlay);
     } else {
-      media.classList.add("gallery-placeholder");
-      media.append(el("span", null, "未归档"));
+      var placeholder = A.el("div", "gallery-placeholder");
+      placeholder.append(A.icon("image"));
+      placeholder.append(A.el("span", null, "未归档"));
       if (item.sourceUrl) {
-        var link = document.createElement("a");
+        var link = A.el("a", null, "查看原图");
         link.href = item.sourceUrl;
         link.target = "_blank";
         link.rel = "noreferrer noopener";
-        link.textContent = "查看原图";
-        media.append(link);
+        placeholder.append(link);
       }
+      media.append(placeholder);
     }
-    card.append(media);
 
-    var body = el("div", "gallery-body");
-    var prompt = el("p", "gallery-prompt", item.prompt || "(无提示词)");
+    var body = A.el("div", "gallery-body");
+    var prompt = A.el("p", "gallery-prompt", item.prompt || "(无提示词)");
     prompt.title = item.prompt || "";
+    var meta = A.el("div", "gallery-meta");
+    var parts = cardMetaParts(item);
+    for (var p = 0; p < parts.length; p++) meta.append(A.el("span", null, parts[p]));
     body.append(prompt);
-    body.append(el("p", "gallery-meta", metaText(item)));
-
-    var actions = el("div", "gallery-actions");
-    var remove = el("button", "btn small danger", "删除");
-    remove.type = "button";
-    remove.setAttribute("data-action", "delete-image");
-    remove.setAttribute("data-id", String(item.id));
-    actions.append(remove);
-    body.append(actions);
+    body.append(meta);
+    card.append(media);
     card.append(body);
     return card;
   }
 
-  function renderItems(items) {
-    var grid = bySelector('[data-role="gallery-grid"]');
-    var empty = bySelector('[data-role="gallery-empty"]');
+  function render() {
+    var grid = node("gallery-grid");
+    var empty = node("gallery-empty");
+    var emptyText = node("gallery-empty-text");
+    var sentinel = node("gallery-sentinel");
     if (!grid) return;
-    for (var i = 0; i < items.length; i++) {
-      var item = items[i];
-      var day = dayOf(item.ts);
+
+    state.visible = filteredItems();
+    var status = node("gallery-status");
+    if (status) {
+      status.textContent = state.visible.length + " 张" +
+        (state.query ? " · 共 " + state.items.length + " 张" : "");
+    }
+    grid.replaceChildren();
+    state.lastDay = null;
+
+    var emptyMessage = state.items.length === 0
+      ? "成功生成的输出图会自动出现在这里。"
+      : "没有匹配的图片，试试其他关键词。";
+    if (emptyText) emptyText.textContent = emptyMessage;
+    if (empty) empty.hidden = state.visible.length > 0;
+    grid.hidden = state.visible.length === 0;
+
+    for (var i = 0; i < state.visible.length; i++) {
+      var item = state.visible[i];
+      var day = typeof item.ts === "string" && item.ts.length >= 10 ? item.ts.slice(0, 10) : "未知日期";
       if (day !== state.lastDay) {
-        grid.append(el("h2", "timeline-day", day));
         state.lastDay = day;
+        grid.append(A.el("h2", "timeline-day", day));
       }
       grid.append(buildCard(item));
-      state.loaded = true;
     }
-    if (state.loaded && empty) empty.hidden = true;
-  }
 
-  function updateSentinel() {
-    var sentinel = bySelector('[data-role="gallery-sentinel"]');
-    if (!sentinel) return;
-    sentinel.textContent = state.exhausted ? "没有更多图片了" : "向下滚动加载更多";
+    if (sentinel) {
+      sentinel.hidden = state.items.length === 0;
+      if (!state.exhausted) sentinel.textContent = state.loading ? "加载中…" : "向下滚动加载更多";
+    }
   }
 
   async function loadPage() {
     if (state.loading || state.exhausted) return;
     state.loading = true;
-    var url = "/admin/api/gallery?limit=24" + (state.before === null ? "" : "&before=" + state.before);
+    var generation = state.generation;
+    var sentinel = node("gallery-sentinel");
+    if (sentinel) sentinel.classList.remove("is-error");
+    render();
+    if (state.items.length === 0) {
+      var status = node("gallery-status");
+      if (status) status.textContent = "加载中…";
+    }
+    var url = "/admin/api/gallery?limit=24" +
+      (state.before === null ? "" : "&before=" + encodeURIComponent(state.before));
     try {
       var response = await fetch(url, { credentials: "same-origin" });
       var page = await response.json();
       if (!response.ok) {
         throw new Error(page && page.error && page.error.message ? page.error.message : "加载失败");
       }
-      renderItems(page.items || []);
+      if (generation !== state.generation) return;
+      var items = page.items || [];
+      for (var i = 0; i < items.length; i++) state.items.push(items[i]);
       state.before = page.nextBefore;
       state.exhausted = page.nextBefore === null;
-      updateSentinel();
+      state.loaded = true;
+      state.loading = false;
+      render();
+      if (sentinel) sentinel.textContent = state.exhausted ? "没有更多图片了" : "向下滚动加载更多";
     } catch (error) {
-      var sentinel = bySelector('[data-role="gallery-sentinel"]');
-      if (sentinel) sentinel.textContent = "加载失败：" + error.message;
+      if (generation !== state.generation) return;
+      state.loading = false;
+      var status = node("gallery-status");
+      if (status) status.textContent = "加载失败";
+      if (sentinel) {
+        sentinel.classList.add("is-error");
+        sentinel.textContent = "加载失败：" + error.message;
+      }
     }
-    state.loading = false;
   }
 
-  function resetGallery() {
-    var grid = bySelector('[data-role="gallery-grid"]');
-    if (grid) grid.replaceChildren();
+  function reset() {
+    state.generation += 1;
+    state.items = [];
+    state.visible = [];
     state.before = null;
     state.loading = false;
     state.exhausted = false;
-    state.lastDay = null;
     state.loaded = false;
+    state.lastDay = null;
+    render();
     loadPage();
   }
 
-  async function removeImage(id) {
+  function openAt(index) {
+    var dialog = node("gallery-dialog");
+    var image = node("gallery-dialog-image");
+    var prompt = node("gallery-dialog-prompt");
+    var meta = node("gallery-dialog-meta");
+    var counter = node("gallery-counter");
+    var download = node("gallery-download");
+    var prev = dialog ? dialog.querySelector('[data-action="gallery-prev"]') : null;
+    var next = dialog ? dialog.querySelector('[data-action="gallery-next"]') : null;
+    if (!dialog || !image) return;
+    if (index < 0 || index >= state.visible.length) return;
+
+    state.current = index;
+    var item = state.visible[index];
+    image.src = "/admin/api/gallery/" + item.id + "/content";
+    image.alt = item.prompt || "生成图片";
+    if (prompt) prompt.textContent = item.prompt || "(无提示词)";
+    if (meta) meta.textContent = metaText(item) + " · " + A.fmtTime(item.ts);
+    if (counter) counter.textContent = (index + 1) + " / " + state.visible.length;
+    if (download) {
+      download.href = "/admin/api/gallery/" + item.id + "/content";
+      download.setAttribute("download", "agnes-" + item.id + "." + extensionOf(item.mime));
+    }
+    if (prev) prev.disabled = index === 0;
+    if (next) next.disabled = index === state.visible.length - 1;
+    if (!dialog.open) dialog.showModal();
+  }
+
+  function findItem(id) {
+    return state.items.filter(function (item) { return String(item.id) === String(id); })[0];
+  }
+
+  async function removeItem(item, fromDialog) {
+    var ok = await A.confirm({
+      title: "删除图片",
+      message: "将永久删除这条归档记录与图片数据，此操作不可撤销。",
+      confirmLabel: "删除",
+      tone: "danger",
+    });
+    if (!ok) return;
     try {
-      await fetch("/admin/api/gallery/" + id, { method: "DELETE", credentials: "same-origin" });
-      resetGallery();
-    } catch (error) { /* keep the timeline usable */ }
+      var response = await fetch("/admin/api/gallery/" + item.id, {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      if (!response.ok && response.status !== 404) throw new Error("删除失败（HTTP " + response.status + "）");
+      state.items = state.items.filter(function (entry) { return entry.id !== item.id; });
+      render();
+      if (fromDialog) {
+        if (state.visible.length === 0) {
+          var dialog = node("gallery-dialog");
+          if (dialog) dialog.close();
+        } else {
+          openAt(Math.min(state.current, state.visible.length - 1));
+        }
+      }
+      A.toast("图片已删除");
+    } catch (error) {
+      A.toast(error.message, "error");
+    }
   }
 
   async function clearGallery() {
+    var ok = await A.confirm({
+      title: "清空图片",
+      message: "将删除全部归档图片与数据库中的 BLOB，此操作不可撤销。",
+      confirmLabel: "清空全部",
+      tone: "danger",
+    });
+    if (!ok) return;
     try {
-      await fetch("/admin/api/gallery", { method: "DELETE", credentials: "same-origin" });
-      resetGallery();
-    } catch (error) { /* ignore */ }
+      await A.api("/admin/api/gallery", { method: "DELETE" });
+      var dialog = node("gallery-dialog");
+      if (dialog && dialog.open) dialog.close();
+      reset();
+      A.toast("归档已清空");
+    } catch (error) { A.toast(error.message, "error"); }
   }
 
-  document.addEventListener("click", function (event) {
-    var close = event.target.closest('[data-action="close-gallery-dialog"]');
-    if (close) {
-      var dialog = close.closest("dialog");
-      if (dialog) dialog.close();
+  var search = section.querySelector('[data-role="gallery-search"]');
+  if (search) {
+    search.addEventListener("input", A.debounce(function () {
+      state.query = search.value;
+      render();
+    }, 140));
+  }
+
+  section.addEventListener("click", function (event) {
+    var open = event.target.closest('[data-action="open-image"]');
+    if (open) {
+      var item = findItem(open.getAttribute("data-id"));
+      if (!item) return;
+      var index = state.visible.indexOf(item);
+      if (index !== -1) openAt(index);
       return;
     }
     var remove = event.target.closest('[data-action="delete-image"]');
     if (remove) {
-      if (confirm("确定删除这张图片？")) removeImage(remove.getAttribute("data-id"));
+      var target = findItem(remove.getAttribute("data-id"));
+      if (target) removeItem(target, false);
       return;
     }
     var clear = event.target.closest('[data-action="clear-gallery"]');
-    if (clear && confirm("确定清空全部归档图片？")) clearGallery();
+    if (clear) {
+      clearGallery();
+      return;
+    }
+    var refresh = event.target.closest('[data-action="refresh-gallery"]');
+    if (refresh) {
+      reset();
+      A.toast("已刷新图片时间线", "info");
+    }
   });
 
-  var sentinel = bySelector('[data-role="gallery-sentinel"]');
+  document.addEventListener("click", function (event) {
+    var close = event.target.closest('[data-action="close-gallery-dialog"]');
+    if (close) {
+      var dialog = node("gallery-dialog");
+      if (dialog) dialog.close();
+      return;
+    }
+    var prev = event.target.closest('[data-action="gallery-prev"]');
+    if (prev) {
+      openAt(state.current - 1);
+      return;
+    }
+    var next = event.target.closest('[data-action="gallery-next"]');
+    if (next) {
+      openAt(state.current + 1);
+      return;
+    }
+    var copy = event.target.closest('[data-action="gallery-copy"]');
+    if (copy) {
+      var current = state.visible[state.current];
+      if (!current) return;
+      A.copyText(current.prompt || "").then(function (ok) {
+        A.toast(ok ? "提示词已复制" : "复制失败，请手动选择文本", ok ? "ok" : "error");
+      });
+      return;
+    }
+    var remove = event.target.closest('[data-action="gallery-delete"]');
+    if (remove) {
+      var item = state.visible[state.current];
+      if (item) removeItem(item, true);
+    }
+  });
+
+  var dialog = node("gallery-dialog");
+  if (dialog) {
+    dialog.addEventListener("keydown", function (event) {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        openAt(state.current - 1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        openAt(state.current + 1);
+      }
+    });
+  }
+
+  var sentinel = node("gallery-sentinel");
   if (sentinel && typeof IntersectionObserver === "function") {
     var observer = new IntersectionObserver(function (entries) {
       for (var i = 0; i < entries.length; i++) {
         if (entries[i].isIntersecting) loadPage();
       }
-    }, { rootMargin: "240px" });
+    }, { rootMargin: "300px" });
     observer.observe(sentinel);
   }
-  loadPage();
+
+  document.addEventListener("agnes:section", function (event) {
+    if (!event.detail || event.detail.name !== "gallery" || !active()) return;
+    if (!state.loaded && !state.loading) loadPage();
+  });
 })();
 `;

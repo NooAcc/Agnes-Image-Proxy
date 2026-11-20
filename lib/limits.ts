@@ -14,6 +14,8 @@ export const MAX_UPSTREAM_ATTEMPTS = 3;
 
 export const REQUEST_LOG_LIMIT = 500;
 export const LOG_LIST_LIMIT = 200;
+/** Days of daily totals shown in the console overview chart. */
+export const OVERVIEW_TREND_DAYS = 14;
 
 export const GALLERY_PAGE_SIZE = 24;
 export const GALLERY_PAGE_MAX = 100;

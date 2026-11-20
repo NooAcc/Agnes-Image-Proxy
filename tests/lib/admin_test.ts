@@ -279,6 +279,12 @@ Deno.test("overview merges the catalog with usage", async () => {
   assertEquals(unused.requests, 0);
   assertEquals(body.settings.defaultSize, "1K");
   assertEquals(typeof body.accounts.total, "number");
+  assertEquals(body.trend.length, 14);
+  assertEquals(body.trend[13].day, "2026-11-20");
+  assertEquals(body.trend[13].requests, 1);
+  assertEquals(body.trend[13].images, 2);
+  assertEquals(body.trend[0].day, "2026-11-07");
+  assertEquals(body.trend[0].requests, 0);
 
   const invalid = await call("/admin/api/overview?day=2026-13-40");
   assertEquals(invalid.status, 400);
