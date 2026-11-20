@@ -93,7 +93,6 @@ export const GALLERY_SCRIPT = String.raw`
   };
 
   function node(role) { return document.querySelector('[data-role="' + role + '"]'); }
-  function active() { return section.classList.contains("is-active"); }
 
   function extensionOf(mime) {
     if (mime === "image/jpeg") return "jpg";
@@ -295,6 +294,36 @@ export const GALLERY_SCRIPT = String.raw`
     loadPage();
   }
 
+  async function refreshNewest() {
+    if (state.loading) return;
+    if (!state.loaded) {
+      await loadPage();
+      return;
+    }
+    var dialog = node("gallery-dialog");
+    if (dialog && dialog.open) return;
+    try {
+      var response = await fetch("/admin/api/gallery?limit=24", { credentials: "same-origin" });
+      var page = await response.json();
+      if (!response.ok) {
+        throw new Error(page && page.error && page.error.message ? page.error.message : "加载失败");
+      }
+      var items = page.items || [];
+      var known = {};
+      for (var i = 0; i < state.items.length; i++) known[state.items[i].id] = true;
+      var fresh = items.filter(function (item) { return !known[item.id]; });
+      if (fresh.length === 0) return;
+      var height = document.documentElement.scrollHeight;
+      state.items = fresh.concat(state.items);
+      render();
+      var delta = document.documentElement.scrollHeight - height;
+      if (delta > 0 && window.scrollY > 0) window.scrollBy(0, delta);
+    } catch (error) {
+      var status = node("gallery-status");
+      if (status) status.textContent = "自动刷新失败";
+    }
+  }
+
   function openAt(index) {
     var dialog = node("gallery-dialog");
     var image = node("gallery-dialog-image");
@@ -465,9 +494,6 @@ export const GALLERY_SCRIPT = String.raw`
     observer.observe(sentinel);
   }
 
-  document.addEventListener("agnes:section", function (event) {
-    if (!event.detail || event.detail.name !== "gallery" || !active()) return;
-    if (!state.loaded && !state.loading) loadPage();
-  });
+  A.autoRefresh.register("gallery", refreshNewest);
 })();
 `;

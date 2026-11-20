@@ -6,7 +6,7 @@ export const LOGS_HTML = `
   <div class="section-head">
     <div class="section-lead">
       <h2>请求日志</h2>
-      <p>最新 200 条请求；每 5 秒自动刷新，页面隐藏或选中文字时暂停。</p>
+      <p>最新 200 条请求；刷新间隔与开关由顶栏「自动刷新」和「设置」统一控制。</p>
     </div>
     <div class="toolbar">
       <button class="btn" data-action="refresh-logs" type="button">${icon("refresh")}刷新</button>
@@ -25,11 +25,6 @@ export const LOGS_HTML = `
       <button class="btn small" data-filter="ok" aria-pressed="false" type="button">成功</button>
       <button class="btn small" data-filter="bad" aria-pressed="false" type="button">失败</button>
     </div>
-    <label class="switch">
-      <input type="checkbox" data-role="logs-auto" checked>
-      <span class="track"></span>
-      <span>自动刷新</span>
-    </label>
     <span class="logs-status" data-role="logs-status" aria-live="polite">加载中…</span>
   </div>
   <div class="table-wrap is-stacked">
@@ -80,15 +75,9 @@ export const LOGS_SCRIPT = String.raw`
   var section = document.querySelector('[data-section="logs"]');
   if (!section) return;
 
-  var AUTO_KEY = "agnes-logs-auto";
-  var state = { entries: [], filter: "all", query: "", auto: true, pausedBySelection: false, at: null };
-  try {
-    var savedAuto = localStorage.getItem(AUTO_KEY);
-    if (savedAuto === "0") state.auto = false;
-  } catch (error) { /* ignore */ }
+  var state = { entries: [], filter: "all", query: "", at: null };
 
   function node(role) { return document.querySelector('[data-role="' + role + '"]'); }
-  function active() { return section.classList.contains("is-active"); }
 
   function logBody() { return section.querySelector('[data-role="logs-table"] tbody'); }
   function cell(label, value, className) {
@@ -172,10 +161,6 @@ export const LOGS_SCRIPT = String.raw`
   function updateStatus() {
     var status = node("logs-status");
     if (!status) return;
-    if (!state.auto) {
-      status.textContent = "自动刷新已关闭";
-      return;
-    }
     status.textContent = state.at
       ? "更新于 " + A.fmtShortTime(state.at)
       : "加载中…";
@@ -257,17 +242,6 @@ export const LOGS_SCRIPT = String.raw`
     }, 140));
   }
 
-  var autoInput = section.querySelector('[data-role="logs-auto"]');
-  if (autoInput) {
-    autoInput.checked = state.auto;
-    autoInput.addEventListener("change", function () {
-      state.auto = autoInput.checked;
-      try { localStorage.setItem(AUTO_KEY, state.auto ? "1" : "0"); } catch (error) { /* ignore */ }
-      updateStatus();
-      if (state.auto) load(true);
-    });
-  }
-
   section.addEventListener("click", async function (event) {
     var filter = event.target.closest("[data-filter]");
     if (filter) {
@@ -316,25 +290,6 @@ export const LOGS_SCRIPT = String.raw`
     }
   });
 
-  document.addEventListener("selectionchange", function () {
-    state.pausedBySelection = String(window.getSelection() || "").trim().length > 0;
-  });
-
-  document.addEventListener("visibilitychange", function () {
-    if (!document.hidden && state.auto && active()) load(true);
-  });
-
-  setInterval(function () {
-    if (!state.auto || !active() || document.hidden || state.pausedBySelection) return;
-    load(true);
-  }, 5000);
-
-  document.addEventListener("agnes:section", function (event) {
-    if (!event.detail || event.detail.name !== "logs" || !active()) return;
-    updateStatus();
-    load(true);
-  });
-
-  updateStatus();
+  A.autoRefresh.register("logs", load);
 })();
 `;

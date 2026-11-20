@@ -307,6 +307,12 @@ code, .mono { font-family: var(--font-mono); font-size: 0.92em; font-variant-num
 .switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
 .switch input:checked + .track::after { transform: translateX(16px); background: var(--on-accent); }
 .switch input:focus-visible + .track { outline: 2px solid var(--ring); outline-offset: 2px; }
+.auto-refresh {
+  gap: 8px; height: 34px; padding: 0 11px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-2); white-space: nowrap;
+}
+.auto-refresh:hover { background: var(--surface-3); border-color: var(--border-strong); }
+.auto-refresh-text { font-size: 12px; font-weight: 600; }
 
 /* ---------- Surfaces ---------- */
 .card {
@@ -597,6 +603,8 @@ dialog[open] { animation: dialog-in 180ms var(--ease); }
   .btn { min-height: 42px; }
   .btn.small, .btn.icon-only { min-height: 36px; }
   .icon-btn { width: 40px; height: 40px; }
+  .auto-refresh { padding: 0 9px; }
+  .auto-refresh-text { display: none; }
 }
 @media (hover: none) {
   .gallery-overlay { opacity: 1; }

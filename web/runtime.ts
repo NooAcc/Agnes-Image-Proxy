@@ -8,6 +8,7 @@ export const RUNTIME_SCRIPT = String.raw`
   "use strict";
 
   var THEME_KEY = "agnes-theme";
+  var AUTO_REFRESH_KEY = "agnes-auto-refresh";
   var SVG_NS = "http://www.w3.org/2000/svg";
 
   function el(tag, className, text) {
@@ -241,6 +242,100 @@ export const RUNTIME_SCRIPT = String.raw`
     applyTheme(currentTheme() === "dark" ? "light" : "dark");
   }
 
+  var autoRefresh = (function () {
+    var refreshers = {};
+    var enabled = true;
+    var intervalMs = 5000;
+    var timer = null;
+    var pausedBySelection = false;
+
+    try {
+      if (localStorage.getItem(AUTO_REFRESH_KEY) === "0") enabled = false;
+    } catch (error) { /* ignore */ }
+
+    function activeName() {
+      var section = document.querySelector("[data-section].is-active");
+      return section ? section.getAttribute("data-section") : null;
+    }
+
+    function syncUi() {
+      var input = document.querySelector('[data-role="auto-refresh-toggle"]');
+      if (input) input.checked = enabled;
+      document.documentElement.setAttribute("data-auto-refresh", enabled ? "on" : "off");
+    }
+
+    function run(silent) {
+      var name = activeName();
+      var refresh = name ? refreshers[name] : null;
+      if (!refresh) return Promise.resolve();
+      return Promise.resolve(refresh(Boolean(silent))).catch(function () {
+        /* sections report their own failures */
+      });
+    }
+
+    function tick() {
+      if (!enabled || document.hidden || pausedBySelection) return;
+      run(true);
+    }
+
+    function restart() {
+      if (timer !== null) clearInterval(timer);
+      timer = setInterval(tick, intervalMs);
+    }
+
+    function register(name, refresh) {
+      refreshers[name] = refresh;
+    }
+
+    function setEnabled(next) {
+      enabled = Boolean(next);
+      try {
+        localStorage.setItem(AUTO_REFRESH_KEY, enabled ? "1" : "0");
+      } catch (error) { /* ignore */ }
+      syncUi();
+      if (enabled) run(true);
+    }
+
+    function setIntervalMs(next) {
+      var value = Number(next);
+      if (!isFinite(value) || value <= 0 || value === intervalMs) return;
+      intervalMs = value;
+      restart();
+    }
+
+    document.addEventListener("change", function (event) {
+      var target = event.target;
+      if (target && target.getAttribute &&
+        target.getAttribute("data-action") === "toggle-auto-refresh") {
+        setEnabled(target.checked);
+      }
+    });
+
+    document.addEventListener("selectionchange", function () {
+      pausedBySelection = String(window.getSelection() || "").trim().length > 0;
+    });
+
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden && enabled) run(true);
+    });
+
+    // Navigation always loads the target section, even with auto refresh off.
+    document.addEventListener("agnes:section", function () {
+      run(false);
+    });
+
+    syncUi();
+    restart();
+
+    return {
+      register: register,
+      refreshNow: function () { return run(false); },
+      setEnabled: setEnabled,
+      setIntervalMs: setIntervalMs,
+      isEnabled: function () { return enabled; },
+    };
+  })();
+
   window.Agnes = {
     api: api,
     el: el,
@@ -262,6 +357,7 @@ export const RUNTIME_SCRIPT = String.raw`
     syncThemeUi: syncThemeUi,
     applyTheme: applyTheme,
     toggleTheme: toggleTheme,
+    autoRefresh: autoRefresh,
   };
 })();
 `;

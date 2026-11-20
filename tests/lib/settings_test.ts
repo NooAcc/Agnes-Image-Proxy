@@ -27,6 +27,7 @@ Deno.test("settings default to the documented values", async () => {
   assertEquals(DEFAULT_SETTINGS.probeModel, "agnes-image-2.5-flash");
   assertEquals(DEFAULT_SETTINGS.probeConcurrency, 2);
   assertEquals(DEFAULT_SETTINGS.requestTimeoutMs, 300000);
+  assertEquals(DEFAULT_SETTINGS.autoRefreshIntervalMs, 5000);
   assertEquals(DEFAULT_SETTINGS.maxAttempts, 3);
   sql.close();
 });
@@ -59,6 +60,13 @@ Deno.test("validateSettings bounds probe concurrency and timeout", () => {
   assertThrows(() => validateSettings({ probeConcurrency: 11 }), ApiError);
   assertThrows(() => validateSettings({ requestTimeoutMs: 59999 }), ApiError);
   assertThrows(() => validateSettings({ requestTimeoutMs: 360001 }), ApiError);
+});
+
+Deno.test("validateSettings bounds the console auto refresh interval", () => {
+  assertEquals(validateSettings({ autoRefreshIntervalMs: 2000 }).autoRefreshIntervalMs, 2000);
+  assertEquals(validateSettings({ autoRefreshIntervalMs: 60000 }).autoRefreshIntervalMs, 60000);
+  assertThrows(() => validateSettings({ autoRefreshIntervalMs: 1999 }), ApiError);
+  assertThrows(() => validateSettings({ autoRefreshIntervalMs: 60001 }), ApiError);
 });
 
 Deno.test("validateSettings rejects unknown enum values", () => {

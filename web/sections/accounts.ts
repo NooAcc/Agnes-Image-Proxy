@@ -116,7 +116,6 @@ export const ACCOUNTS_SCRIPT = String.raw`
   var state = { accounts: [], editingId: null };
 
   function node(role) { return document.querySelector('[data-role="' + role + '"]'); }
-  function active() { return section.classList.contains("is-active"); }
   function findAccount(id) {
     return state.accounts.filter(function (item) { return String(item.id) === String(id); })[0];
   }
@@ -253,7 +252,7 @@ export const ACCOUNTS_SCRIPT = String.raw`
   }
 
   var requestId = 0;
-  async function load() {
+  async function load(silent) {
     var id = ++requestId;
     try {
       var accounts = await A.api("/admin/api/accounts");
@@ -262,7 +261,7 @@ export const ACCOUNTS_SCRIPT = String.raw`
       render();
     } catch (error) {
       if (id !== requestId) return;
-      A.toast(error.message, "error");
+      if (!silent) A.toast(error.message, "error");
     }
   }
 
@@ -463,9 +462,6 @@ export const ACCOUNTS_SCRIPT = String.raw`
     }
   });
 
-  document.addEventListener("agnes:section", function (event) {
-    if (!event.detail || event.detail.name !== "accounts" || !active()) return;
-    load();
-  });
+  A.autoRefresh.register("accounts", load);
 })();
 `;

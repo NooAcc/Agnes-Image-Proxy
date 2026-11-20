@@ -70,7 +70,6 @@ export const OVERVIEW_SCRIPT = String.raw`
   if (dayInput) dayInput.value = today;
 
   function node(role) { return section.querySelector('[data-role="' + role + '"]'); }
-  function active() { return section.classList.contains("is-active"); }
 
   function setStat(role, value) {
     var target = node(role);
@@ -236,7 +235,7 @@ export const OVERVIEW_SCRIPT = String.raw`
     state.loaded = true;
   }
 
-  async function load() {
+  async function load(silent) {
     var id = ++state.requestId;
     var query = state.day ? "?day=" + encodeURIComponent(state.day) : "";
     try {
@@ -245,7 +244,7 @@ export const OVERVIEW_SCRIPT = String.raw`
       render(data);
     } catch (error) {
       if (id !== state.requestId) return;
-      A.toast(error.message, "error");
+      if (!silent) A.toast(error.message, "error");
     }
   }
 
@@ -265,9 +264,6 @@ export const OVERVIEW_SCRIPT = String.raw`
     load();
   });
 
-  document.addEventListener("agnes:section", function (event) {
-    if (!event.detail || event.detail.name !== "overview" || !active()) return;
-    load();
-  });
+  A.autoRefresh.register("overview", load);
 })();
 `;

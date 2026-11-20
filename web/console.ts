@@ -113,6 +113,17 @@ const SHELL_SCRIPT = String.raw`
   });
 
   A.syncThemeUi();
+  document.addEventListener("agnes:settings", function (event) {
+    var settings = event.detail;
+    if (settings && settings.autoRefreshIntervalMs) {
+      A.autoRefresh.setIntervalMs(settings.autoRefreshIntervalMs);
+    }
+  });
+  A.api("/admin/api/settings").then(function (settings) {
+    if (settings && settings.autoRefreshIntervalMs) {
+      A.autoRefresh.setIntervalMs(settings.autoRefreshIntervalMs);
+    }
+  }).catch(function () { /* fall back to the default interval */ });
   setSection((location.hash || "#overview").slice(1));
 })();
 `;
@@ -156,6 +167,11 @@ export function renderConsole(): string {
           <span class="dot" aria-hidden="true"></span>
           <span data-role="health-text">Key 池 —</span>
         </span>
+        <label class="switch auto-refresh" title="自动刷新当前板块">
+          <input type="checkbox" data-role="auto-refresh-toggle" data-action="toggle-auto-refresh" aria-label="自动刷新当前板块">
+          <span class="track"></span>
+          <span class="auto-refresh-text">自动刷新</span>
+        </label>
         <button class="icon-btn" type="button" data-action="toggle-theme" aria-label="切换主题" title="切换主题">
           <span class="theme-icon-dark">${icon("sun")}</span>
           <span class="theme-icon-light">${icon("moon")}</span>

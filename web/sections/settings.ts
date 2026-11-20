@@ -100,6 +100,22 @@ export const SETTINGS_HTML = `
       </div>
     </div>
 
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">控制台</div>
+          <p>仅当前打开的板块会自动刷新；页面隐藏或选中文字时暂停。</p>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="field">
+          <label for="autoRefreshIntervalMs">自动刷新间隔（毫秒）</label>
+          <input class="input" id="autoRefreshIntervalMs" name="autoRefreshIntervalMs" type="number" min="2000" max="60000" step="1000" required>
+          <span class="hint" data-role="auto-interval-hint">范围 2–60 秒。</span>
+        </div>
+      </div>
+    </div>
+
     <div class="save-bar">
       <span class="form-status" data-role="settings-status">加载中…</span>
       <button class="btn" type="reset">放弃修改</button>
@@ -121,8 +137,8 @@ export const SETTINGS_SCRIPT = String.raw`
   var status = section.querySelector('[data-role="settings-status"]');
   var timeoutInput = form.elements.namedItem("requestTimeoutMs");
   var timeoutHint = section.querySelector('[data-role="timeout-hint"]');
-
-  function active() { return section.classList.contains("is-active"); }
+  var intervalInput = form.elements.namedItem("autoRefreshIntervalMs");
+  var intervalHint = section.querySelector('[data-role="auto-interval-hint"]');
 
   function setStatus(text, dirty) {
     if (!status) return;
@@ -146,6 +162,16 @@ export const SETTINGS_SCRIPT = String.raw`
     timeoutHint.textContent = "当前约 " + (ms / 60000).toFixed(ms % 60000 === 0 ? 0 : 1) + " 分钟。";
   }
 
+  function updateIntervalHint() {
+    if (!intervalHint || !intervalInput) return;
+    var ms = Number(intervalInput.value);
+    if (!isFinite(ms) || ms <= 0) {
+      intervalHint.textContent = "范围 2–60 秒。";
+      return;
+    }
+    intervalHint.textContent = "当前约 " + (ms / 1000).toFixed(ms % 1000 === 0 ? 0 : 1) + " 秒。";
+  }
+
   function setField(name, value) {
     var fields = form.querySelectorAll('[name="' + name + '"]');
     if (!fields.length) return;
@@ -159,20 +185,22 @@ export const SETTINGS_SCRIPT = String.raw`
   }
 
   var requestId = 0;
-  async function load() {
+  async function load(silent) {
     var id = ++requestId;
     try {
       var settings = await A.api("/admin/api/settings");
       if (id !== requestId) return;
       for (var key in settings) setField(key, settings[key]);
       updateTimeoutHint();
+      updateIntervalHint();
       state.dirty = false;
       state.loaded = true;
       setStatus("已与服务器同步", false);
+      document.dispatchEvent(new CustomEvent("agnes:settings", { detail: settings }));
     } catch (error) {
       if (id !== requestId) return;
       setStatus("读取设置失败", false);
-      A.toast(error.message, "error");
+      if (!silent) A.toast(error.message, "error");
     }
   }
 
@@ -185,6 +213,7 @@ export const SETTINGS_SCRIPT = String.raw`
     for (var i = 0; i < names.length; i++) payload[names[i]] = form.elements.namedItem(names[i]).value;
     payload.probeConcurrency = Number(form.elements.namedItem("probeConcurrency").value);
     payload.requestTimeoutMs = Number(form.elements.namedItem("requestTimeoutMs").value);
+    payload.autoRefreshIntervalMs = Number(form.elements.namedItem("autoRefreshIntervalMs").value);
     payload.maxAttempts = Number(form.elements.namedItem("maxAttempts").value);
     return payload;
   }
@@ -192,6 +221,7 @@ export const SETTINGS_SCRIPT = String.raw`
   form.addEventListener("input", function () {
     markDirty();
     updateTimeoutHint();
+    updateIntervalHint();
   });
   form.addEventListener("change", markDirty);
 
@@ -219,12 +249,17 @@ export const SETTINGS_SCRIPT = String.raw`
     load();
   });
 
-  document.addEventListener("agnes:section", function (event) {
-    if (!event.detail || event.detail.name !== "settings" || !active()) return;
-    if (!state.loaded || !state.dirty) load();
-    else setStatus("有未保存的修改", true);
-  });
+  function refresh(silent) {
+    if (state.dirty) {
+      setStatus("有未保存的修改", true);
+      return;
+    }
+    return load(silent);
+  }
+
+  A.autoRefresh.register("settings", refresh);
 
   updateTimeoutHint();
+  updateIntervalHint();
 })();
 `;

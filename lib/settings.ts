@@ -15,6 +15,7 @@ export interface AppSettings {
   probeModel: string;
   probeConcurrency: number;
   requestTimeoutMs: number;
+  autoRefreshIntervalMs: number;
   maxAttempts: number;
 }
 
@@ -27,6 +28,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   probeModel: "agnes-image-2.5-flash",
   probeConcurrency: 2,
   requestTimeoutMs: 300000,
+  autoRefreshIntervalMs: 5000,
   maxAttempts: 3,
 };
 
@@ -120,6 +122,12 @@ export function validateSettings(input: unknown): AppSettings {
     probeModel: probeModel.trim(),
     probeConcurrency: integerInRange("probeConcurrency", pick("probeConcurrency"), 1, 10),
     requestTimeoutMs: integerInRange("requestTimeoutMs", pick("requestTimeoutMs"), 60_000, 360_000),
+    autoRefreshIntervalMs: integerInRange(
+      "autoRefreshIntervalMs",
+      pick("autoRefreshIntervalMs"),
+      2_000,
+      60_000,
+    ),
     maxAttempts: integerInRange("maxAttempts", pick("maxAttempts"), 1, 10),
   };
 }

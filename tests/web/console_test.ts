@@ -1,17 +1,29 @@
 import { assert } from "@std/assert";
 import { renderAdminPage } from "../../web/ui.ts";
 
-Deno.test("logs refresh every five seconds and pause when hidden or selecting", () => {
+Deno.test("auto refresh is global, active-section scoped and configurable", () => {
   const html = renderAdminPage();
-  assert(html.includes("5 秒"));
-  assert(html.includes("自动刷新"));
-  assert(html.includes("5000"));
+  assert(html.includes('data-role="auto-refresh-toggle"'));
+  assert(html.includes('data-action="toggle-auto-refresh"'));
+  assert(html.includes('"agnes-auto-refresh"'));
+  assert(html.includes("autoRefresh"));
   assert(html.includes("setInterval"));
   assert(html.includes("selectionchange"));
   assert(html.includes("document.hidden"));
-  assert(html.includes("pausedBySelection"));
+  assert(html.includes("is-active"));
+  assert(html.includes("/admin/api/settings"));
   assert(html.includes('data-filter="bad"'));
   assert(html.includes('data-action="clear-logs"'));
+  // The logs section no longer owns its own auto-refresh toggle or preference.
+  assert(!html.includes("agnes-logs-auto"));
+  assert(!html.includes('data-role="logs-auto"'));
+});
+
+Deno.test("every section registers a refresh hook with the shared scheduler", () => {
+  const html = renderAdminPage();
+  for (const name of ["overview", "gallery", "accounts", "logs", "settings"]) {
+    assert(html.includes(`A.autoRefresh.register("${name}"`), `missing refresh hook for ${name}`);
+  }
 });
 
 Deno.test("settings form exposes every setting", () => {
@@ -26,6 +38,7 @@ Deno.test("settings form exposes every setting", () => {
       "probeModel",
       "probeConcurrency",
       "requestTimeoutMs",
+      "autoRefreshIntervalMs",
       "maxAttempts",
     ]
   ) {
@@ -47,6 +60,9 @@ Deno.test("gallery timeline and lightbox are part of the console", () => {
   assert(html.includes('data-role="gallery-download"'));
   assert(html.includes("ArrowLeft"));
   assert(html.includes("ArrowRight"));
+  // Auto refresh merges only new items in place instead of resetting pagination.
+  assert(html.includes("refreshNewest"));
+  assert(html.includes("concat(state.items)"));
 });
 
 Deno.test("overview renders trend chart and model usage hooks", () => {
