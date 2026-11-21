@@ -361,6 +361,7 @@ code, .mono { font-family: var(--font-mono); font-size: 0.92em; font-variant-num
 .bar-stack { display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; min-height: 3px; border-radius: 5px; overflow: hidden; }
 .bar-seg { width: 100%; border-radius: 3px; flex: none; }
 .bar-seg.ok { background: linear-gradient(180deg, var(--accent-text), var(--accent-strong)); }
+.bar-seg.partial { background: var(--warning); }
 .bar-seg.err { background: var(--danger); }
 .bar-zero { background: var(--surface-3); height: 3px; width: 100%; border-radius: 3px; }
 .bar-day { font-size: 10px; line-height: 1.2; text-align: center; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -370,6 +371,7 @@ code, .mono { font-family: var(--font-mono); font-size: 0.92em; font-variant-num
 .chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .chart-legend i { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
 .chart-legend .ok { background: var(--accent); }
+.chart-legend .partial { background: var(--warning); }
 .chart-legend .err { background: var(--danger); }
 .model-list { display: flex; flex-direction: column; }
 .model-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 18px; padding: 13px 0; border-bottom: 1px solid var(--border); }

@@ -58,6 +58,56 @@ export async function readJsonBody(request: Request): Promise<unknown> {
   }
 }
 
+/** Reads and size-limits a multipart request body while streaming it. */
+export async function readLimitedFormData(
+  request: Request,
+  maxBytes: number,
+): Promise<FormData> {
+  const contentType = request.headers.get("content-type");
+  if (!request.body) {
+    if (!contentType) {
+      throw new ApiError(400, "request body is empty", "invalid_request_error");
+    }
+    return await request.formData();
+  }
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new ApiError(
+        413,
+        "request body is too large",
+        "invalid_request_error",
+        null,
+        "request_too_large",
+      );
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  if (!contentType) {
+    throw new ApiError(
+      400,
+      "request body is not valid multipart/form-data",
+      "invalid_request_error",
+    );
+  }
+  return await new Response(bytes, { headers: { "content-type": contentType } }).formData();
+}
+
 export function normalizePath(path: string): string {
   const trimmed = path.replace(/\/+$/, "");
   return trimmed === "" ? "/" : trimmed;
@@ -100,11 +150,21 @@ export function htmlResponse(html: string, init: ResponseInit = {}): Response {
 export function bytesResponse(bytes: Uint8Array, mime: string, init: ResponseInit = {}): Response {
   const headers = mergeHeaders(init.headers, {
     "content-type": mime,
-    "cache-control": "private, max-age=300",
+    "cache-control": "private, no-store",
+    "content-security-policy": "default-src 'none'; sandbox",
+    "content-disposition": "inline",
     "x-content-type-options": "nosniff",
   });
   const body = bytes.slice().buffer as ArrayBuffer;
   return new Response(body, { ...init, headers });
+}
+
+/** Marks a response as uncacheable without overriding a more specific policy. */
+export function noStore(response: Response): Response {
+  if (!response.headers.has("cache-control")) {
+    response.headers.set("cache-control", "no-store");
+  }
+  return response;
 }
 
 /** Appends warning tags to the X-Agnes-Warnings header without duplicates. */

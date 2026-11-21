@@ -113,14 +113,39 @@ Deno.test("pool does not retry a 400", async () => {
   sql.close();
 });
 
-Deno.test("pool returns 503 after every account fails", async () => {
+async function setupThree(handlers: Record<string, (call: number) => unknown>) {
   const sql = createNodeSqliteExecutor();
   await ensureSchema(sql);
   const store = createAccountStore(sql);
   await store.create({ name: "a", apiKey: "key-a" });
   await store.create({ name: "b", apiKey: "key-b" });
   await store.create({ name: "c", apiKey: "key-c" });
-  const { factory } = fakeFactory({
+  const { factory, calls } = fakeFactory(handlers);
+  const pool = createAccountPool({ store, createClient: factory });
+  return { sql, store, pool, calls };
+}
+
+Deno.test("a single 429 is returned as 429 with retry-after", async () => {
+  const { sql, pool } = await setup({
+    "key-a": () => {
+      throw new ApiError(429, "slow", "rate_limit_error", null, null, {
+        "retry-after": "999999",
+      });
+    },
+    "key-b": () => ({ status: 200, body: OK_BODY }),
+  });
+  // Use maxAttempts: 1 so the only attempt is the 429.
+  const error = await assertRejects(() =>
+    pool.gateway("https://up/v1", undefined, { maxAttempts: 1 })
+      .generate({ path: "/images/generations", body: {} })
+  );
+  assertEquals(error instanceof ApiError && error.status, 429);
+  assertEquals(error instanceof ApiError && error.headers.get("retry-after"), "900");
+  sql.close();
+});
+
+Deno.test("three 502s return 502, not 503", async () => {
+  const { sql, pool } = await setupThree({
     "key-a": () => {
       throw new ApiError(502, "upstream exploded");
     },
@@ -131,13 +156,51 @@ Deno.test("pool returns 503 after every account fails", async () => {
       throw new ApiError(502, "upstream exploded");
     },
   });
-  const pool = createAccountPool({ store, createClient: factory });
+  const error = await assertRejects(() =>
+    pool.gateway("https://up/v1").generate({ path: "/images/generations", body: {} })
+  );
+  assertEquals(error instanceof ApiError && error.status, 502);
+  assertEquals(error instanceof ApiError && error.code, "upstream_unavailable");
+  assertEquals(error instanceof ApiError && error.message.includes("3"), true);
+  sql.close();
+});
 
+Deno.test("429 beats 502 across accounts", async () => {
+  const { sql, pool } = await setupThree({
+    "key-a": () => {
+      throw new ApiError(502, "upstream exploded");
+    },
+    "key-b": () => {
+      throw new ApiError(429, "slow down", "rate_limit_error");
+    },
+    "key-c": () => {
+      throw new ApiError(502, "upstream exploded");
+    },
+  });
+  const error = await assertRejects(() =>
+    pool.gateway("https://up/v1").generate({ path: "/images/generations", body: {} })
+  );
+  assertEquals(error instanceof ApiError && error.status, 429);
+  assertEquals(error instanceof ApiError && error.code, "rate_limit_exceeded");
+  sql.close();
+});
+
+Deno.test("all 401s return 503", async () => {
+  const { sql, pool } = await setupThree({
+    "key-a": () => {
+      throw new ApiError(401, "bad key", "authentication_error");
+    },
+    "key-b": () => {
+      throw new ApiError(401, "bad key", "authentication_error");
+    },
+    "key-c": () => {
+      throw new ApiError(401, "bad key", "authentication_error");
+    },
+  });
   const error = await assertRejects(() =>
     pool.gateway("https://up/v1").generate({ path: "/images/generations", body: {} })
   );
   assertEquals(error instanceof ApiError && error.status, 503);
-  assertEquals(error instanceof ApiError && error.message.includes("3"), true);
   sql.close();
 });
 

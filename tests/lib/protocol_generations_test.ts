@@ -1,6 +1,7 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { encodeBase64 } from "@std/encoding/base64";
 import { ApiError } from "../../lib/errors.ts";
+import { MAX_INPUT_IMAGE_BYTES } from "../../lib/limits.ts";
 import {
   agnesPayload,
   mergeNormalizedResponses,
@@ -238,6 +239,95 @@ Deno.test("no reference and no size keeps the default tier without a ratio", asy
   assertEquals("ratio" in payload.body, false);
 });
 
+Deno.test("rejects more than 16 reference images", async () => {
+  const images = Array.from({ length: 17 }, (_, i) => `https://a.example/${i}.png`);
+  const error = await assertRejects(
+    () => parseImageRequestJson({ model: "m", prompt: "x", images }, "generations", defaults),
+    ApiError,
+    "at most 16",
+  );
+  assertEquals(error.code, "too_many_images");
+});
+
+Deno.test("rejects an oversized data URI", async () => {
+  const payload = "A".repeat(Math.ceil((MAX_INPUT_IMAGE_BYTES + 1) * 4 / 3) + 4);
+  const error = await assertRejects(
+    () =>
+      parseImageRequestJson(
+        { model: "m", prompt: "x", images: [`data:image/png;base64,${payload}`] },
+        "generations",
+        defaults,
+      ),
+    ApiError,
+    "too large",
+  );
+  assertEquals(error.code, "image_too_large");
+});
+
+Deno.test("rejects GIF data URIs and normalizes image/jpg", async () => {
+  await assertRejects(
+    () =>
+      parseImageRequestJson(
+        { model: "m", prompt: "x", images: ["data:image/gif;base64,AAAA"] },
+        "generations",
+        defaults,
+      ),
+    ApiError,
+    "unsupported",
+  );
+  const parsed = await parseImageRequestJson(
+    { model: "m", prompt: "x", size: "1K", images: ["data:image/jpg;base64,AAAA"] },
+    "generations",
+    defaults,
+  );
+  assertEquals(parsed.images[0].startsWith("data:image/jpeg;base64,"), true);
+});
+
+Deno.test("empty upstream data is a 502", async () => {
+  const parsed = await parseImageRequestJson(
+    { model: "m", prompt: "x", size: "1K" },
+    "generations",
+    defaults,
+  );
+  const error = assertThrows(
+    () => normalizeAgnesResponse({ created: 1, data: [] }, parsed),
+    ApiError,
+    "missing images",
+  );
+  assertEquals(error.status, 502);
+  assertEquals(error.code, "invalid_upstream_response");
+});
+
+Deno.test("a data entry without url or b64_json is a 502", async () => {
+  const parsed = await parseImageRequestJson(
+    { model: "m", prompt: "x", size: "1K" },
+    "generations",
+    defaults,
+  );
+  assertThrows(
+    () => normalizeAgnesResponse({ created: 1, data: [{}] }, parsed),
+    ApiError,
+    "missing images",
+  );
+});
+
+Deno.test("one invalid entry fails the whole subrequest", async () => {
+  const parsed = await parseImageRequestJson(
+    { model: "m", prompt: "x", size: "1K" },
+    "generations",
+    defaults,
+  );
+  assertThrows(
+    () =>
+      normalizeAgnesResponse(
+        { created: 1, data: [{ url: "https://a.example/x.png" }, {}] },
+        parsed,
+      ),
+    ApiError,
+    "missing images",
+  );
+});
+
 Deno.test("normalizes an upstream URL response and fills the envelope", async () => {
   const request = await parse({
     model: "m",
@@ -254,7 +344,7 @@ Deno.test("normalizes an upstream URL response and fills the envelope", async ()
     { url: "https://x/a.png", b64_json: null, revised_prompt: null },
   ]);
   assertEquals(normalized.body.size, "1024x1024");
-  assertEquals(normalized.body.output_format, "png");
+  assertEquals("output_format" in normalized.body, false);
   assertEquals(normalized.body.data, normalized.images);
   assertEquals(normalized.warnings, []);
 });

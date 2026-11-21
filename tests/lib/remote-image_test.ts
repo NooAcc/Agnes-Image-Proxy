@@ -2,6 +2,7 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { ApiError } from "../../lib/errors.ts";
 import {
   fetchImageDimensions,
+  fetchImageHeader,
   isPublicHttpsUrl,
   isPublicHttpUrl,
   tryFetchImageDimensions,
@@ -48,6 +49,14 @@ Deno.test("fetchImageDimensions reads a PNG header over https", async () => {
     width: 900,
     height: 1200,
   });
+});
+
+Deno.test("fetchImageHeader returns MIME alongside dimensions", async () => {
+  const result = await fetchImageHeader("https://a.example/x.png", {
+    fetchImpl: () => Promise.resolve(new Response(pngHeader(2, 3) as unknown as BodyInit)),
+  });
+  assertEquals(result.size, { width: 2, height: 3 });
+  assertEquals(result.mime, "image/png");
 });
 
 Deno.test("fetchImageDimensions allows http only when requested", async () => {

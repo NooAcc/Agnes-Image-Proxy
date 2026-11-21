@@ -37,9 +37,13 @@ export interface GatewayOptions {
   maxAttempts?: number;
 }
 
+export interface AttemptMeta {
+  durationMs: number;
+}
+
 export interface GatewayHooks {
-  onAccountUsed?(account: ClaimedAccount): void;
-  onAttemptFailed?(account: ClaimedAccount, error: unknown): void;
+  onAccountUsed?(account: ClaimedAccount, meta: AttemptMeta): void;
+  onAttemptFailed?(account: ClaimedAccount, error: unknown, meta: AttemptMeta): void;
 }
 
 export interface GatewayResult extends AgnesResult {
@@ -99,6 +103,119 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Account cooldown after a failure, capped at fifteen minutes. */
+export function cappedCooldownMs(error: unknown): number {
+  const classification = classifyFailure(error);
+  if (!classification.accountProblem) return 0;
+  const base = classification.exponential
+    ? Math.max(classification.cooldownMs, ACCOUNT_COOLDOWN_RATE_LIMIT_MS)
+    : classification.cooldownMs;
+  return Math.min(base, ACCOUNT_COOLDOWN_MAX_MS);
+}
+
+function asApiError(error: unknown): ApiError {
+  if (error instanceof ApiError) return error;
+  return new ApiError(
+    502,
+    errorMessage(error),
+    "server_error",
+    null,
+    "upstream_unavailable",
+  );
+}
+
+/**
+ * Chooses the error returned after every attempt failed.
+ * Priority: 429 > 504 > 502 > 503. Client errors (400/404) propagate as-is.
+ */
+export function selectFailure(
+  errors: unknown[],
+  attempts: number,
+  options: { prefix?: boolean } = {},
+): ApiError {
+  const apiErrors = errors.map(asApiError);
+  const prefix = options.prefix ?? true;
+  const messageOf = (error: ApiError): string =>
+    prefix
+      ? `all accounts failed after ${attempts} attempt${
+        attempts === 1 ? "" : "s"
+      }: ${error.message}`
+      : error.message;
+
+  const clientError = apiErrors.find((error) => error.status === 400 || error.status === 404);
+  if (clientError) {
+    if (!prefix) return clientError;
+    return new ApiError(
+      clientError.status,
+      messageOf(clientError),
+      clientError.type,
+      clientError.param,
+      clientError.code,
+      clientError.headers,
+    );
+  }
+
+  const rateLimited = apiErrors.filter((error) => error.status === 429);
+  if (rateLimited.length > 0) {
+    let best = rateLimited[0];
+    let bestCooldown = cappedCooldownMs(best);
+    for (const error of rateLimited.slice(1)) {
+      const cooldown = cappedCooldownMs(error);
+      if (cooldown < bestCooldown) {
+        best = error;
+        bestCooldown = cooldown;
+      }
+    }
+    const headers = new Headers(best.headers);
+    headers.set("retry-after", String(Math.ceil(bestCooldown / 1000)));
+    return new ApiError(
+      429,
+      messageOf(best),
+      "rate_limit_error",
+      null,
+      "rate_limit_exceeded",
+      headers,
+    );
+  }
+
+  const make = (selected: ApiError, code: string): ApiError =>
+    new ApiError(selected.status, messageOf(selected), "server_error", null, code);
+
+  const timeout = apiErrors.find((error) => error.status === 504);
+  if (timeout) return make(timeout, "upstream_timeout");
+
+  const unavailable = apiErrors.find((error) => error.status === 502);
+  if (unavailable) {
+    return make(
+      unavailable,
+      unavailable.code === "invalid_upstream_response"
+        ? "invalid_upstream_response"
+        : "upstream_unavailable",
+    );
+  }
+
+  const noAccounts = apiErrors.find(
+    (error) => error.status === 503 && error.code === "no_available_accounts",
+  );
+  const selected = noAccounts ?? apiErrors.find((error) => error.status === 503) ?? apiErrors[0];
+  if (!selected) {
+    return new ApiError(
+      503,
+      "no available accounts (all keys are disabled or cooling down)",
+      "server_error",
+      null,
+      "no_available_accounts",
+    );
+  }
+  return new ApiError(
+    503,
+    messageOf(selected),
+    "server_error",
+    null,
+    selected.code === "no_available_accounts" ? "no_available_accounts" : "upstream_unavailable",
+  );
+}
+
 async function quietly(action: () => Promise<unknown>): Promise<void> {
   try {
     await action();
@@ -117,14 +234,14 @@ export function createAccountPool(
       return {
         async generate(request, signal) {
           const tried: number[] = [];
-          let failures = 0;
-          let lastError: unknown = null;
+          const failures: unknown[] = [];
 
           while (tried.length < maxAttempts) {
             const account = await options.store.claim(tried);
             if (!account) break;
             tried.push(account.id);
 
+            const startedAt = Date.now();
             try {
               const client = options.createClient({
                 baseUrl,
@@ -132,37 +249,29 @@ export function createAccountPool(
                 timeoutMs: gatewayOptions.timeoutMs,
               });
               const result = await client.generate(request, signal);
-              await quietly(() => options.store.recordSuccess(account.id));
-              hooks?.onAccountUsed?.(account);
+              await quietly(() =>
+                options.store.recordSuccess(account.id, account.consecutiveFailures)
+              );
+              hooks?.onAccountUsed?.(account, { durationMs: Date.now() - startedAt });
               return { ...result, account: { id: account.id, name: account.name } };
             } catch (error) {
+              const durationMs = Date.now() - startedAt;
+              hooks?.onAttemptFailed?.(account, error, { durationMs });
               const classification = classifyFailure(error);
               if (!classification.accountProblem) throw error;
 
-              failures++;
-              lastError = error;
+              failures.push(error);
               const cooldown = classification.exponential
                 ? Math.min(
                   classification.cooldownMs * 2 ** account.consecutiveFailures,
                   ACCOUNT_COOLDOWN_MAX_MS,
                 )
-                : classification.cooldownMs;
+                : cappedCooldownMs(error);
               await quietly(() => options.store.recordFailure(account.id, cooldown));
-              hooks?.onAttemptFailed?.(account, error);
             }
           }
 
-          if (lastError !== null) {
-            throw new ApiError(
-              503,
-              `all accounts failed after ${failures} attempt${failures === 1 ? "" : "s"}: ${
-                errorMessage(lastError)
-              }`,
-              "server_error",
-              null,
-              "upstream_unavailable",
-            );
-          }
+          if (failures.length > 0) throw selectFailure(failures, failures.length);
           throw new ApiError(
             503,
             "no available accounts (all keys are disabled or cooling down)",

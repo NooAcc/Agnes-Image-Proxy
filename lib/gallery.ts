@@ -1,3 +1,4 @@
+import { isAllowedImageMime } from "./image-mime.ts";
 import { bytesFromRow, type SqlArg, type SqlExecutor } from "./sql.ts";
 
 export interface GalleryInsert {
@@ -123,9 +124,11 @@ export function createGalleryStore(sql: SqlExecutor): GalleryStore {
     async content(id) {
       const result = await sql.execute("SELECT mime, bytes FROM gallery WHERE id = ?", [id]);
       if (result.rows.length === 0) return null;
+      const mime = String(result.rows[0].mime);
+      if (!isAllowedImageMime(mime)) return null;
       const bytes = bytesFromRow(result.rows[0].bytes);
       if (bytes === null) return null;
-      return { mime: String(result.rows[0].mime), bytes };
+      return { mime, bytes };
     },
 
     async remove(id) {

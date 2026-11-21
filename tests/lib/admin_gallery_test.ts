@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import { createAccountStore, ensureSchema } from "../../lib/accounts.ts";
-import { createSessionSigner } from "../../lib/auth.ts";
+import { createAuthStateStore, createSessionService } from "../../lib/auth.ts";
 import { createAdminApi } from "../../lib/admin.ts";
 import { createGalleryStore, type GalleryStore } from "../../lib/gallery.ts";
 import { createRequestLogStore } from "../../lib/logs.ts";
@@ -20,7 +20,7 @@ async function setup(): Promise<{
   const sql = createNodeSqliteExecutor();
   await ensureSchema(sql);
   const gallery = createGalleryStore(sql);
-  const session = createSessionSigner(API_KEY);
+  const session = createSessionService(API_KEY, createAuthStateStore(sql));
   const createClient: AgnesClientFactory = () => ({
     generate: () => Promise.resolve({ status: 200, body: {} }),
   });
@@ -85,23 +85,41 @@ Deno.test("gallery list paginates and never returns bytes", async () => {
   sql.close();
 });
 
-Deno.test("gallery content returns bytes with private caching and nosniff", async () => {
+Deno.test("gallery content returns bytes with no-store, CSP and inline disposition", async () => {
   const { sql, gallery, call } = await setup();
   const id = await gallery.record(row());
   const response = await call(`/admin/api/gallery/${id}/content`);
   assertEquals(response.status, 200);
   assertEquals(response.headers.get("content-type"), "image/png");
-  assertEquals(response.headers.get("cache-control"), "private, max-age=300");
+  assertEquals(response.headers.get("cache-control"), "private, no-store");
+  assertEquals(
+    response.headers.get("content-security-policy"),
+    "default-src 'none'; sandbox",
+  );
+  assertEquals(response.headers.get("content-disposition"), "inline");
   assertEquals(response.headers.get("x-content-type-options"), "nosniff");
   assertEquals(new Uint8Array(await response.arrayBuffer()), new Uint8Array([1, 2, 3, 4]));
 
-  assertEquals((await call("/admin/api/gallery/999/content")).status, 404);
+  const missing = await call("/admin/api/gallery/999/content");
+  assertEquals(missing.status, 404);
+  assertEquals(missing.headers.get("cache-control"), "no-store");
+  sql.close();
+});
+
+Deno.test("gallery content rejects non-whitelisted MIME rows", async () => {
+  const { sql, gallery, call } = await setup();
+  const id = await gallery.record(
+    row({ mime: "image/svg+xml", bytes: new TextEncoder().encode("<svg/>") }),
+  );
+  assertEquals((await call(`/admin/api/gallery/${id}/content`)).status, 404);
   sql.close();
 });
 
 Deno.test("gallery requires auth", async () => {
   const { sql, call, anon } = await setup();
-  assertEquals((await anon("/admin/api/gallery")).status, 401);
+  const unauthorized = await anon("/admin/api/gallery");
+  assertEquals(unauthorized.status, 401);
+  assertEquals(unauthorized.headers.get("cache-control"), "no-store");
   assertEquals((await call("/admin/api/gallery")).status, 200);
   sql.close();
 });

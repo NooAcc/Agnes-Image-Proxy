@@ -1,7 +1,7 @@
 import { type AccountStore, createAccountStore, ensureSchema } from "../lib/accounts.ts";
 import { type AdminApi, createAdminApi } from "../lib/admin.ts";
 import { type Archiver, createArchiver } from "../lib/archive.ts";
-import { createSessionSigner, type SessionSigner } from "../lib/auth.ts";
+import { createAuthStateStore, createSessionService, type SessionService } from "../lib/auth.ts";
 import { createHandler } from "../lib/app.ts";
 import { createGalleryStore, type GalleryStore } from "../lib/gallery.ts";
 import { createRequestLogStore, type RequestLogStore } from "../lib/logs.ts";
@@ -30,7 +30,7 @@ export interface Harness {
   logs: RequestLogStore;
   modelUsage: ModelUsageStore;
   gallery: GalleryStore;
-  session: SessionSigner;
+  session: SessionService;
   api: AdminApi;
 }
 
@@ -48,7 +48,7 @@ export async function buildHarness(options: HarnessOptions): Promise<Harness> {
   const logs = createRequestLogStore(options.sql);
   const modelUsage = createModelUsageStore(options.sql);
   const gallery = createGalleryStore(options.sql);
-  const session = createSessionSigner(options.apiKey);
+  const session = createSessionService(options.apiKey, createAuthStateStore(options.sql));
   const archiver = options.archiver ?? createArchiver({ gallery });
   const pool = createAccountPool({ store, createClient: options.createClient });
   const api = createAdminApi({

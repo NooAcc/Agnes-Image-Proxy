@@ -1,5 +1,6 @@
 import { encodeBase64 } from "@std/encoding/base64";
-import { SESSION_TTL_MS } from "./limits.ts";
+import { SESSION_MAX_MS, SESSION_RENEW_BEFORE_MS, SESSION_TTL_MS } from "./limits.ts";
+import type { SqlExecutor } from "./sql.ts";
 
 const encoder = new TextEncoder();
 
@@ -41,53 +42,165 @@ function base64UrlEncodeText(text: string): string {
   return base64Url(encoder.encode(text));
 }
 
-export interface SessionSigner {
+export interface AuthStateStore {
+  getSessionEpoch(): Promise<number>;
+  bumpSessionEpoch(): Promise<number>;
+}
+
+/** Reads and bumps the session epoch; reads are cached for ten seconds. */
+export function createAuthStateStore(
+  sql: SqlExecutor,
+  options: { ttlMs?: number; now?: () => number } = {},
+): AuthStateStore {
+  const ttlMs = options.ttlMs ?? 10_000;
+  const now = options.now ?? (() => Date.now());
+  let cached: number | null = null;
+  let loadedAt = 0;
+
+  const read = async (): Promise<number> => {
+    const result = await sql.execute(
+      "SELECT value FROM auth_state WHERE key = 'session_epoch'",
+    );
+    const value = Number(result.rows[0]?.value);
+    return Number.isFinite(value) && value >= 1 ? Math.trunc(value) : 1;
+  };
+
+  return {
+    async getSessionEpoch() {
+      const stamp = now();
+      if (cached !== null && stamp - loadedAt < ttlMs) return cached;
+      cached = await read();
+      loadedAt = stamp;
+      return cached;
+    },
+
+    async bumpSessionEpoch() {
+      await sql.execute(
+        `INSERT INTO auth_state (key, value, updated_at) VALUES ('session_epoch', '2', ?)
+         ON CONFLICT (key) DO UPDATE SET
+           value = CAST(value AS INTEGER) + 1,
+           updated_at = excluded.updated_at`,
+        [new Date().toISOString()],
+      );
+      cached = await read();
+      loadedAt = now();
+      return cached;
+    },
+  };
+}
+
+export interface SessionClaims {
+  epoch: number;
+  iat: number;
+  exp: number;
+}
+
+export interface SessionService {
   issue(now?: Date): Promise<string>;
-  verify(token: string, now?: Date): Promise<boolean>;
+  verify(token: string, now?: Date): Promise<SessionClaims | null>;
+  renew(token: string, now?: Date): Promise<string | null>;
+  revokeAll(now?: Date): Promise<number>;
 }
 
 /**
- * Stateless HMAC session tokens. The signing key is derived from the proxy
- * API key, so rotating the key invalidates every outstanding session.
+ * Stateless HMAC session tokens bound to the stored session epoch. Bumping
+ * the epoch invalidates every outstanding token. Tokens slide forward when
+ * they have less than seven days left, capped at ninety days after issue.
  */
-export function createSessionSigner(apiKey: string, ttlMs: number = SESSION_TTL_MS): SessionSigner {
-  const keyPromise: Promise<CryptoKey> = crypto.subtle.importKey(
-    "raw",
-    encoder.encode(`agnes-session:${apiKey}`),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign", "verify"],
-  );
+export function createSessionService(
+  apiKey: string,
+  authState: AuthStateStore,
+  options: { ttlMs?: number; renewBeforeMs?: number; maxMs?: number } = {},
+): SessionService {
+  const ttlMs = options.ttlMs ?? SESSION_TTL_MS;
+  const renewBeforeMs = options.renewBeforeMs ?? SESSION_RENEW_BEFORE_MS;
+  const maxMs = options.maxMs ?? SESSION_MAX_MS;
+  const keys = new Map<number, Promise<CryptoKey>>();
 
-  const sign = async (payload: string): Promise<string> => {
-    const key = await keyPromise;
-    const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
+  const keyFor = (epoch: number): Promise<CryptoKey> => {
+    let key = keys.get(epoch);
+    if (!key) {
+      key = crypto.subtle.importKey(
+        "raw",
+        encoder.encode(`agnes-session:${apiKey}:${epoch}`),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign", "verify"],
+      );
+      keys.set(epoch, key);
+    }
+    return key;
+  };
+
+  const sign = async (payload: string, epoch: number): Promise<string> => {
+    const signature = await crypto.subtle.sign(
+      "HMAC",
+      await keyFor(epoch),
+      encoder.encode(payload),
+    );
     return base64Url(new Uint8Array(signature));
+  };
+
+  const encode = async (claims: SessionClaims): Promise<string> => {
+    const payload = base64UrlEncodeText(
+      JSON.stringify({ v: claims.epoch, iat: claims.iat, exp: claims.exp }),
+    );
+    return `${payload}.${await sign(payload, claims.epoch)}`;
+  };
+
+  const decode = async (token: string): Promise<SessionClaims | null> => {
+    const [payload, signature] = token.split(".");
+    if (!payload || !signature) return null;
+    let raw: { v?: unknown; iat?: unknown; exp?: unknown };
+    try {
+      raw = JSON.parse(decodeBase64UrlText(payload));
+    } catch {
+      return null;
+    }
+    const epoch = Number(raw.v);
+    if (!Number.isInteger(epoch) || typeof raw.iat !== "number" || typeof raw.exp !== "number") {
+      return null;
+    }
+    if (epoch !== await authState.getSessionEpoch()) return null;
+    const expected = await sign(payload, epoch);
+    if (!timingSafeEqual(signature, expected)) return null;
+    return { epoch, iat: raw.iat, exp: raw.exp };
   };
 
   return {
     async issue(now: Date = new Date()): Promise<string> {
-      const payload = base64UrlEncodeText(
-        JSON.stringify({ iat: now.getTime(), exp: now.getTime() + ttlMs }),
-      );
-      return `${payload}.${await sign(payload)}`;
+      const iat = now.getTime();
+      const epoch = await authState.getSessionEpoch();
+      return await encode({ epoch, iat, exp: Math.min(iat + ttlMs, iat + maxMs) });
     },
 
-    async verify(token: string, now: Date = new Date()): Promise<boolean> {
-      const [payload, signature] = token.split(".");
-      if (!payload || !signature) return false;
-      const expected = await sign(payload);
-      if (!timingSafeEqual(signature, expected)) return false;
-      try {
-        const decoded = JSON.parse(
-          new TextDecoder().decode(decodeBase64Url(payload)),
-        ) as { exp?: unknown };
-        return typeof decoded.exp === "number" && decoded.exp > now.getTime();
-      } catch {
-        return false;
-      }
+    async verify(token: string, now: Date = new Date()): Promise<SessionClaims | null> {
+      const claims = await decode(token);
+      if (!claims || claims.exp <= now.getTime()) return null;
+      return claims;
+    },
+
+    async renew(token: string, now: Date = new Date()): Promise<string | null> {
+      const claims = await decode(token);
+      const stamp = now.getTime();
+      if (!claims || claims.exp <= stamp) return null;
+      if (claims.exp - stamp >= renewBeforeMs) return null;
+      if (stamp >= claims.iat + maxMs) return null;
+      return await encode({
+        epoch: claims.epoch,
+        iat: claims.iat,
+        exp: Math.min(stamp + ttlMs, claims.iat + maxMs),
+      });
+    },
+
+    async revokeAll(): Promise<number> {
+      return await authState.bumpSessionEpoch();
     },
   };
+}
+
+function decodeBase64UrlText(value: string): string {
+  return new TextDecoder().decode(decodeBase64Url(value));
 }
 
 function decodeBase64Url(value: string): Uint8Array {

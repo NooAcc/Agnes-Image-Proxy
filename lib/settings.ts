@@ -4,7 +4,7 @@ import { SETTINGS_CACHE_TTL_MS } from "./limits.ts";
 import { isSizeTier, type SizeTier } from "./size.ts";
 
 export type ResponseFormat = "b64_json" | "url";
-export type ImageParamMode = "auto" | "nested" | "top_level";
+export type ImageParamMode = "nested" | "top_level";
 
 export interface AppSettings {
   agnesBaseUrl: string;
@@ -22,7 +22,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   agnesBaseUrl: "https://apihub.agnes-ai.com/v1",
   defaultResponseFormat: "b64_json",
   defaultSize: "1K",
-  imageParamMode: "auto",
+  imageParamMode: "nested",
   probeModel: "agnes-image-2.5-flash",
   probeConcurrency: 2,
   requestTimeoutMs: 300000,
@@ -97,8 +97,8 @@ export function validateSettings(input: unknown): AppSettings {
   }
 
   const imageParamMode = pick("imageParamMode");
-  if (imageParamMode !== "auto" && imageParamMode !== "nested" && imageParamMode !== "top_level") {
-    throw invalid("imageParamMode", "imageParamMode must be auto, nested or top_level");
+  if (imageParamMode !== "nested" && imageParamMode !== "top_level") {
+    throw invalid("imageParamMode", "imageParamMode must be nested or top_level");
   }
 
   const probeModel = pick("probeModel");

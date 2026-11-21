@@ -56,6 +56,18 @@ Deno.test("gallery records unarchived rows with only a source URL", async () => 
   sql.close();
 });
 
+Deno.test("gallery content refuses non-whitelisted MIME rows", async () => {
+  const { sql, gallery } = await setup();
+  const id = await gallery.record(
+    insert({
+      mime: "image/svg+xml",
+      bytes: new TextEncoder().encode("<svg xmlns='http://www.w3.org/2000/svg'/>"),
+    }),
+  );
+  assertEquals(await gallery.content(id), null);
+  sql.close();
+});
+
 Deno.test("gallery paginates with an id cursor", async () => {
   const { sql, gallery } = await setup();
   for (let i = 0; i < 30; i++) await gallery.record(insert({ prompt: `p${i}` }));

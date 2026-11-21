@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import { ensureSchema } from "../../lib/accounts.ts";
-import { createRequestLogStore } from "../../lib/logs.ts";
+import { createRequestLogStore, type RequestLogInput } from "../../lib/logs.ts";
 import { createNodeSqliteExecutor } from "../../lib/testing/node-sqlite-executor.ts";
 
 async function setup() {
@@ -9,9 +9,11 @@ async function setup() {
   return { sql, logs: createRequestLogStore(sql) };
 }
 
-function entry(overrides: Record<string, unknown> = {}) {
+function entry(overrides: Partial<RequestLogInput> = {}): RequestLogInput {
   return {
+    requestId: "req-1",
     ts: "2026-11-20T10:00:00.000Z",
+    stage: "complete",
     endpoint: "generations",
     path: "/v1/images/generations",
     model: "agnes-image-2.5-flash",
@@ -23,9 +25,11 @@ function entry(overrides: Record<string, unknown> = {}) {
     requested: 1,
     images: 1,
     failed: 0,
-    size: "1K 1:1",
+    sizeRequest: "1K 1:1",
+    sizeActual: "900x1200",
+    errorCode: null,
     error: null,
-    attempts: [{ account: "main", status: 200 }],
+    attempts: [{ index: 0, traces: [] }],
     ...overrides,
   };
 }
@@ -43,6 +47,18 @@ Deno.test("request logs keep only the latest 500 rows, newest first", async () =
   sql.close();
 });
 
+Deno.test("request logs round-trip the stage fields", async () => {
+  const { sql, logs } = await setup();
+  await logs.record(entry());
+  const row = (await logs.list())[0];
+  assertEquals(row.requestId, "req-1");
+  assertEquals(row.stage, "complete");
+  assertEquals(row.sizeRequest, "1K 1:1");
+  assertEquals(row.sizeActual, "900x1200");
+  assertEquals(row.errorCode, null);
+  sql.close();
+});
+
 Deno.test("request logs round-trip counts and the attempts JSON", async () => {
   const { sql, logs } = await setup();
   await logs.record(entry({ requested: 5, images: 3, failed: 2, ok: false }));
@@ -51,7 +67,7 @@ Deno.test("request logs round-trip counts and the attempts JSON", async () => {
   assertEquals(row.images, 3);
   assertEquals(row.failed, 2);
   assertEquals(row.ok, false);
-  assertEquals(row.attempts, [{ account: "main", status: 200 }]);
+  assertEquals(row.attempts, [{ index: 0, traces: [] }]);
   sql.close();
 });
 

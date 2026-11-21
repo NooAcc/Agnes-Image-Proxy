@@ -1,6 +1,6 @@
 import { decodeBase64, encodeBase64 } from "@std/encoding/base64";
 import { ApiError } from "./errors.ts";
-import { asObject } from "./http.ts";
+import { asObject, readLimitedFormData } from "./http.ts";
 import { readImageDimensions } from "./image-dimensions.ts";
 import {
   isValidImageCount,
@@ -108,8 +108,40 @@ function readImageValue(value: unknown, param: string): string[] {
   });
 }
 
+const DATA_URI_PREFIX = /^data:image\/(png|jpeg|jpg|webp);base64,/i;
+
+export interface ParsedDataUri {
+  mime: "image/png" | "image/jpeg" | "image/webp";
+  byteLength: number;
+}
+
+/** Parses a base64 image data URI without decoding it. */
+export function parseDataUri(value: string): ParsedDataUri | null {
+  const match = DATA_URI_PREFIX.exec(value);
+  if (!match) return null;
+  const payload = value.slice(match[0].length);
+  if (payload === "" || payload.length % 4 !== 0) return null;
+  const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
+  if (payload.slice(0, payload.length - padding).includes("=")) return null;
+  const subtype = match[1].toLowerCase();
+  return {
+    mime: subtype === "jpg" ? "image/jpeg" : `image/${subtype}` as ParsedDataUri["mime"],
+    byteLength: (payload.length / 4) * 3 - padding,
+  };
+}
+
 function validateImageReference(value: string): string {
-  if (value.startsWith("data:image/")) return value;
+  if (/^data:/i.test(value)) {
+    const parsed = parseDataUri(value);
+    if (!parsed) {
+      throw invalid(
+        "reference data URI is unsupported; use png, jpeg or webp with base64 encoding",
+        "image",
+        "unsupported_parameter",
+      );
+    }
+    return `data:${parsed.mime};base64,${value.slice(value.indexOf(",") + 1)}`;
+  }
   let url: URL;
   try {
     url = new URL(value);
@@ -128,11 +160,11 @@ function isHttpUrl(value: string): boolean {
 
 /** Reads dimensions from a base64 data URI without any network access. */
 function referenceFromImage(image: string | undefined): PixelSize | null {
-  if (!image || !image.startsWith("data:image/")) return null;
-  const comma = image.indexOf(",");
-  if (comma === -1 || !image.slice(0, comma).includes(";base64")) return null;
+  if (!image) return null;
+  const parsed = parseDataUri(image);
+  if (!parsed) return null;
   try {
-    return readImageDimensions(decodeBase64(image.slice(comma + 1)));
+    return readImageDimensions(decodeBase64(image.slice(image.indexOf(",") + 1)));
   } catch {
     return null;
   }
@@ -167,12 +199,32 @@ async function referenceSizeForAuto(
   throw unreadableReference();
 }
 
-/** Collects reference images from the top-level image/images fields. */
-function collectImages(obj: Record<string, unknown>): string[] {
-  const images: string[] = [];
-  if (obj.image !== undefined) images.push(...readImageValue(obj.image, "image"));
-  if (obj.images !== undefined) images.push(...readImageValue(obj.images, "images"));
-  return images.map(validateImageReference);
+/** Collects reference images from the top-level fields and extra_body.image. */
+function collectImages(
+  obj: Record<string, unknown>,
+  extraBody: Record<string, unknown>,
+): string[] {
+  const raw: string[] = [];
+  if (obj.image !== undefined) raw.push(...readImageValue(obj.image, "image"));
+  if (obj.images !== undefined) raw.push(...readImageValue(obj.images, "images"));
+  if (extraBody.image !== undefined) raw.push(...readImageValue(extraBody.image, "image"));
+
+  if (raw.length > MAX_INPUT_IMAGES) {
+    throw invalid(
+      `at most ${MAX_INPUT_IMAGES} images are allowed`,
+      "image",
+      "too_many_images",
+    );
+  }
+
+  return raw.map((value) => {
+    const normalized = validateImageReference(value);
+    const data = parseDataUri(normalized);
+    if (data !== null && data.byteLength > MAX_INPUT_IMAGE_BYTES) {
+      throw invalid("input image is too large", "image", "image_too_large");
+    }
+    return normalized;
+  });
 }
 
 function readResponseFormat(
@@ -253,12 +305,7 @@ export async function parseImageRequestJson(
     Object.assign(extraBody, extra);
   }
 
-  const images = collectImages(obj);
-  if (extraBody.image !== undefined) {
-    images.push(
-      ...readImageValue(extraBody.image, "image").map((value) => validateImageReference(value)),
-    );
-  }
+  const images = collectImages(obj, extraBody);
 
   let size: ResolvedSize;
   if (autoTrigger && images.length > 0) {
@@ -333,26 +380,33 @@ function optionalText(value: unknown): string | null {
   return typeof value === "string" && value !== "" ? value : null;
 }
 
+function missingImages(): ApiError {
+  return new ApiError(
+    502,
+    "upstream response is missing images",
+    "server_error",
+    null,
+    "invalid_upstream_response",
+  );
+}
+
 export function normalizeAgnesResponse(
   raw: unknown,
   request: ParsedImageRequest,
 ): NormalizedResponse {
   const obj = asObject(raw);
-  if (!obj || !Array.isArray(obj.data)) {
-    throw new ApiError(
-      502,
-      "upstream response is missing a data array",
-      "server_error",
-      null,
-      "invalid_upstream_response",
-    );
+  if (!obj || !Array.isArray(obj.data) || obj.data.length === 0) {
+    throw missingImages();
   }
 
   const images: NormalizedImage[] = obj.data.map((item) => {
-    const entry = asObject(item) ?? {};
+    const entry = asObject(item);
+    const url = optionalText(entry?.url);
+    const b64Json = optionalText(entry?.b64_json);
+    if (!entry || (url === null && b64Json === null)) throw missingImages();
     return {
-      url: optionalText(entry.url),
-      b64_json: optionalText(entry.b64_json),
+      url,
+      b64_json: b64Json,
       revised_prompt: null,
     };
   });
@@ -370,7 +424,6 @@ export function normalizeAgnesResponse(
     created,
     data: images,
     size: formatPixel(request.size.pixel),
-    output_format: "png",
   };
 
   return { body, images, warnings };
@@ -389,6 +442,10 @@ export function mergeNormalizedResponses(responses: NormalizedResponse[]): Norma
 }
 
 const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+export type ImageInput =
+  | { kind: "file"; file: File }
+  | { kind: "url"; url: string };
 
 /** Parses an OpenAI-style multipart image edit request. */
 export async function parseImageRequestMultipart(
@@ -409,19 +466,19 @@ export async function parseImageRequestMultipart(
 
   let formData: FormData;
   try {
-    formData = await request.formData();
-  } catch {
+    formData = await readLimitedFormData(request, MAX_REQUEST_BYTES);
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
     throw invalid("request body is not valid multipart/form-data", "", "invalid_body");
   }
 
   const raw: Record<string, unknown> = {};
-  const files: File[] = [];
-  const urlImages: string[] = [];
+  const inputs: ImageInput[] = [];
 
   for (const [key, value] of formData.entries()) {
     if (key === "image" || key === "image[]" || key === "images") {
-      if (typeof value === "string") urlImages.push(value);
-      else files.push(value);
+      if (typeof value === "string") inputs.push({ kind: "url", url: value });
+      else inputs.push({ kind: "file", file: value });
       continue;
     }
     if (key === "mask") {
@@ -453,10 +510,10 @@ export async function parseImageRequestMultipart(
     }
   }
 
-  if (files.length + urlImages.length === 0) {
+  if (inputs.length === 0) {
     throw invalid("at least one image is required", "image", "missing_parameter");
   }
-  if (files.length + urlImages.length > MAX_INPUT_IMAGES) {
+  if (inputs.length > MAX_INPUT_IMAGES) {
     throw invalid(
       `at most ${MAX_INPUT_IMAGES} images are allowed`,
       "image",
@@ -464,10 +521,16 @@ export async function parseImageRequestMultipart(
     );
   }
 
-  const dataUris: string[] = [];
-  let totalBytes = 0;
+  const images: string[] = [];
   let firstBytes: Uint8Array | null = null;
-  for (const file of files) {
+  let totalBytes = 0;
+  for (let index = 0; index < inputs.length; index++) {
+    const input = inputs[index];
+    if (input.kind === "url") {
+      images.push(validateImageReference(input.url));
+      continue;
+    }
+    const file = input.file;
     if (!IMAGE_MIME_TYPES.has(file.type)) {
       throw invalid(
         `unsupported image type: ${file.type || "unknown"} (expected png, jpeg or webp)`,
@@ -480,8 +543,8 @@ export async function parseImageRequestMultipart(
     }
     totalBytes += file.size;
     const bytes = new Uint8Array(await file.arrayBuffer());
-    if (firstBytes === null) firstBytes = bytes;
-    dataUris.push(`data:${file.type};base64,${encodeBase64(bytes)}`);
+    if (index === 0) firstBytes = bytes;
+    images.push(`data:${file.type};base64,${encodeBase64(bytes)}`);
   }
   if (totalBytes > MAX_REQUEST_BYTES) {
     throw new ApiError(
@@ -496,10 +559,9 @@ export async function parseImageRequestMultipart(
   const rawSizeValue = typeof raw.size === "string" ? raw.size.trim() : "";
   const autoTrigger = rawSizeValue === "" || rawSizeValue.toLowerCase() === "auto";
   const reference = autoTrigger
-    ? (firstBytes ? readImageDimensions(firstBytes) : referenceFromImage(urlImages[0]))
+    ? (firstBytes ? readImageDimensions(firstBytes) : referenceFromImage(images[0]))
     : null;
 
-  const images = [...dataUris, ...urlImages].map(validateImageReference);
   raw.image = images;
 
   return parseImageRequestJson(raw, "edits", defaults, reference, options);

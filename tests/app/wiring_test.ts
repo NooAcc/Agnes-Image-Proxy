@@ -76,10 +76,10 @@ Deno.test("deep health reports a broken database", async () => {
     200,
   );
   broken = true;
-  assertEquals(
-    (await harness.handler(new Request("https://proxy.test/health?deep=1"))).status,
-    503,
-  );
+  const failed = await harness.handler(new Request("https://proxy.test/health?deep=1"));
+  assertEquals(failed.status, 503);
+  const body = await failed.text();
+  assert(!body.includes("db down"));
   base.close();
 });
 

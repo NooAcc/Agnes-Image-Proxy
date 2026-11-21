@@ -1,5 +1,8 @@
 /** Shared numeric limits. Keep in sync with the design document. */
 
+export const SCHEMA_VERSION = 2;
+export const DB_TIMEOUT_MS = 15_000;
+
 export const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
 export const MAX_INPUT_IMAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_INPUT_IMAGES = 16;
@@ -25,8 +28,11 @@ export const GALLERY_PAGE_SIZE = 24;
 export const GALLERY_PAGE_MAX = 100;
 
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+export const SESSION_RENEW_BEFORE_MS = 7 * 24 * 60 * 60 * 1000;
+export const SESSION_MAX_MS = 90 * 24 * 60 * 60 * 1000;
+export const LOGIN_RATE_WINDOW_MS = 60_000;
+export const LOGIN_RATE_LIMIT = 10;
 export const SETTINGS_CACHE_TTL_MS = 10_000;
-export const IMAGE_PARAM_MODE_TTL_MS = 10 * 60 * 1000;
 
 export const ACCOUNT_COOLDOWN_AUTH_MS = 15 * 60 * 1000;
 export const ACCOUNT_COOLDOWN_RATE_LIMIT_MS = 60 * 1000;

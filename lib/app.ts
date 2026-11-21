@@ -1,6 +1,6 @@
-import type { AccountStore } from "./accounts.ts";
+import type { AccountStore, ClaimedAccount } from "./accounts.ts";
 import type { Archiver } from "./archive.ts";
-import { readCookie, type SessionSigner, timingSafeEqual } from "./auth.ts";
+import { readCookie, type SessionService, timingSafeEqual } from "./auth.ts";
 import { ApiError } from "./errors.ts";
 import {
   addWarnings,
@@ -11,11 +11,11 @@ import {
   normalizePath,
   readJsonBody,
 } from "./http.ts";
-import { IMAGE_PARAM_MODE_TTL_MS } from "./limits.ts";
-import type { RequestLogInput, RequestLogStore } from "./logs.ts";
+import type { AttemptTrace, RequestLogInput, RequestLogStore, SubRequestTrace } from "./logs.ts";
 import { imageModelList } from "./model-catalog.ts";
 import type { ModelUsageStore } from "./model-usage.ts";
-import type { AccountPool, GatewayOptions } from "./pool.ts";
+import type { AccountPool, GatewayHooks, GatewayOptions } from "./pool.ts";
+import { selectFailure } from "./pool.ts";
 import {
   agnesPayload,
   type ImageEndpoint,
@@ -47,7 +47,7 @@ export interface HandlerOptions {
   modelUsage: ModelUsageStore;
   archiver: Archiver;
   apiKey: string;
-  session: SessionSigner;
+  session: SessionService;
   renderAdminPage?: () => string;
   renderLoginPage?: () => string;
   corsAllowedOrigins?: string[];
@@ -63,11 +63,40 @@ interface SubRequestSuccess {
   actualSizes: (PixelSize | null)[];
 }
 
-interface AttemptRecord {
-  index: number;
-  account: string | null;
-  status: number;
-  error?: string;
+type SubRequestOutcome =
+  | { ok: true; result: SubRequestSuccess; traces: AttemptTrace[] }
+  | { ok: false; error: unknown; traces: AttemptTrace[] };
+
+const MAX_TRACE_MESSAGE = 200;
+
+function truncateMessage(message: string): string {
+  return message.length > MAX_TRACE_MESSAGE ? message.slice(0, MAX_TRACE_MESSAGE) : message;
+}
+
+function attemptTrace(
+  account: ClaimedAccount,
+  error: unknown,
+  durationMs: number,
+): AttemptTrace {
+  if (error === null) {
+    return {
+      accountId: account.id,
+      accountName: account.name,
+      status: 200,
+      code: null,
+      durationMs,
+      message: null,
+    };
+  }
+  const apiError = error instanceof ApiError ? error : null;
+  return {
+    accountId: account.id,
+    accountName: account.name,
+    status: apiError?.status ?? 502,
+    code: apiError?.code ?? null,
+    durationMs,
+    message: truncateMessage(errorMessage(error)),
+  };
 }
 
 const JSON_TYPE = "application/json; charset=utf-8";
@@ -99,9 +128,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
   const renderAdminPage = options.renderAdminPage ?? (() => "<h1>Agnes console</h1>");
   const renderLoginPage = options.renderLoginPage ?? (() => "<h1>Login</h1>");
 
-  // `auto` mode keeps the last working placement for ten minutes.
-  let topLevelUntil = 0;
-
   const authorized = (request: Request): boolean => {
     const token = bearerToken(request);
     return token !== null && timingSafeEqual(token, options.apiKey);
@@ -111,7 +137,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     if (authorized(request)) return true;
     const token = readCookie(request, SESSION_COOKIE);
     if (!token) return false;
-    return await options.session.verify(token, now());
+    return (await options.session.verify(token, now())) !== null;
   };
 
   const applyCors = (request: Request, response: Response): Response => {
@@ -147,14 +173,49 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       });
       await options.modelUsage.record({
         model: parsed.model,
-        endpoint: parsed.endpoint,
         day: ts.slice(0, 10),
-        ok: input.ok,
         images: input.images,
+        requested: input.requested,
+        failed: input.failed,
         at: ts,
       });
     } catch (error) {
       console.error("request bookkeeping failed:", error);
+    }
+  }
+
+  async function writeParseFailure(
+    requestId: string,
+    endpoint: ImageEndpoint,
+    path: string,
+    startedAt: number,
+    error: unknown,
+  ): Promise<void> {
+    const apiError = error instanceof ApiError ? error : null;
+    try {
+      await options.logs.record({
+        requestId,
+        ts: now().toISOString(),
+        stage: "parse",
+        endpoint,
+        path,
+        model: null,
+        accountId: null,
+        accountName: null,
+        status: apiError?.status ?? 500,
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        requested: null,
+        images: 0,
+        failed: 0,
+        sizeRequest: null,
+        sizeActual: null,
+        errorCode: apiError?.code ?? "invalid_request",
+        error: apiError?.message ?? errorMessage(error),
+        attempts: [],
+      });
+    } catch (bookkeepingError) {
+      console.error("request bookkeeping failed:", bookkeepingError);
     }
   }
 
@@ -163,11 +224,9 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     settings: AppSettings,
     path: string,
     startedAt: number,
+    requestId: string,
   ): Promise<Response> {
-    const preferredMode = (): "nested" | "top_level" => {
-      if (settings.imageParamMode !== "auto") return settings.imageParamMode;
-      return now().getTime() < topLevelUntil ? "top_level" : "nested";
-    };
+    const preferredMode = settings.imageParamMode;
 
     const gatewayOptions: GatewayOptions = {
       timeoutMs: settings.requestTimeoutMs,
@@ -175,13 +234,16 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     };
 
     const attempt = async (
-      mode: "nested" | "top_level",
+      hooks: GatewayHooks,
     ): Promise<{ result: SubRequestSuccess; warnings: string[] }> => {
-      const gateway = options.pool.gateway(settings.agnesBaseUrl, undefined, gatewayOptions);
-      const result = await gateway.generate(agnesPayload(parsed, mode));
+      const gateway = options.pool.gateway(settings.agnesBaseUrl, hooks, gatewayOptions);
+      const result = await gateway.generate(agnesPayload(parsed, preferredMode));
       const normalized = normalizeAgnesResponse(result.body, parsed);
       const measured = await measureOutputImages(normalized.images, options.fetchImpl);
       if (measured.first) normalized.body.size = formatPixel(measured.first);
+      const mime = measured.mimes[0] ?? null;
+      if (mime) normalized.body.output_format = mime.split("/")[1];
+      else delete normalized.body.output_format;
       normalized.warnings.push(...measured.warnings);
       return {
         result: {
@@ -194,89 +256,98 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       };
     };
 
-    const runOnce = async (): Promise<SubRequestSuccess> => {
-      const mode = preferredMode();
-      let outcome: { result: SubRequestSuccess; warnings: string[] };
-      try {
-        outcome = await attempt(mode);
-      } catch (error) {
-        const shouldRetry = parsed.endpoint === "edits" &&
-          settings.imageParamMode === "auto" &&
-          mode === "nested" &&
-          error instanceof ApiError &&
-          error.status === 400;
-        if (!shouldRetry) throw error;
-        outcome = await attempt("top_level");
-        topLevelUntil = now().getTime() + IMAGE_PARAM_MODE_TTL_MS;
-      }
+    const runOnce = async (): Promise<SubRequestOutcome> => {
+      const traces: AttemptTrace[] = [];
+      const hooks: GatewayHooks = {
+        onAccountUsed(account, meta) {
+          traces.push(attemptTrace(account, null, meta.durationMs));
+        },
+        onAttemptFailed(account, error, meta) {
+          traces.push(attemptTrace(account, error, meta.durationMs));
+        },
+      };
 
       try {
-        await options.store.addImages(
-          outcome.result.account.id,
-          outcome.result.normalized.images.length,
-        );
-      } catch (error) {
-        console.error("account usage bookkeeping failed:", error);
-      }
+        const outcome = await attempt(hooks);
 
-      try {
-        await options.archiver.archive({
-          ts: now().toISOString(),
-          endpoint: parsed.endpoint,
-          model: parsed.model,
-          accountId: outcome.result.account.id,
-          accountName: outcome.result.account.name,
-          prompt: parsed.prompt,
-          size: formatPixel(parsed.size.pixel),
-          tier: parsed.size.tier,
-          ratio: parsed.size.derivedRatio,
-          images: outcome.result.normalized.images,
-        });
-      } catch (error) {
-        console.error("archive failed:", error);
-      }
+        try {
+          await options.store.recordUpstreamSuccess(
+            outcome.result.account.id,
+            outcome.result.normalized.images.length,
+          );
+        } catch (error) {
+          console.error("account usage bookkeeping failed:", error);
+        }
 
-      return outcome.result;
+        try {
+          await options.archiver.archive({
+            ts: now().toISOString(),
+            endpoint: parsed.endpoint,
+            model: parsed.model,
+            accountId: outcome.result.account.id,
+            accountName: outcome.result.account.name,
+            prompt: parsed.prompt,
+            size: formatPixel(parsed.size.pixel),
+            tier: parsed.size.tier,
+            ratio: parsed.size.derivedRatio,
+            images: outcome.result.normalized.images,
+          });
+        } catch (error) {
+          console.error("archive failed:", error);
+        }
+
+        return { ok: true, result: outcome.result, traces };
+      } catch (error) {
+        if (
+          traces.length === 0 && error instanceof ApiError &&
+          error.code === "no_available_accounts"
+        ) {
+          traces.push({
+            accountId: null,
+            accountName: null,
+            status: 503,
+            code: "no_available_accounts",
+            durationMs: 0,
+            message: null,
+          });
+        }
+        return { ok: false, error, traces };
+      }
     };
 
-    const settled = await Promise.allSettled(
+    const outcomes = await Promise.all(
       Array.from({ length: parsed.n }, () => runOnce()),
     );
 
     const successes: SubRequestSuccess[] = [];
     const failures: unknown[] = [];
-    const attempts: AttemptRecord[] = [];
+    const attempts: SubRequestTrace[] = outcomes.map((outcome, index) => ({
+      index,
+      traces: outcome.traces,
+    }));
 
-    settled.forEach((outcome, index) => {
-      if (outcome.status === "fulfilled") {
-        successes.push(outcome.value);
-        attempts.push({
-          index,
-          account: outcome.value.account.name,
-          status: outcome.value.status,
-        });
-      } else {
-        failures.push(outcome.reason);
-        attempts.push({
-          index,
-          account: null,
-          status: errorStatus(outcome.reason),
-          error: errorMessage(outcome.reason),
-        });
-      }
-    });
+    for (const outcome of outcomes) {
+      if (outcome.ok) successes.push(outcome.result);
+      else failures.push(outcome.error);
+    }
+
+    const sizeRequest = formatRequestSize(parsed.size);
 
     if (successes.length === 0) {
-      const first = failures[0];
+      const selected = selectFailure(failures, failures.length, { prefix: false });
       await writeLog(
         {
-          status: errorStatus(first),
+          requestId,
+          stage: "dispatch",
+          status: selected.status,
           ok: false,
           requested: parsed.n,
           images: 0,
           failed: failures.length,
-          size: formatRequestSize(parsed.size),
-          error: errorMessage(first),
+          sizeRequest,
+          sizeActual: null,
+          errorCode: selected.code ?? "invalid_request",
+          error: selected.message,
           attempts,
         },
         parsed,
@@ -284,7 +355,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         startedAt,
         null,
       );
-      throw first;
+      throw selected;
     }
 
     const merged = mergeNormalizedResponses(successes.map((success) => success.normalized));
@@ -317,12 +388,16 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     const ok = failures.length === 0;
     await writeLog(
       {
+        requestId,
+        stage: "complete",
         status: 200,
         ok,
         requested: parsed.n,
         images: merged.images.length,
         failed: failures.length,
-        size: logSize,
+        sizeRequest,
+        sizeActual: logSize,
+        errorCode: failures.length > 0 ? "partial_success" : null,
         error: failures.length > 0
           ? failures.map((failure) => errorMessage(failure)).join("; ")
           : null,
@@ -341,6 +416,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     request: Request,
     path: string,
     startedAt: number,
+    requestId: string,
   ): Promise<Response> {
     if (path === "/v1/models") {
       if (request.method !== "GET" && request.method !== "HEAD") {
@@ -371,34 +447,40 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       const contentType = request.headers.get("content-type") ?? "";
 
       let parsed: ParsedImageRequest;
-      if (endpoint === "edits" && contentType.toLowerCase().startsWith("multipart/form-data")) {
-        parsed = await parseImageRequestMultipart(request, defaults, {
-          fetchImpl: options.fetchImpl,
-        });
-      } else {
-        if (
-          endpoint === "generations" && contentType.toLowerCase().startsWith("multipart/form-data")
-        ) {
-          throw new ApiError(
-            400,
-            "generations requires an application/json body",
-            "invalid_request_error",
-            null,
-            "unsupported_content_type",
+      try {
+        if (endpoint === "edits" && contentType.toLowerCase().startsWith("multipart/form-data")) {
+          parsed = await parseImageRequestMultipart(request, defaults, {
+            fetchImpl: options.fetchImpl,
+          });
+        } else {
+          if (
+            endpoint === "generations" &&
+            contentType.toLowerCase().startsWith("multipart/form-data")
+          ) {
+            throw new ApiError(
+              400,
+              "generations requires an application/json body",
+              "invalid_request_error",
+              null,
+              "unsupported_content_type",
+            );
+          }
+          parsed = await parseImageRequestJson(
+            await readJsonBody(request),
+            endpoint,
+            defaults,
+            undefined,
+            {
+              fetchImpl: options.fetchImpl,
+            },
           );
         }
-        parsed = await parseImageRequestJson(
-          await readJsonBody(request),
-          endpoint,
-          defaults,
-          undefined,
-          {
-            fetchImpl: options.fetchImpl,
-          },
-        );
+      } catch (error) {
+        await writeParseFailure(requestId, endpoint, path, startedAt, error);
+        throw error;
       }
 
-      return await handleImageRequest(parsed, settings, path, startedAt);
+      return await handleImageRequest(parsed, settings, path, startedAt, requestId);
     }
 
     throw new ApiError(404, "not found", "invalid_request_error", null, "unknown_path");
@@ -438,8 +520,15 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         try {
           await options.readyCheck();
         } catch (error) {
+          console.error("deep health check failed:", error);
           return errorResponse(
-            new ApiError(503, `database unavailable: ${errorMessage(error)}`, "server_error"),
+            new ApiError(
+              503,
+              "database unavailable",
+              "server_error",
+              null,
+              "database_unavailable",
+            ),
           );
         }
       }
@@ -447,10 +536,14 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     }
 
     if (path === "/admin") {
-      if (await hasAdminAccess(request)) {
-        return htmlResponse(renderAdminPage());
+      try {
+        if (await hasAdminAccess(request)) {
+          return htmlResponse(renderAdminPage());
+        }
+        return htmlResponse(renderLoginPage());
+      } catch (error) {
+        return errorResponse(error);
       }
-      return htmlResponse(renderLoginPage());
     }
 
     if (path.startsWith("/admin/")) {
@@ -463,14 +556,19 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     }
 
     if (path.startsWith("/v1/")) {
+      const isImagePath = path === "/v1/images/generations" || path === "/v1/images/edits" ||
+        path === "/v1/images/edit";
+      const requestId = isImagePath ? crypto.randomUUID() : null;
       const response = await (async () => {
         try {
-          return await handleDataPlane(request, path, startedAt);
+          return await handleDataPlane(request, path, startedAt, requestId ?? "");
         } catch (error) {
           return errorResponse(error);
         }
       })();
-      return applyCors(request, response);
+      const final = applyCors(request, response);
+      if (requestId) final.headers.set("x-request-id", requestId);
+      return final;
     }
 
     return errorResponse(

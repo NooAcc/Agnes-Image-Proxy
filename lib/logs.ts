@@ -1,41 +1,65 @@
 import { executeBatch, type SqlArg, type SqlExecutor } from "./sql.ts";
 import { LOG_LIST_LIMIT, REQUEST_LOG_LIMIT } from "./limits.ts";
 
+export type LogStage = "parse" | "dispatch" | "complete";
+
+export interface AttemptTrace {
+  accountId: number | null;
+  accountName: string | null;
+  status: number;
+  code: string | null;
+  durationMs: number;
+  message: string | null;
+}
+
+export interface SubRequestTrace {
+  index: number;
+  traces: AttemptTrace[];
+}
+
 export interface RequestLogInput {
+  requestId: string;
   ts: string;
+  stage: LogStage;
   endpoint: string;
   path: string;
-  model: string;
+  model: string | null;
   accountId: number | null;
   accountName: string | null;
   status: number;
   ok: boolean;
   durationMs: number;
-  requested: number;
+  requested: number | null;
   images: number;
   failed: number;
-  size: string | null;
+  sizeRequest: string | null;
+  sizeActual: string | null;
+  errorCode: string | null;
   error: string | null;
-  attempts: unknown;
+  attempts: SubRequestTrace[];
 }
 
 export interface RequestLogRow {
   id: number;
+  requestId: string;
   ts: string;
+  stage: LogStage;
   endpoint: string;
   path: string | null;
-  model: string;
+  model: string | null;
   accountId: number | null;
   accountName: string | null;
   status: number;
   ok: boolean;
   durationMs: number;
-  requested: number;
+  requested: number | null;
   images: number;
   failed: number;
-  size: string | null;
+  sizeRequest: string | null;
+  sizeActual: string | null;
+  errorCode: string | null;
   error: string | null;
-  attempts: unknown;
+  attempts: SubRequestTrace[] | null;
 }
 
 export interface RequestLogStore {
@@ -45,32 +69,45 @@ export interface RequestLogStore {
   clear(): Promise<void>;
 }
 
-function toRow(row: Record<string, unknown>): RequestLogRow {
-  let attempts: unknown = null;
-  if (typeof row.attempts === "string" && row.attempts !== "") {
-    try {
-      attempts = JSON.parse(row.attempts);
-    } catch {
-      attempts = row.attempts;
-    }
+function optionalString(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+function optionalNumber(value: unknown): number | null {
+  return value === null || value === undefined ? null : Number(value);
+}
+
+function parseAttempts(value: unknown): SubRequestTrace[] | null {
+  if (typeof value !== "string" || value === "") return null;
+  try {
+    return JSON.parse(value) as SubRequestTrace[];
+  } catch {
+    return null;
   }
+}
+
+function toRow(row: Record<string, unknown>): RequestLogRow {
   return {
     id: Number(row.id),
+    requestId: String(row.request_id),
     ts: String(row.ts),
+    stage: String(row.stage) as LogStage,
     endpoint: String(row.endpoint),
-    path: row.path === null ? null : String(row.path),
-    model: String(row.model),
-    accountId: row.account_id === null ? null : Number(row.account_id),
-    accountName: row.account_name === null ? null : String(row.account_name),
+    path: optionalString(row.path),
+    model: optionalString(row.model),
+    accountId: optionalNumber(row.account_id),
+    accountName: optionalString(row.account_name),
     status: Number(row.status),
     ok: Number(row.ok) === 1,
     durationMs: Number(row.duration_ms),
-    requested: Number(row.requested),
+    requested: optionalNumber(row.requested),
     images: Number(row.images),
     failed: Number(row.failed),
-    size: row.size === null ? null : String(row.size),
-    error: row.error === null ? null : String(row.error),
-    attempts,
+    sizeRequest: optionalString(row.size_request),
+    sizeActual: optionalString(row.size_actual),
+    errorCode: optionalString(row.error_code),
+    error: optionalString(row.error),
+    attempts: parseAttempts(row.attempts),
   };
 }
 
@@ -78,7 +115,9 @@ export function createRequestLogStore(sql: SqlExecutor): RequestLogStore {
   return {
     async record(input) {
       const args: SqlArg[] = [
+        input.requestId,
         input.ts,
+        input.stage,
         input.endpoint,
         input.path,
         input.model,
@@ -90,16 +129,19 @@ export function createRequestLogStore(sql: SqlExecutor): RequestLogStore {
         input.requested,
         input.images,
         input.failed,
-        input.size,
+        input.sizeRequest,
+        input.sizeActual,
+        input.errorCode,
         input.error,
         JSON.stringify(input.attempts ?? []),
       ];
       await executeBatch(sql, [
         {
           sql: `INSERT INTO request_log
-            (ts, endpoint, path, model, account_id, account_name, status, ok, duration_ms,
-             requested, images, failed, size, error, attempts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (request_id, ts, stage, endpoint, path, model, account_id, account_name, status, ok,
+             duration_ms, requested, images, failed, size_request, size_actual, error_code, error,
+             attempts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           args,
         },
         {

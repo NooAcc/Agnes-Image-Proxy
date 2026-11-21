@@ -123,6 +123,41 @@ Deno.test("sniffImageMime detects PNG, JPEG and WebP", () => {
   assertEquals(sniffImageMime(new Uint8Array([1, 2, 3])), null);
 });
 
+Deno.test("an SVG download is recorded as an unarchived octet-stream row", async () => {
+  const { store, rows } = fakeGallery();
+  const archiver = createArchiver({
+    gallery: store,
+    fetchImpl: () =>
+      Promise.resolve(
+        new Response("<svg xmlns='http://www.w3.org/2000/svg'/>", {
+          status: 200,
+          headers: { "content-type": "image/svg+xml" },
+        }),
+      ),
+  });
+  await archiver.archive(request([{ url: "https://example.com/a.svg", b64_json: null }]));
+  assertEquals(rows[0].bytes, null);
+  assertEquals(rows[0].mime, "application/octet-stream");
+  assertEquals(rows[0].sourceUrl, "https://example.com/a.svg");
+});
+
+Deno.test("an SVG or garbage b64 payload is not stored as bytes", async () => {
+  const { store, rows } = fakeGallery();
+  const archiver = createArchiver({ gallery: store });
+  const svg = encodeBase64(
+    new TextEncoder().encode("<svg xmlns='http://www.w3.org/2000/svg'/>"),
+  );
+  await archiver.archive(request([{ url: null, b64_json: svg }]));
+  await archiver.archive(
+    request([{ url: null, b64_json: encodeBase64(new Uint8Array([1, 2, 3])) }]),
+  );
+  assertEquals(rows[0].bytes, null);
+  assertEquals(rows[0].mime, "application/octet-stream");
+  assertEquals(rows[0].sourceUrl, null);
+  assertEquals(rows[1].bytes, null);
+  assertEquals(rows[1].mime, "application/octet-stream");
+});
+
 Deno.test("isPublicHttpsUrl rejects loopback and private hosts", () => {
   assertEquals(isPublicHttpsUrl("https://platform-outputs.agnes-ai.space/a.png"), true);
   assertEquals(isPublicHttpsUrl("https://example.com/a.png"), true);

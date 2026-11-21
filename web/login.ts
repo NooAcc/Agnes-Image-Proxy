@@ -37,7 +37,9 @@ const LOGIN_SCRIPT = String.raw`
       if (!response.ok) {
         var body = null;
         try { body = await response.json(); } catch (error) { body = null; }
-        var message = response.status === 401
+        var message = response.status === 429
+          ? "尝试次数过多，请 60 秒后重试"
+          : response.status === 401
           ? "密钥无效"
           : (body && body.error && body.error.message
             ? body.error.message

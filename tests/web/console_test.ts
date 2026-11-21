@@ -45,6 +45,9 @@ Deno.test("settings form exposes every setting", () => {
   }
   assert(html.includes('type="radio" name="defaultSize" value="4K"'));
   assert(!html.includes('name="defaultRatio"'));
+  assert(!html.includes('name="imageParamMode" value="auto"'));
+  assert(html.includes('name="imageParamMode" value="nested"'));
+  assert(html.includes('name="imageParamMode" value="top_level"'));
   assert(html.includes('data-role="settings-status"'));
 });
 
@@ -73,4 +76,13 @@ Deno.test("overview renders trend chart and model usage hooks", () => {
   assert(html.includes('data-action="overview-today"'));
   assert(html.includes("/admin/api/overview"));
   assert(html.includes("data.trend"));
+});
+
+Deno.test("console uses upstream counters and five-field metrics", () => {
+  const html = renderAdminPage();
+  assert(html.includes("上游调用"));
+  assert(html.includes("upstreamRequests"));
+  assert(html.includes("upstreamImages"));
+  assert(html.includes("partials"));
+  assert(html.includes("failures"));
 });

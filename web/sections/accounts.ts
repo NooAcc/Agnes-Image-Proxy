@@ -193,8 +193,8 @@ export const ACCOUNTS_SCRIPT = String.raw`
     if (account.failCount > 0) pills.append(A.badge("连续失败 " + account.failCount, "muted"));
 
     var metrics = A.el("div", "account-metrics");
-    metrics.append(metric("请求", account.requestCount));
-    metrics.append(metric("图片", account.imageCount));
+    metrics.append(metric("上游调用", account.upstreamRequests));
+    metrics.append(metric("图片", account.upstreamImages));
     metrics.append(metric("失败", account.failCount));
 
     var foot = A.el("div", "account-foot");

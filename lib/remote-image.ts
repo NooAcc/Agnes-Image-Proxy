@@ -1,5 +1,6 @@
 import { ApiError } from "./errors.ts";
 import { readImageDimensions } from "./image-dimensions.ts";
+import { sniffImageMime } from "./image-mime.ts";
 import {
   REMOTE_IMAGE_MAX_BYTES,
   REMOTE_IMAGE_MAX_REDIRECTS,
@@ -13,6 +14,11 @@ export interface FetchImageOptions {
   maxBytes?: number;
   maxRedirects?: number;
   allowHttp?: boolean;
+}
+
+export interface FetchedImage {
+  size: PixelSize;
+  mime: string | null;
 }
 
 function referenceError(message: string, code: string): ApiError {
@@ -37,10 +43,10 @@ function concat(chunks: Uint8Array[], total: number): Uint8Array {
   return bytes;
 }
 
-async function readDimensions(
+async function readHeader(
   response: Response,
   maxBytes: number,
-): Promise<PixelSize> {
+): Promise<FetchedImage> {
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > maxBytes) {
     throw referenceError("reference image is too large", "reference_image_too_large");
@@ -56,7 +62,7 @@ async function readDimensions(
     if (!dimensions) {
       throw referenceError("reference image format is unsupported", "reference_image_unsupported");
     }
-    return dimensions;
+    return { size: dimensions, mime: sniffImageMime(buffer) };
   }
 
   const chunks: Uint8Array[] = [];
@@ -70,10 +76,11 @@ async function readDimensions(
       throw referenceError("reference image is too large", "reference_image_too_large");
     }
     chunks.push(value);
-    const dimensions = readImageDimensions(concat(chunks, total));
+    const bytes = concat(chunks, total);
+    const dimensions = readImageDimensions(bytes);
     if (dimensions) {
       await reader.cancel();
-      return dimensions;
+      return { size: dimensions, mime: sniffImageMime(bytes) };
     }
   }
 
@@ -81,14 +88,14 @@ async function readDimensions(
 }
 
 /**
- * Fetches only the image header from a public URL and returns its pixel size.
- * Credentials, private hosts, non-image bodies and bodies over the byte limit
- * are rejected before or during the read.
+ * Fetches only the image header from a public URL and returns its pixel size
+ * and sniffed MIME. Credentials, private hosts, non-image bodies and bodies
+ * over the byte limit are rejected before or during the read.
  */
-export async function fetchImageDimensions(
+export async function fetchImageHeader(
   url: string,
   options: FetchImageOptions = {},
-): Promise<PixelSize> {
+): Promise<FetchedImage> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? REMOTE_IMAGE_TIMEOUT_MS;
   const maxBytes = options.maxBytes ?? REMOTE_IMAGE_MAX_BYTES;
@@ -123,7 +130,7 @@ export async function fetchImageDimensions(
     if (!response.ok) throw unavailable();
 
     try {
-      return await readDimensions(response, maxBytes);
+      return await readHeader(response, maxBytes);
     } catch (error) {
       if (error instanceof ApiError) throw error;
       throw unavailable();
@@ -133,16 +140,32 @@ export async function fetchImageDimensions(
   throw unavailable();
 }
 
+/** Like fetchImageHeader, but only the pixel size. */
+export async function fetchImageDimensions(
+  url: string,
+  options: FetchImageOptions = {},
+): Promise<PixelSize> {
+  return (await fetchImageHeader(url, options)).size;
+}
+
+/** Like fetchImageHeader, but never throws; failures become null. */
+export async function tryFetchImageHeader(
+  url: string,
+  options: FetchImageOptions = {},
+): Promise<FetchedImage | null> {
+  try {
+    return await fetchImageHeader(url, options);
+  } catch {
+    return null;
+  }
+}
+
 /** Like fetchImageDimensions, but never throws; failures become null. */
 export async function tryFetchImageDimensions(
   url: string,
   options: FetchImageOptions = {},
 ): Promise<PixelSize | null> {
-  try {
-    return await fetchImageDimensions(url, options);
-  } catch {
-    return null;
-  }
+  return (await tryFetchImageHeader(url, options))?.size ?? null;
 }
 
 function isPublicIPv4(host: string): boolean {

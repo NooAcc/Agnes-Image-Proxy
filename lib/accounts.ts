@@ -1,5 +1,15 @@
 import { ApiError } from "./errors.ts";
+import { SCHEMA_VERSION } from "./limits.ts";
 import { executeBatch, type SqlArg, type SqlExecutor } from "./sql.ts";
+
+const BUSINESS_TABLES = [
+  "accounts",
+  "request_log",
+  "model_usage_daily",
+  "gallery",
+  "settings",
+  "auth_state",
+];
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS accounts (
@@ -13,25 +23,29 @@ const SCHEMA = [
     fail_count INTEGER NOT NULL DEFAULT 0,
     last_used_at TEXT,
     use_seq INTEGER NOT NULL DEFAULT 0,
-    request_count INTEGER NOT NULL DEFAULT 0,
-    image_count INTEGER NOT NULL DEFAULT 0,
+    upstream_requests INTEGER NOT NULL DEFAULT 0,
+    upstream_images INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS request_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT NOT NULL,
     ts TEXT NOT NULL,
+    stage TEXT NOT NULL,
     endpoint TEXT NOT NULL,
     path TEXT,
-    model TEXT NOT NULL,
+    model TEXT,
     account_id INTEGER,
     account_name TEXT,
     status INTEGER NOT NULL,
     ok INTEGER NOT NULL,
     duration_ms INTEGER NOT NULL,
-    requested INTEGER NOT NULL,
-    images INTEGER NOT NULL,
-    failed INTEGER NOT NULL,
-    size TEXT,
+    requested INTEGER,
+    images INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    size_request TEXT,
+    size_actual TEXT,
+    error_code TEXT,
     error TEXT,
     attempts TEXT
   )`,
@@ -39,7 +53,9 @@ const SCHEMA = [
     model TEXT NOT NULL,
     day TEXT NOT NULL,
     requests INTEGER NOT NULL DEFAULT 0,
-    errors INTEGER NOT NULL DEFAULT 0,
+    successes INTEGER NOT NULL DEFAULT 0,
+    partials INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
     images INTEGER NOT NULL DEFAULT 0,
     last_used_at TEXT NOT NULL,
     PRIMARY KEY (model, day)
@@ -67,10 +83,71 @@ const SCHEMA = [
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS auth_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
 ];
 
 export async function ensureSchema(sql: SqlExecutor): Promise<void> {
+  await sql.execute(
+    "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+  );
+
+  const versionRows = (await sql.execute(
+    "SELECT value FROM schema_meta WHERE key = 'version'",
+  )).rows;
+  if (versionRows.length > 0) {
+    const found = String(versionRows[0].value);
+    if (found !== String(SCHEMA_VERSION)) {
+      throw new Error(
+        `schema version mismatch: found ${found}, expected ${SCHEMA_VERSION}; run deno task reset-db`,
+      );
+    }
+  } else {
+    const existing = await sql.execute(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${
+        BUSINESS_TABLES.map(() => "?").join(", ")
+      })`,
+      BUSINESS_TABLES,
+    );
+    if (existing.rows.length > 0) {
+      throw new Error(
+        "schema version missing on a non-empty database; run deno task reset-db",
+      );
+    }
+    await sql.execute(
+      "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', ?)",
+      [String(SCHEMA_VERSION)],
+    );
+    const confirmed = (await sql.execute(
+      "SELECT value FROM schema_meta WHERE key = 'version'",
+    )).rows[0];
+    const stored = String(confirmed?.value ?? "");
+    if (stored !== String(SCHEMA_VERSION)) {
+      throw new Error(
+        `schema version mismatch: found ${stored}, expected ${SCHEMA_VERSION}; run deno task reset-db`,
+      );
+    }
+  }
+
   await executeBatch(sql, SCHEMA.map((statement) => ({ sql: statement })));
+  await sql.execute(
+    `INSERT OR IGNORE INTO auth_state (key, value, updated_at)
+     VALUES ('session_epoch', '1', ?)`,
+    [new Date().toISOString()],
+  );
+}
+
+/** Drops every business table and recreates the current schema. */
+export async function resetSchema(sql: SqlExecutor): Promise<void> {
+  const tables = [...BUSINESS_TABLES, "schema_meta"];
+  await executeBatch(
+    sql,
+    tables.map((table) => ({ sql: `DROP TABLE IF EXISTS ${table}` })),
+  );
+  await ensureSchema(sql);
 }
 
 export interface AccountRecord {
@@ -82,8 +159,8 @@ export interface AccountRecord {
   cooldownUntil: string | null;
   failCount: number;
   lastUsedAt: string | null;
-  requestCount: number;
-  imageCount: number;
+  upstreamRequests: number;
+  upstreamImages: number;
   createdAt: string;
 }
 
@@ -109,9 +186,9 @@ export interface AccountStore {
   remove(id: number): Promise<boolean>;
   claim(excludeIds?: number[]): Promise<ClaimedAccount | null>;
   resetHealth(id: number): Promise<boolean>;
-  markHealthy(id: number): Promise<void>;
-  recordSuccess(id: number): Promise<void>;
-  addImages(id: number, count: number): Promise<void>;
+  markHealthy(id: number, expectedFailCount: number): Promise<void>;
+  recordSuccess(id: number, expectedFailCount: number): Promise<void>;
+  recordUpstreamSuccess(id: number, images: number): Promise<void>;
   recordFailure(id: number, cooldownMs: number): Promise<void>;
 }
 
@@ -131,8 +208,8 @@ function toRecord(row: Record<string, unknown>): AccountRecord {
     cooldownUntil: row.cooldown_until === null ? null : String(row.cooldown_until),
     failCount: Number(row.fail_count),
     lastUsedAt: row.last_used_at === null ? null : String(row.last_used_at),
-    requestCount: Number(row.request_count),
-    imageCount: Number(row.image_count),
+    upstreamRequests: Number(row.upstream_requests),
+    upstreamImages: Number(row.upstream_images),
     createdAt: String(row.created_at),
   };
 }
@@ -180,7 +257,8 @@ export function createAccountStore(sql: SqlExecutor): AccountStore {
 
       const inserted = await sql.execute(
         `INSERT INTO accounts
-          (seq, name, api_key, enabled, status, fail_count, request_count, image_count, created_at)
+          (seq, name, api_key, enabled, status, fail_count, upstream_requests, upstream_images,
+           created_at)
          VALUES
           ((SELECT COALESCE(MAX(seq), 0) + 1 FROM accounts), ?, ?, 1, 'healthy', 0, 0, 0, ?)
          RETURNING id`,
@@ -278,24 +356,29 @@ export function createAccountStore(sql: SqlExecutor): AccountStore {
       return result.rowsAffected > 0;
     },
 
-    async markHealthy(id) {
+    async markHealthy(id, expectedFailCount) {
       await sql.execute(
-        "UPDATE accounts SET status = 'healthy', fail_count = 0, cooldown_until = NULL WHERE id = ?",
-        [id],
+        `UPDATE accounts SET status = 'healthy', fail_count = 0, cooldown_until = NULL
+          WHERE id = ? AND fail_count = ?`,
+        [id, expectedFailCount],
       );
     },
 
-    async recordSuccess(id) {
+    async recordSuccess(id, expectedFailCount) {
       await sql.execute(
-        "UPDATE accounts SET status = 'healthy', fail_count = 0, cooldown_until = NULL WHERE id = ?",
-        [id],
+        `UPDATE accounts SET status = 'healthy', fail_count = 0, cooldown_until = NULL
+          WHERE id = ? AND fail_count = ?`,
+        [id, expectedFailCount],
       );
     },
 
-    async addImages(id, count) {
+    async recordUpstreamSuccess(id, images) {
       await sql.execute(
-        "UPDATE accounts SET request_count = request_count + 1, image_count = image_count + ? WHERE id = ?",
-        [count, id],
+        `UPDATE accounts
+            SET upstream_requests = upstream_requests + 1,
+                upstream_images = upstream_images + ?
+          WHERE id = ?`,
+        [images, id],
       );
     },
 

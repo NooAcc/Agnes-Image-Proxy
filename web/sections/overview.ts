@@ -16,7 +16,7 @@ export const OVERVIEW_HTML = `
     <div class="stat">
       <div class="stat-label">请求</div>
       <div class="stat-value" data-role="stat-attempts">0</div>
-      <div class="stat-meta" data-role="stat-attempts-meta">成功 0 · 失败 0</div>
+      <div class="stat-meta" data-role="stat-attempts-meta">成功 0 · 部分 0 · 失败 0</div>
     </div>
     <div class="stat">
       <div class="stat-label">图片</div>
@@ -38,12 +38,12 @@ export const OVERVIEW_HTML = `
     <div class="card-head">
       <div>
         <div class="card-title">近 14 天用量</div>
-        <p>绿色为成功请求，红色为失败请求；悬停或聚焦柱状图查看每日明细。</p>
+        <p>绿色为完全成功，黄色为部分成功，红色为失败；悬停或聚焦柱状图查看每日明细。</p>
       </div>
       <div class="trend-readout" data-role="trend-readout" aria-live="polite">聚焦柱状图查看每日明细</div>
     </div>
     <div class="chart" data-role="trend-chart" role="group" aria-label="近 14 天每日请求与失败"></div>
-    <div class="chart-legend"><span><i class="ok"></i>成功请求</span><span><i class="err"></i>失败请求</span></div>
+    <div class="chart-legend"><span><i class="ok"></i>完全成功</span><span><i class="partial"></i>部分成功</span><span><i class="err"></i>失败</span></div>
   </div>
   <div class="card">
     <div class="card-head">
@@ -76,8 +76,8 @@ export const OVERVIEW_SCRIPT = String.raw`
     if (target) target.textContent = value;
   }
 
-  function setErrorRate(errors, attempts) {
-    var rate = attempts === 0 ? 0 : (errors / attempts) * 100;
+  function setErrorRate(failures, requests) {
+    var rate = requests === 0 ? 0 : (failures / requests) * 100;
     var display = rate === 0 ? "0" : (rate < 10 ? rate.toFixed(1) : Math.round(rate).toString());
     var value = node("stat-error-rate");
     if (value) value.replaceChildren(document.createTextNode(display), A.el("span", "unit", "%"));
@@ -89,13 +89,13 @@ export const OVERVIEW_SCRIPT = String.raw`
   }
 
   function renderTotals(data) {
-    var attempts = data.totals.requests + data.totals.errors;
-    setStat("stat-attempts", A.fmtNumber(attempts));
-    setStat("stat-attempts-meta", "成功 " + A.fmtNumber(data.totals.requests) + " · 失败 " +
-      A.fmtNumber(data.totals.errors));
-    setStat("stat-images", A.fmtNumber(data.totals.images));
-    setErrorRate(data.totals.errors, attempts);
-    setStat("stat-error-meta", A.fmtNumber(data.totals.errors) + " 次失败请求");
+    var totals = data.totals;
+    setStat("stat-attempts", A.fmtNumber(totals.requests));
+    setStat("stat-attempts-meta", "成功 " + A.fmtNumber(totals.successes) + " · 部分 " +
+      A.fmtNumber(totals.partials) + " · 失败 " + A.fmtNumber(totals.failures));
+    setStat("stat-images", A.fmtNumber(totals.images));
+    setErrorRate(totals.failures, totals.requests);
+    setStat("stat-error-meta", A.fmtNumber(totals.failures) + " 次失败请求");
     var keys = node("stat-keys");
     if (keys) {
       keys.replaceChildren(
@@ -117,17 +117,18 @@ export const OVERVIEW_SCRIPT = String.raw`
     chart.replaceChildren();
     var max = 1;
     for (var i = 0; i < state.trend.length; i++) {
-      var total = state.trend[i].requests + state.trend[i].errors;
+      var total = state.trend[i].requests;
       if (total > max) max = total;
     }
     for (var j = 0; j < state.trend.length; j++) {
       var day = state.trend[j];
-      var sum = day.requests + day.errors;
+      var sum = day.requests;
+      var full = Math.max(0, day.successes - day.partials);
       var col = A.el("div", "bar-col");
       col.tabIndex = 0;
       col.setAttribute("role", "img");
-      col.setAttribute("aria-label", day.day + "：请求 " + sum + " 次，成功 " + day.requests +
-        "，失败 " + day.errors + "，图片 " + day.images + " 张");
+      col.setAttribute("aria-label", day.day + "：请求 " + sum + " 次，完全成功 " + full +
+        "，部分成功 " + day.partials + "，失败 " + day.failures + "，图片 " + day.images + " 张");
       if (day.day === state.day) col.classList.add("is-selected");
 
       var track = A.el("div", "bar-track");
@@ -137,18 +138,23 @@ export const OVERVIEW_SCRIPT = String.raw`
         stack.append(A.el("span", "bar-zero"));
       } else {
         stack.style.height = Math.max(4, Math.round((sum / max) * 100)) + "%";
-        if (day.errors > 0) {
-          var errShare = Math.round((day.errors / sum) * 100);
+        var failedShare = Math.round((day.failures / sum) * 100);
+        var partialShare = Math.round((day.partials / sum) * 100);
+        var fullShare = 100 - failedShare - partialShare;
+        if (failedShare > 0) {
           var err = A.el("span", "bar-seg err");
-          err.style.height = errShare + "%";
+          err.style.height = failedShare + "%";
           stack.append(err);
+        }
+        if (partialShare > 0) {
+          var partial = A.el("span", "bar-seg partial");
+          partial.style.height = partialShare + "%";
+          stack.append(partial);
+        }
+        if (fullShare > 0) {
           var ok = A.el("span", "bar-seg ok");
-          ok.style.height = (100 - errShare) + "%";
+          ok.style.height = fullShare + "%";
           stack.append(ok);
-        } else {
-          var okOnly = A.el("span", "bar-seg ok");
-          okOnly.style.height = "100%";
-          stack.append(okOnly);
         }
       }
       track.append(stack);
@@ -159,9 +165,10 @@ export const OVERVIEW_SCRIPT = String.raw`
         function readout() {
           var readoutNode = node("trend-readout");
           if (!readoutNode) return;
-          var sum = entry.requests + entry.errors;
-          readoutNode.textContent = entry.day + " · 请求 " + sum + " · 成功 " + entry.requests +
-            " · 失败 " + entry.errors + " · 图片 " + entry.images + " 张";
+          var fully = Math.max(0, entry.successes - entry.partials);
+          readoutNode.textContent = entry.day + " · 请求 " + entry.requests + " · 完全成功 " +
+            fully + " · 部分成功 " + entry.partials + " · 失败 " + entry.failures +
+            " · 图片 " + entry.images + " 张";
         }
         column.addEventListener("mouseenter", readout);
         column.addEventListener("focus", readout);
@@ -185,7 +192,7 @@ export const OVERVIEW_SCRIPT = String.raw`
     var max = 1;
     var attempts = 0;
     for (var i = 0; i < data.models.length; i++) {
-      var total = data.models[i].requests + data.models[i].errors;
+      var total = data.models[i].requests;
       attempts += total;
       if (total > max) max = total;
     }
@@ -197,15 +204,17 @@ export const OVERVIEW_SCRIPT = String.raw`
     }
     for (var j = 0; j < data.models.length; j++) {
       var model = data.models[j];
-      var used = model.requests + model.errors;
+      var used = model.requests;
       var row = A.el("div", "model-row");
       var left = A.el("div");
       var name = A.el("div", "model-name");
       name.append(A.el("span", "mono", model.id));
       left.append(name);
       var stats = A.el("div", "model-stats");
-      stats.append(metric("成功", model.requests));
-      stats.append(metric("失败", model.errors));
+      stats.append(metric("请求", model.requests));
+      stats.append(metric("成功", model.successes));
+      stats.append(metric("部分", model.partials));
+      stats.append(metric("失败", model.failures));
       stats.append(metric("图片", model.images));
       left.append(stats);
 

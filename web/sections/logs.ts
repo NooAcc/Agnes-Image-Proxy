@@ -92,7 +92,7 @@ export const LOGS_SCRIPT = String.raw`
       if (state.filter === "ok" && !entry.ok) return false;
       if (state.filter === "bad" && entry.ok) return false;
       if (!query) return true;
-      var haystack = [entry.model, entry.endpoint, entry.accountName, entry.error, entry.path, entry.status]
+      var haystack = [entry.model, entry.endpoint, entry.accountName, entry.error, entry.path, entry.status, entry.requestId, entry.errorCode, entry.stage]
         .filter(Boolean).join(" ").toLowerCase();
       return haystack.indexOf(query) !== -1;
     });
@@ -131,7 +131,9 @@ export const LOGS_SCRIPT = String.raw`
       status.append(A.badge(String(entry.status), entry.ok ? "ok" : "bad"));
       row.append(status);
 
-      var images = entry.images + "/" + entry.requested;
+      var images = entry.requested === null
+        ? String(entry.images)
+        : entry.images + "/" + entry.requested;
       if (entry.failed > 0) images += "（失败 " + entry.failed + "）";
       row.append(cell("图片", images, "num"));
       row.append(cell("耗时", A.fmtDuration(entry.durationMs), "num mono"));
@@ -197,16 +199,20 @@ export const LOGS_SCRIPT = String.raw`
     var grid = node("log-detail-grid");
     if (!grid) return;
     grid.replaceChildren();
+    var sizeText = [entry.sizeRequest, entry.sizeActual].filter(Boolean).join(" → ") || "—";
     var rows = [
+      ["请求 ID", entry.requestId || "—"],
       ["时间", A.fmtTime(entry.ts)],
+      ["阶段", entry.stage || "—"],
       ["端点", entry.endpoint],
       ["路径", entry.path || "—"],
-      ["模型", entry.model],
+      ["模型", entry.model || "—"],
       ["状态", String(entry.status)],
+      ["错误码", entry.errorCode || "—"],
       ["耗时", A.fmtDuration(entry.durationMs)],
       ["账号", entry.accountName || "—"],
-      ["尺寸", entry.size || "—"],
-      ["图片", entry.images + " / " + entry.requested],
+      ["尺寸", sizeText],
+      ["图片", entry.requested === null ? String(entry.images) : entry.images + " / " + entry.requested],
       ["失败", String(entry.failed)],
     ];
     for (var i = 0; i < rows.length; i++) {

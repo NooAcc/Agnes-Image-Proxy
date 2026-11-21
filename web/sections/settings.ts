@@ -56,11 +56,10 @@ export const SETTINGS_HTML = `
         <div class="field">
           <span class="field-label" id="imageParamMode-label">参考图参数位置</span>
           <div class="segmented" role="radiogroup" aria-labelledby="imageParamMode-label">
-            <label><input type="radio" name="imageParamMode" value="auto"><span>auto</span></label>
             <label><input type="radio" name="imageParamMode" value="nested"><span>nested</span></label>
             <label><input type="radio" name="imageParamMode" value="top_level"><span>top_level</span></label>
           </div>
-          <span class="hint">auto 先发嵌套；遇到 400 自动改用顶层，并在 10 分钟内记住可用位置。</span>
+          <span class="hint">上游两种位置都接受；只有特殊上游才需要 top_level。</span>
         </div>
       </div>
     </div>

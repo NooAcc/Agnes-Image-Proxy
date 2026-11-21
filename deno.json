@@ -7,7 +7,8 @@
     "check": "deno check main.ts lib web scripts tests",
     "start": "deno run --allow-env --allow-net main.ts",
     "preview": "deno run --allow-net --allow-env scripts/preview.ts",
-    "smoke": "deno run --allow-env --allow-net scripts/smoke.ts"
+    "smoke": "deno run --allow-env --allow-net scripts/smoke.ts",
+    "reset-db": "deno run --allow-env --allow-net scripts/reset.ts"
   },
   "imports": {
     "@std/assert": "jsr:@std/assert@^1.0.13",

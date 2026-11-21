@@ -1,12 +1,14 @@
 import { decodeBase64 } from "@std/encoding/base64";
 import type { GalleryInsert, GalleryStore } from "./gallery.ts";
 import { readImageDimensions } from "./image-dimensions.ts";
+import { sniffImageMime } from "./image-mime.ts";
 import { ARCHIVE_TIMEOUT_MS, MAX_ARCHIVE_BYTES } from "./limits.ts";
 import type { NormalizedImage } from "./protocol.ts";
 import { isPublicHttpsUrl } from "./remote-image.ts";
 import { formatPixel } from "./size.ts";
 
 export { isPublicHttpsUrl } from "./remote-image.ts";
+export { sniffImageMime } from "./image-mime.ts";
 
 export interface ArchiveRequest {
   ts: string;
@@ -34,34 +36,6 @@ export interface ArchiverOptions {
 }
 
 const MAX_REDIRECTS = 2;
-
-export function sniffImageMime(bytes: Uint8Array): string | null {
-  if (
-    bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e &&
-    bytes[3] === 0x47
-  ) {
-    return "image/png";
-  }
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-    return "image/jpeg";
-  }
-  if (
-    bytes.length >= 12 &&
-    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
-    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
-  ) {
-    return "image/webp";
-  }
-  return null;
-}
-
-function mimeFromUrl(url: string): string | null {
-  const path = url.split("?")[0].toLowerCase();
-  if (path.endsWith(".png")) return "image/png";
-  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
-  if (path.endsWith(".webp")) return "image/webp";
-  return null;
-}
 
 async function readBody(
   response: Response,
@@ -141,8 +115,6 @@ async function download(
 
     const sniffed = sniffImageMime(bytes);
     if (sniffed) return { bytes, mime: sniffed };
-    const contentType = response.headers.get("content-type")?.split(";")[0].trim() ?? "";
-    if (contentType.startsWith("image/")) return { bytes, mime: contentType };
     return null;
   }
   return null;
@@ -187,12 +159,13 @@ export function createArchiver(options: ArchiverOptions): Archiver {
 
       if (image.b64_json) {
         let bytes: Uint8Array | null = null;
-        let mime = "image/png";
+        let mime = "application/octet-stream";
         try {
           const decoded = decodeBase64(image.b64_json);
-          if (decoded.byteLength > 0) {
+          const sniffed = decoded.byteLength > 0 ? sniffImageMime(decoded) : null;
+          if (sniffed) {
             bytes = decoded;
-            mime = sniffImageMime(decoded) ?? mime;
+            mime = sniffed;
           }
         } catch {
           bytes = null;
@@ -203,7 +176,7 @@ export function createArchiver(options: ArchiverOptions): Archiver {
 
       if (image.url) {
         const downloaded = await download(image.url, fetchImpl, maxBytes, timeoutMs);
-        const mime = downloaded?.mime ?? mimeFromUrl(image.url) ?? "image/png";
+        const mime = downloaded?.mime ?? "application/octet-stream";
         await persist({
           ...base,
           size: sizeFromBytes(downloaded?.bytes ?? null),

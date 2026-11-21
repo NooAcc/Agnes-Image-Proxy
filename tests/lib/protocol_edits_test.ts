@@ -40,6 +40,56 @@ function pngFile(name = "a.png", width = 2, height = 3): File {
   return new File([pngHeader(width, height) as unknown as BlobPart], name, { type: "image/png" });
 }
 
+Deno.test("JSON edits reject more than 16 reference images", async () => {
+  const images = Array.from({ length: 17 }, (_, i) => ({
+    image_url: `https://a.example/${i}.png`,
+  }));
+  const error = await assertRejects(
+    () =>
+      parseImageRequestJson(
+        { model: "m", prompt: "x", images },
+        "edits",
+        defaults,
+      ),
+    ApiError,
+    "at most 16",
+  );
+  assertEquals(error.code, "too_many_images");
+});
+
+Deno.test("preserves interleaved multipart image order", async () => {
+  const parsed = await parseImageRequestMultipart(
+    multipart({}, [
+      ["image", pngFile("a.png", 2, 3)],
+      ["image", "https://a.example/b.png"],
+      ["image", pngFile("c.png", 4, 5)],
+    ]),
+    defaults,
+  );
+  assertEquals(parsed.images.length, 3);
+  assertEquals(parsed.images[0].startsWith("data:image/png;base64,"), true);
+  assertEquals(parsed.images[1], "https://a.example/b.png");
+  assertEquals(parsed.images[2].startsWith("data:image/png;base64,"), true);
+});
+
+Deno.test("auto size uses the first multipart entry even when it is a URL", async () => {
+  let calls = 0;
+  const fetchImpl = () => {
+    calls++;
+    return Promise.resolve(new Response(pngHeader(900, 1200) as unknown as BodyInit));
+  };
+  const parsed = await parseImageRequestMultipart(
+    multipart({ size: "auto" }, [
+      ["image", "https://a.example/first.png"],
+      ["image", pngFile("second.png", 10, 10)],
+    ]),
+    defaults,
+    { fetchImpl },
+  );
+  assertEquals(parsed.size.requestedPixel, { width: 900, height: 1200 });
+  assertEquals(calls, 1);
+});
+
 Deno.test("multipart accepts a single image and the image[] key", async () => {
   const single = await parseImageRequestMultipart(
     multipart({}, [["image", pngFile()]]),

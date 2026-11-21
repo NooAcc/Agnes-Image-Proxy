@@ -1,7 +1,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { ApiError } from "../../lib/errors.ts";
 import { createAccountStore, ensureSchema, maskKey } from "../../lib/accounts.ts";
-import { createSessionSigner } from "../../lib/auth.ts";
+import { createAuthStateStore, createSessionService } from "../../lib/auth.ts";
 import { createAdminApi, SESSION_COOKIE } from "../../lib/admin.ts";
 import { createGalleryStore } from "../../lib/gallery.ts";
 import { createRequestLogStore } from "../../lib/logs.ts";
@@ -12,7 +12,7 @@ import type { AgnesClient, AgnesClientFactory } from "../../lib/pool.ts";
 
 const API_KEY = "proxy-key";
 
-async function setup(clientFactory?: AgnesClientFactory) {
+async function setup(clientFactory?: AgnesClientFactory, now?: () => Date) {
   const sql = createNodeSqliteExecutor();
   await ensureSchema(sql);
   const store = createAccountStore(sql);
@@ -20,7 +20,8 @@ async function setup(clientFactory?: AgnesClientFactory) {
   const logs = createRequestLogStore(sql);
   const modelUsage = createModelUsageStore(sql);
   const gallery = createGalleryStore(sql);
-  const session = createSessionSigner(API_KEY);
+  const authState = createAuthStateStore(sql);
+  const session = createSessionService(API_KEY, authState);
   const clientCalls: { apiKey: string; body: unknown }[] = [];
   const createClient: AgnesClientFactory = clientFactory ?? (({ apiKey }) =>
     ({
@@ -42,6 +43,7 @@ async function setup(clientFactory?: AgnesClientFactory) {
     apiKey: API_KEY,
     session,
     createClient,
+    now,
   });
 
   const call = async (path: string, init: RequestInit = {}): Promise<Response> => {
@@ -194,6 +196,33 @@ Deno.test("a failing account test marks the account degraded", async () => {
   sql.close();
 });
 
+Deno.test("a probe 400 does not degrade the account", async () => {
+  const { sql, store, json } = await setup(() =>
+    ({
+      generate: () => Promise.reject(new ApiError(400, "bad model", "invalid_request_error")),
+    }) as AgnesClient
+  );
+  const account = await store.create({ name: "a", apiKey: "k" });
+  const response = await json(`/admin/api/accounts/${account.id}/test`, "POST", {});
+  assertEquals(response.status, 200);
+  const row = await store.get(account.id);
+  assertEquals(row?.status, "healthy");
+  assertEquals(row?.failCount, 0);
+  sql.close();
+});
+
+Deno.test("a probe 2xx with an empty data array still marks the key healthy", async () => {
+  const { sql, store, json } = await setup(() =>
+    ({
+      generate: () => Promise.resolve({ status: 200, body: { created: 1, data: [] } }),
+    }) as AgnesClient
+  );
+  const account = await store.create({ name: "a", apiKey: "k" });
+  await json(`/admin/api/accounts/${account.id}/test`, "POST", {});
+  assertEquals((await store.get(account.id))?.status, "healthy");
+  sql.close();
+});
+
 Deno.test("test-all probes every enabled account and import accepts name,key lines", async () => {
   const { sql, store, json } = await setup();
   await store.create({ name: "a", apiKey: "agk_aaaaaaaaaaaa" });
@@ -240,7 +269,9 @@ Deno.test("logs list and clear", async () => {
   const { sql, logs, call } = await setup();
   for (let i = 0; i < 3; i++) {
     await logs.record({
+      requestId: `req-${i}`,
       ts: `2026-11-20T10:00:0${i}.000Z`,
+      stage: "complete",
       endpoint: "generations",
       path: "/v1/images/generations",
       model: "m",
@@ -252,7 +283,9 @@ Deno.test("logs list and clear", async () => {
       requested: 1,
       images: 1,
       failed: 0,
-      size: "1K 1:1",
+      sizeRequest: "1K 1:1",
+      sizeActual: "1024x1024",
+      errorCode: null,
       error: null,
       attempts: [],
     });
@@ -268,21 +301,30 @@ Deno.test("overview merges the catalog with usage", async () => {
   const { sql, modelUsage, call } = await setup();
   await modelUsage.record({
     model: "agnes-image-2.5-flash",
-    endpoint: "generations",
     day: "2026-11-20",
-    ok: true,
     images: 2,
+    requested: 2,
+    failed: 0,
     at: "2026-11-20T10:00:00.000Z",
   });
 
   const response = await call("/admin/api/overview?day=2026-11-20");
   assertEquals(response.status, 200);
   const body = await response.json();
-  assertEquals(typeof body.totals.requests, "number");
-  assertEquals(body.totals.images, 2);
+  assertEquals(body.totals, {
+    requests: 1,
+    successes: 1,
+    partials: 0,
+    failures: 0,
+    images: 2,
+  });
   assertEquals(body.models.length, 2);
   const flash = body.models.find((model: { id: string }) => model.id === "agnes-image-2.5-flash");
   assertEquals(flash.requests, 1);
+  assertEquals(flash.successes, 1);
+  assertEquals(flash.partials, 0);
+  assertEquals(flash.failures, 0);
+  assertEquals(flash.images, 2);
   const unused = body.models.find((model: { id: string }) => model.id === "agnes-image-2.1-flash");
   assertEquals(unused.requests, 0);
   assertEquals(body.settings.defaultSize, "1K");
@@ -290,6 +332,9 @@ Deno.test("overview merges the catalog with usage", async () => {
   assertEquals(body.trend.length, 14);
   assertEquals(body.trend[13].day, "2026-11-20");
   assertEquals(body.trend[13].requests, 1);
+  assertEquals(body.trend[13].successes, 1);
+  assertEquals(body.trend[13].partials, 0);
+  assertEquals(body.trend[13].failures, 0);
   assertEquals(body.trend[13].images, 2);
   assertEquals(body.trend[0].day, "2026-11-07");
   assertEquals(body.trend[0].requests, 0);
@@ -299,11 +344,148 @@ Deno.test("overview merges the catalog with usage", async () => {
   sql.close();
 });
 
+Deno.test("revoking the session invalidates every cookie", async () => {
+  const { sql, api, session } = await setup();
+  const token = await session.issue();
+  const cookie = `${SESSION_COOKIE}=${token}`;
+  const before = await api.handle(
+    new Request("https://proxy.test/admin/api/accounts", { headers: { cookie } }),
+    "/admin/api/accounts",
+  );
+  assertEquals(before.status, 200);
+
+  const revoke = await api.handle(
+    new Request("https://proxy.test/admin/api/session/revoke", {
+      method: "POST",
+      headers: { cookie },
+    }),
+    "/admin/api/session/revoke",
+  );
+  assertEquals(revoke.status, 204);
+  assertEquals((revoke.headers.get("set-cookie") ?? "").includes("Max-Age=0"), true);
+
+  const after = await api.handle(
+    new Request("https://proxy.test/admin/api/accounts", { headers: { cookie } }),
+    "/admin/api/accounts",
+  );
+  assertEquals(after.status, 401);
+  sql.close();
+});
+
+Deno.test("login failures are rate limited for every client", async () => {
+  let clock = new Date("2026-01-01T00:00:00Z");
+  const { sql, api } = await setup(undefined, () => clock);
+  const attempt = (key: string, ip: string) =>
+    api.handle(
+      new Request("https://proxy.test/admin/api/session", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": ip },
+        body: JSON.stringify({ key }),
+      }),
+      "/admin/api/session",
+    );
+
+  for (let i = 0; i < 10; i++) {
+    assertEquals((await attempt("wrong", `10.0.0.${i}`)).status, 401);
+  }
+  const blocked = await attempt("wrong", "10.0.0.100");
+  assertEquals(blocked.status, 429);
+  assertEquals(blocked.headers.get("retry-after"), "60");
+
+  // The limiter is global, not per x-forwarded-for bucket.
+  assertEquals((await attempt(API_KEY, "10.0.0.101")).status, 429);
+
+  clock = new Date(clock.getTime() + 60_001);
+  assertEquals((await attempt("wrong", "10.0.0.102")).status, 401);
+  sql.close();
+});
+
+Deno.test("a successful login resets the failure counter", async () => {
+  const { sql, api } = await setup();
+  const attempt = (key: string) =>
+    api.handle(
+      new Request("https://proxy.test/admin/api/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key }),
+      }),
+      "/admin/api/session",
+    );
+
+  for (let i = 0; i < 9; i++) assertEquals((await attempt("wrong")).status, 401);
+  assertEquals((await attempt(API_KEY)).status, 204);
+  for (let i = 0; i < 9; i++) assertEquals((await attempt("wrong")).status, 401);
+  sql.close();
+});
+
+Deno.test("cookie admin API responses slide the session", async () => {
+  let clock = new Date("2026-01-01T00:00:00Z");
+  const { sql, api, session } = await setup(undefined, () => clock);
+  const token = await session.issue(clock);
+  clock = new Date("2026-01-25T00:00:00Z");
+
+  const response = await api.handle(
+    new Request("https://proxy.test/admin/api/accounts", {
+      headers: { cookie: `${SESSION_COOKIE}=${token}` },
+    }),
+    "/admin/api/accounts",
+  );
+  assertEquals(response.status, 200);
+  const cookie = response.headers.get("set-cookie") ?? "";
+  assertEquals(cookie.includes(`${SESSION_COOKIE}=`), true);
+  const match = /Max-Age=(\d+)/.exec(cookie);
+  assertEquals(Number(match?.[1]), 30 * 24 * 60 * 60);
+  sql.close();
+});
+
+Deno.test("error responses also slide the session when it is due", async () => {
+  let clock = new Date("2026-01-01T00:00:00Z");
+  const { sql, api, session } = await setup(undefined, () => clock);
+  const token = await session.issue(clock);
+  clock = new Date("2026-01-25T00:00:00Z");
+
+  const response = await api.handle(
+    new Request("https://proxy.test/admin/api/accounts/999", {
+      method: "PATCH",
+      headers: {
+        cookie: `${SESSION_COOKIE}=${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "x" }),
+    }),
+    "/admin/api/accounts/999",
+  );
+  assertEquals(response.status, 404);
+  assertEquals((response.headers.get("set-cookie") ?? "").includes(SESSION_COOKIE), true);
+  sql.close();
+});
+
+Deno.test("the renewal cookie max-age follows the capped token expiry", async () => {
+  let clock = new Date("2026-01-01T00:00:00Z");
+  const { sql, api, session } = await setup(undefined, () => clock);
+  let token = await session.issue(clock);
+  token = (await session.renew(token, new Date("2026-01-25T00:00:00Z")))!;
+  token = (await session.renew(token, new Date("2026-02-20T00:00:00Z")))!;
+  token = (await session.renew(token, new Date("2026-03-18T00:00:00Z")))!;
+  clock = new Date("2026-03-27T00:00:00Z");
+
+  const response = await api.handle(
+    new Request("https://proxy.test/admin/api/accounts", {
+      headers: { cookie: `${SESSION_COOKIE}=${token}` },
+    }),
+    "/admin/api/accounts",
+  );
+  const match = /Max-Age=(\d+)/.exec(response.headers.get("set-cookie") ?? "");
+  assertEquals(Number(match?.[1]), 5 * 24 * 60 * 60);
+  sql.close();
+});
+
 Deno.test("api.matches covers every admin route", async () => {
   const { sql, api } = await setup();
   for (
     const path of [
       "/admin/api/session",
+      "/admin/api/session/revoke",
       "/admin/api/accounts",
       "/admin/api/accounts/1",
       "/admin/api/accounts/test",

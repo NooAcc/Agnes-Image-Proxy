@@ -23,7 +23,7 @@ Deno.test("settings default to the documented values", async () => {
   assertEquals(DEFAULT_SETTINGS.defaultResponseFormat, "b64_json");
   assertEquals(DEFAULT_SETTINGS.defaultSize, "1K");
   assertEquals("defaultRatio" in DEFAULT_SETTINGS, false);
-  assertEquals(DEFAULT_SETTINGS.imageParamMode, "auto");
+  assertEquals(DEFAULT_SETTINGS.imageParamMode, "nested");
   assertEquals(DEFAULT_SETTINGS.probeModel, "agnes-image-2.5-flash");
   assertEquals(DEFAULT_SETTINGS.probeConcurrency, 2);
   assertEquals(DEFAULT_SETTINGS.requestTimeoutMs, 300000);
@@ -77,6 +77,12 @@ Deno.test("validateSettings bounds the console auto refresh interval", () => {
   assertEquals(validateSettings({ autoRefreshIntervalMs: 60000 }).autoRefreshIntervalMs, 60000);
   assertThrows(() => validateSettings({ autoRefreshIntervalMs: 1999 }), ApiError);
   assertThrows(() => validateSettings({ autoRefreshIntervalMs: 60001 }), ApiError);
+});
+
+Deno.test("imageParamMode defaults to nested and rejects auto", () => {
+  assertEquals(DEFAULT_SETTINGS.imageParamMode, "nested");
+  assertThrows(() => validateSettings({ imageParamMode: "auto" }), ApiError);
+  assertEquals(validateSettings({}).imageParamMode, "nested");
 });
 
 Deno.test("validateSettings rejects unknown enum values", () => {

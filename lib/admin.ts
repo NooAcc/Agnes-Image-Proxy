@@ -1,6 +1,6 @@
 import type { AccountRecord, AccountStore, AccountSummary } from "./accounts.ts";
 import { maskKey } from "./accounts.ts";
-import type { SessionSigner } from "./auth.ts";
+import type { SessionService } from "./auth.ts";
 import { readCookie, timingSafeEqual } from "./auth.ts";
 import { ApiError } from "./errors.ts";
 import type { GalleryStore } from "./gallery.ts";
@@ -10,22 +10,26 @@ import {
   errorResponse,
   jsonResponse,
   methodNotAllowed,
+  noStore,
   readJsonBody,
 } from "./http.ts";
 import {
   GALLERY_PAGE_MAX,
   GALLERY_PAGE_SIZE,
   LOG_LIST_LIMIT,
+  LOGIN_RATE_LIMIT,
+  LOGIN_RATE_WINDOW_MS,
   OVERVIEW_TREND_DAYS,
   SESSION_TTL_MS,
 } from "./limits.ts";
 import type { RequestLogStore } from "./logs.ts";
 import { imageModelList } from "./model-catalog.ts";
 import type { ModelUsageStore } from "./model-usage.ts";
-import { type AgnesClientFactory, classifyFailure } from "./pool.ts";
+import { type AgnesClientFactory, cappedCooldownMs, classifyFailure } from "./pool.ts";
 import { type AppSettings, type SettingsStore, validateSettings } from "./settings.ts";
 
 export const SESSION_PATH = "/admin/api/session";
+export const SESSION_REVOKE_PATH = "/admin/api/session/revoke";
 export const SESSION_COOKIE = "agnes_session";
 
 const ACCOUNT_ITEM = /^\/admin\/api\/accounts\/(\d+)$/;
@@ -41,7 +45,7 @@ export interface AdminApiOptions {
   modelUsage: ModelUsageStore;
   gallery: GalleryStore;
   apiKey: string;
-  session: SessionSigner;
+  session: SessionService;
   createClient: AgnesClientFactory;
   now?: () => Date;
 }
@@ -97,12 +101,40 @@ async function mapLimit<T, R>(
   return results;
 }
 
+function createLoginLimiter(now: () => Date) {
+  let windowStart = now().getTime();
+  let failures = 0;
+  const roll = () => {
+    const stamp = now().getTime();
+    if (stamp - windowStart >= LOGIN_RATE_WINDOW_MS) {
+      windowStart = stamp;
+      failures = 0;
+    }
+  };
+  return {
+    blocked(): boolean {
+      roll();
+      return failures >= LOGIN_RATE_LIMIT;
+    },
+    recordFailure(): void {
+      roll();
+      failures++;
+    },
+    reset(): void {
+      failures = 0;
+      windowStart = now().getTime();
+    },
+  };
+}
+
 export function createAdminApi(options: AdminApiOptions): AdminApi {
   const now = options.now ?? (() => new Date());
   const settings: SettingsStore = options.settings;
+  const loginLimiter = createLoginLimiter(now);
 
   const matches = (path: string): boolean =>
     path === SESSION_PATH ||
+    path === SESSION_REVOKE_PATH ||
     path === "/admin/api/accounts" ||
     path === "/admin/api/accounts/test" ||
     path === "/admin/api/accounts/import" ||
@@ -114,13 +146,18 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
     ACCOUNT_RESET.test(path) ||
     GALLERY_PATH.test(path);
 
-  const authorized = async (request: Request): Promise<boolean> => {
+  const authorized = async (
+    request: Request,
+  ): Promise<{ ok: boolean; viaCookie: boolean; token: string | null }> => {
     const header = request.headers.get("authorization") ?? "";
     const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-    if (match && timingSafeEqual(match[1].trim(), options.apiKey)) return true;
+    if (match && timingSafeEqual(match[1].trim(), options.apiKey)) {
+      return { ok: true, viaCookie: false, token: null };
+    }
     const token = readCookie(request, SESSION_COOKIE);
-    if (!token) return false;
-    return await options.session.verify(token, now());
+    if (!token) return { ok: false, viaCookie: false, token: null };
+    const claims = await options.session.verify(token, now());
+    return { ok: claims !== null, viaCookie: true, token };
   };
 
   const unauthorized = () =>
@@ -128,6 +165,18 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
 
   const handleSession = async (request: Request): Promise<Response> => {
     if (request.method === "POST") {
+      if (loginLimiter.blocked()) {
+        return errorResponse(
+          new ApiError(
+            429,
+            "too many login attempts; try again in 60 seconds",
+            "rate_limit_error",
+            null,
+            "rate_limit_exceeded",
+            { "retry-after": "60" },
+          ),
+        );
+      }
       let body: unknown;
       try {
         body = await readJsonBody(request);
@@ -136,10 +185,12 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
       }
       const key = asObject(body)?.key;
       if (typeof key !== "string" || !timingSafeEqual(key, options.apiKey)) {
+        loginLimiter.recordFailure();
         return errorResponse(
           new ApiError(401, "invalid API key", "invalid_request_error", null, "invalid_api_key"),
         );
       }
+      loginLimiter.reset();
       const token = await options.session.issue(now());
       const secure = new URL(request.url).protocol === "https:";
       return new Response(null, {
@@ -181,17 +232,16 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
           extra_body: { response_format: "url" },
         },
       });
-      await options.store.markHealthy(record.id);
+      await options.store.markHealthy(record.id, record.failCount);
       return { ok: true, account: summaryOf(record) };
     } catch (error) {
       const classification = classifyFailure(error);
-      try {
-        await options.store.recordFailure(
-          record.id,
-          classification.accountProblem ? classification.cooldownMs : 0,
-        );
-      } catch (bookkeepingError) {
-        console.error("probe bookkeeping failed:", bookkeepingError);
+      if (classification.accountProblem) {
+        try {
+          await options.store.recordFailure(record.id, cappedCooldownMs(error));
+        } catch (bookkeepingError) {
+          console.error("probe bookkeeping failed:", bookkeepingError);
+        }
       }
       return {
         ok: false,
@@ -399,7 +449,9 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
       return {
         id,
         requests: row?.requests ?? 0,
-        errors: row?.errors ?? 0,
+        successes: row?.successes ?? 0,
+        partials: row?.partials ?? 0,
+        failures: row?.failures ?? 0,
         images: row?.images ?? 0,
         lastUsedAt: row?.lastUsedAt ?? null,
       };
@@ -409,7 +461,9 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
       models.push({
         id: model,
         requests: row.requests,
-        errors: row.errors,
+        successes: row.successes,
+        partials: row.partials,
+        failures: row.failures,
         images: row.images,
         lastUsedAt: row.lastUsedAt,
       });
@@ -418,10 +472,12 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
     const totals = models.reduce(
       (accumulator, model) => ({
         requests: accumulator.requests + model.requests,
-        errors: accumulator.errors + model.errors,
+        successes: accumulator.successes + model.successes,
+        partials: accumulator.partials + model.partials,
+        failures: accumulator.failures + model.failures,
         images: accumulator.images + model.images,
       }),
-      { requests: 0, errors: 0, images: 0 },
+      { requests: 0, successes: 0, partials: 0, failures: 0, images: 0 },
     );
 
     const accounts = await options.store.list();
@@ -436,7 +492,9 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
       return {
         day: dayKey,
         requests: row?.requests ?? 0,
-        errors: row?.errors ?? 0,
+        successes: row?.successes ?? 0,
+        partials: row?.partials ?? 0,
+        failures: row?.failures ?? 0,
         images: row?.images ?? 0,
       };
     });
@@ -457,6 +515,43 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
     });
   };
 
+  const handleSessionRevoke = async (request: Request): Promise<Response> => {
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    await options.session.revokeAll(now());
+    const secure = new URL(request.url).protocol === "https:";
+    return new Response(null, {
+      status: 204,
+      headers: { "set-cookie": sessionCookie("", 0, secure, now()) },
+    });
+  };
+
+  const route = async (request: Request, path: string): Promise<Response> => {
+    if (path === SESSION_REVOKE_PATH) return await handleSessionRevoke(request);
+    if (path === "/admin/api/accounts") return await handleAccounts(request);
+    if (path === "/admin/api/accounts/test") return await handleTestAll(request);
+    if (path === "/admin/api/accounts/import") return await handleImport(request);
+    if (path === "/admin/api/settings") return await handleSettings(request);
+    if (path === "/admin/api/logs") return await handleLogs(request);
+    if (path === "/admin/api/overview") return await handleOverview(request);
+    if (path === "/admin/api/gallery") return await handleGallery(request);
+
+    const galleryContent = /^\/admin\/api\/gallery\/(\d+)\/content$/.exec(path);
+    if (galleryContent) {
+      return await handleGalleryContent(request, Number(galleryContent[1]));
+    }
+    const galleryItem = /^\/admin\/api\/gallery\/(\d+)$/.exec(path);
+    if (galleryItem) return await handleGalleryItem(request, Number(galleryItem[1]));
+
+    const item = ACCOUNT_ITEM.exec(path);
+    if (item) return await handleAccountItem(request, Number(item[1]));
+    const test = ACCOUNT_TEST.exec(path);
+    if (test) return await handleAccountTest(request, Number(test[1]));
+    const reset = ACCOUNT_RESET.exec(path);
+    if (reset) return await handleAccountReset(request, Number(reset[1]));
+
+    throw new ApiError(404, "not found", "invalid_request_error", null, "unknown_path");
+  };
+
   return {
     matches,
 
@@ -464,37 +559,48 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
       if (!matches(path)) {
         throw new ApiError(404, "not found", "invalid_request_error", null, "unknown_path");
       }
-      try {
-        if (path === SESSION_PATH) return await handleSession(request);
 
-        if (!(await authorized(request))) return unauthorized();
-
-        if (path === "/admin/api/accounts") return await handleAccounts(request);
-        if (path === "/admin/api/accounts/test") return await handleTestAll(request);
-        if (path === "/admin/api/accounts/import") return await handleImport(request);
-        if (path === "/admin/api/settings") return await handleSettings(request);
-        if (path === "/admin/api/logs") return await handleLogs(request);
-        if (path === "/admin/api/overview") return await handleOverview(request);
-        if (path === "/admin/api/gallery") return await handleGallery(request);
-
-        const galleryContent = /^\/admin\/api\/gallery\/(\d+)\/content$/.exec(path);
-        if (galleryContent) {
-          return await handleGalleryContent(request, Number(galleryContent[1]));
+      if (path === SESSION_PATH) {
+        try {
+          return noStore(await handleSession(request));
+        } catch (error) {
+          return noStore(errorResponse(error));
         }
-        const galleryItem = /^\/admin\/api\/gallery\/(\d+)$/.exec(path);
-        if (galleryItem) return await handleGalleryItem(request, Number(galleryItem[1]));
-
-        const item = ACCOUNT_ITEM.exec(path);
-        if (item) return await handleAccountItem(request, Number(item[1]));
-        const test = ACCOUNT_TEST.exec(path);
-        if (test) return await handleAccountTest(request, Number(test[1]));
-        const reset = ACCOUNT_RESET.exec(path);
-        if (reset) return await handleAccountReset(request, Number(reset[1]));
-      } catch (error) {
-        return errorResponse(error);
       }
 
-      throw new ApiError(404, "not found", "invalid_request_error", null, "unknown_path");
+      try {
+        const auth = await authorized(request);
+        if (!auth.ok) return noStore(unauthorized());
+
+        let response: Response;
+        try {
+          response = await route(request, path);
+        } catch (error) {
+          response = errorResponse(error);
+        }
+
+        // Sliding renewal only for cookie-authenticated admin API calls.
+        if (auth.viaCookie && auth.token) {
+          try {
+            const renewed = await options.session.renew(auth.token, now());
+            const claims = renewed ? await options.session.verify(renewed, now()) : null;
+            if (renewed && claims) {
+              const maxAge = Math.max(0, Math.ceil((claims.exp - now().getTime()) / 1000));
+              const secure = new URL(request.url).protocol === "https:";
+              response.headers.append(
+                "set-cookie",
+                sessionCookie(renewed, maxAge, secure, now()),
+              );
+            }
+          } catch (error) {
+            console.error("session renewal failed:", error);
+          }
+        }
+
+        return noStore(response);
+      } catch (error) {
+        return noStore(errorResponse(error));
+      }
     },
   };
 }

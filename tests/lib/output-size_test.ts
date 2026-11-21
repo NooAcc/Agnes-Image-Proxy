@@ -21,6 +21,13 @@ Deno.test("measures b64 output images", async () => {
   assertEquals(result.warnings, []);
 });
 
+Deno.test("measures b64 MIME", async () => {
+  const result = await measureOutputImages([
+    { url: null, b64_json: encodeBase64(pngHeader(10, 10)), revised_prompt: null },
+  ]);
+  assertEquals(result.mimes, ["image/png"]);
+});
+
 Deno.test("measures URL output images through a guarded fetch", async () => {
   const fetchImpl = () =>
     Promise.resolve(new Response(pngHeader(864, 1152) as unknown as BodyInit));

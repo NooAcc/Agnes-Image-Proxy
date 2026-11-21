@@ -136,6 +136,7 @@ const edited = await client.images.edit({
 | `TURSO_AUTH_TOKEN`     | 是   | Turso 令牌                             |
 | `PORT`                 | 否   | 本地端口，默认 8000；Deno Deploy 忽略  |
 | `CORS_ALLOWED_ORIGINS` | 否   | 逗号分隔的跨域白名单，默认关闭         |
+| `RESET_SCHEMA`         | 否   | 只有 `deno task reset-db` 需要设为 `1` |
 
 缺少前三个变量时进程拒绝启动。
 
@@ -150,7 +151,9 @@ const edited = await client.images.edit({
   - `5xx / 超时 / 传输错误` → 60 秒起指数退避，最长 15 分钟；
   - `400 / 404` → 直接返回，不换 Key（换也没用）；
   - 成功 → 清零失败计数。
-- Key 以明文存库，对外一律掩码为 `前 4 位…后 4 位`。
+- 所有 Key 都失败时按 `429 > 504 > 502 > 503` 选择最终状态码；存在 429 时取封顶后冷却最短的
+  那个，`Retry-After` 同样封顶 900 秒。`n > 1` 时同一优先级会跨子请求再应用一次。
+- 成功写回使用 `fail_count` CAS：一个请求的成功不会清掉并发失败请求刚写入的冷却。
 - 上游超时默认 300 秒，可在设置里调整为 60–360 秒；超时映射为 504。
 
 ## 尺寸与 n
@@ -165,9 +168,10 @@ const edited = await client.images.edit({
 - 显式给了 `size` 的请求完全不读取、不下载参考图。
 - Agnes 会把精确 `WIDTHxHEIGHT` 归一化到自己的档位 / 比例表，因此**不能保证输出正好等于参考图
   分辨率**；实测 `900x1200` 得到 `864x1152`。
-- 响应体 `size`、请求日志 `size`、图片时间线 `size` 都记录**实际输出尺寸**：响应取第一张成功图；
-  日志按出现顺序去重后用逗号连接；相册取归档字节。测量失败时响应退回预期原生尺寸并在
+- 响应体 `size`、请求日志 `size_actual`、图片时间线 `size` 都记录**实际输出尺寸**：响应取第一张
+  成功图；日志按出现顺序去重后用逗号连接；相册取归档字节。测量失败时响应退回预期原生尺寸并在
   `X-Agnes-Warnings` 标记 `size-measure-failed`，日志尺寸记 `null`。
+- 响应体 `output_format` 取第一张成功图字节嗅探出的 `png`/`jpeg`/`webp`；测不到时省略该字段。
 - `n` 只要求是正整数，**没有 1–10 的上限**，代理按 `n` 并发扇出。上游实测要求
   `n = 1`，因此扇出是必需的。
 - **部分成功也返回**：成功数 ≥1 时 HTTP 200，`data` 只含成功图，并带响应头：
@@ -180,8 +184,39 @@ const edited = await client.images.edit({
   X-Agnes-Warnings: partial-success
   ```
 
-  成功数为 0 时返回第一个子请求的错误信封与状态码。日志与用量严格一致：`requested` /
+  成功数为 0 时按上面的失败优先级选择最终错误信封与状态码。日志与用量严格一致：`requested` /
   `images`（成功数）/ `failed` / `ok = failed === 0`。
+
+## 可观测性
+
+- 每个图片请求生成 `X-Request-Id`（鉴权失败也带，但不写库）；`/v1/models` 不生成。
+- `request_log` 记录 `stage`（`parse` / `dispatch` / `complete`）、`error_code`、
+  `size_request`/`size_actual`、逐 Key `attempts`（每个子请求的账号、状态、耗时、错误）。
+  解析失败也会落库；未鉴权的 401 不落库，防止匿名请求刷掉历史日志。
+- 用量指标为 `requests / successes / partials / failures / images`，满足
+  `requests = successes + failures`，部分成功同时计入 `successes` 与 `partials`。
+- 账号计数字段是 `upstreamRequests` / `upstreamImages`，语义是**成功的上游子请求数与返回图片数**，
+  不是客户端请求数；控制台标签为“上游调用 / 图片”。
+
+## 管理面与会话
+
+- 所有 `/admin/api/*` 响应（含 401 与错误）都是 `Cache-Control: no-store`。
+- 相册内容端点额外带 `default-src 'none'; sandbox`、`Content-Disposition: inline` 与 `nosniff`；
+  只回放 `image/png`、`image/jpeg`、`image/webp`，其他 MIME 返回 404。
+- 会话默认 30 天；Cookie 认证的 `/admin/api/*` 在剩余不足 7 天时滑动续期，续期 Cookie 的 `Max-Age`
+  等于新 token 的实际剩余时间，总寿命不超过签发后 90 天。`/admin` HTML 与 Bearer 请求不续期。
+- `POST /admin/api/session/revoke` 递增会话 epoch，立即作废全部已签发 Cookie；
+  `DELETE /admin/api/session` 只清当前浏览器 Cookie，不撤销已泄露的 token。
+- 登录失败限速为 isolate 级 best-effort：60 秒窗口内第 11 次失败返回 429 + `Retry-After: 60`，
+  成功登录清零；不按 `x-forwarded-for` 分桶（该头可伪造），多 isolate 不共享计数。
+
+## 数据库与 schema
+
+- schema 版本为 `2`。版本不匹配或非空旧库缺少版本时进程拒绝启动，不会自动改表。
+- 升级必须执行 `RESET_SCHEMA=1 deno task reset-db`；它会**删除账号、请求日志、用量、
+  相册与设置**后重建当前 schema。
+- 数据库请求 15 秒超时，超时/连接失败映射为 503 `database_timeout` / `database_unavailable`；
+  `/health?deep=1` 失败只返回通用 `database unavailable`，不回显原始错误。
 
 ## 兼容字段
 
@@ -192,14 +227,15 @@ const edited = await client.images.edit({
 的上传、非 http(s)/data URI 的参考图 URL。
 
 `image_param_mode`（设置项）控制参考图放在 `extra_body.image`（`nested`，默认）还是顶层
-`image`（`top_level`）；`auto` 先发嵌套，编辑请求返回 400 时自动改用顶层重发一次，并在 10
-分钟内记住可用的位置。`response_format` 始终放在 `extra_body` 内。
+`image`（`top_level`）。上游实测两种位置都接受，只有特殊上游才需要管理员显式选择 `top_level`；
+代理不会因为 400 自动改用另一种位置重发。`response_format` 始终放在 `extra_body` 内。
 
 ## 图片时间线与存储
 
 - 每个成功生成并返回给客户端的输出图归档一行；参考输入图不入库。
 - 上游给 `b64_json` 时直接解码为字节存 `BLOB`；上游给 URL 时在响应发出后下载（仅
-  `https`、拒绝私网/回环与指向私网的重定向、上限 64 MiB / 60 秒）再入库。
+  `https`、拒绝私网/回环与指向私网的重定向、上限 64 MiB / 60 秒）再入库。只有嗅探为 png/jpeg/webp
+  的字节才会保存；其他内容记录 `archived=0`、`mime=application/octet-stream`。
 - 归档行的 `size` 取归档字节的实际宽高；下载失败（`archived=0`）时保留预期原生尺寸与 `source_url`。
 - 下载或写库失败不影响客户端响应：gallery 行保留 `source_url` 且
   `archived=0`，控制台显示占位卡与原始链接。
@@ -234,7 +270,8 @@ const edited = await client.images.edit({
 ## 上游实测结论（2026-11-20）
 
 1. `extra_body.image` 与顶层 `image`、`extra_body.response_format` 与顶层 `response_format`
-   都被接受；文档里“顶层会报错”没有复现。默认仍按文档使用嵌套，`auto` 回退只是保险。
+   都被接受；文档里“顶层会报错”没有复现。默认仍按文档使用嵌套，管理员可在设置中显式选择
+   `top_level`。
 2. 文生图 `return_base64: true` 返回 `b64_json`；图生图 `extra_body.response_format: "b64_json"`
    也返回 `b64_json`。
 3. 上游 `n` 必须为 1，否则 400 `n must be 1`。
@@ -251,6 +288,7 @@ deno task check        # 类型检查（main/lib/web/scripts/tests）
 deno task test         # 离线测试套件（node:sqlite）
 deno task preview      # 示例数据 + 内存库，端口 8001
 deno task smoke        # 真实 Agnes 端到端（需要 SMOKE_AGNES_API_KEY）
+RESET_SCHEMA=1 deno task reset-db  # 删除并重建数据库（破坏性）
 ```
 
 `smoke` 会真实产生一张文生图与一张图生图请求，消耗账号额度：

@@ -9,7 +9,9 @@ import {
   jsonResponse,
   methodNotAllowed,
   normalizePath,
+  noStore,
   readJsonBody,
+  readLimitedFormData,
 } from "../../lib/http.ts";
 import { MAX_REQUEST_BYTES } from "../../lib/limits.ts";
 
@@ -33,6 +35,33 @@ Deno.test("readJsonBody rejects malformed JSON with 400", async () => {
   const request = new Request("https://x/", { method: "POST", body: "{" });
   const error = await assertRejects(() => readJsonBody(request), ApiError);
   assertEquals(error.status, 400);
+});
+
+Deno.test("readLimitedFormData rejects a body over the byte limit", async () => {
+  const form = new FormData();
+  form.set("image", "x");
+  const request = new Request("https://x/", { method: "POST", body: form });
+  const error = await assertRejects(() => readLimitedFormData(request, 16), ApiError, "too large");
+  assertEquals(error.status, 413);
+});
+
+Deno.test("readLimitedFormData counts streamed chunks without content-length", async () => {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode("a".repeat(12)));
+      controller.enqueue(encoder.encode("b".repeat(12)));
+      controller.close();
+    },
+  });
+  const request = new Request("https://x/", {
+    method: "POST",
+    headers: { "content-type": "multipart/form-data; boundary=x" },
+    body,
+    duplex: "half",
+  } as RequestInit);
+  const error = await assertRejects(() => readLimitedFormData(request, 16), ApiError, "too large");
+  assertEquals(error.status, 413);
 });
 
 Deno.test("normalizePath strips trailing slashes but keeps root", () => {
@@ -85,13 +114,23 @@ Deno.test("htmlResponse applies the strict console CSP", () => {
   assertEquals(response.headers.get("cache-control"), "no-store");
 });
 
-Deno.test("bytesResponse returns bytes with a private cache and nosniff", async () => {
+Deno.test("bytesResponse returns bytes with no-store, CSP and inline disposition", async () => {
   const bytes = new Uint8Array([1, 2, 3]);
   const response = bytesResponse(bytes, "image/png");
   assertEquals(response.headers.get("content-type"), "image/png");
-  assertEquals(response.headers.get("cache-control"), "private, max-age=300");
+  assertEquals(response.headers.get("cache-control"), "private, no-store");
+  assertEquals(
+    response.headers.get("content-security-policy"),
+    "default-src 'none'; sandbox",
+  );
+  assertEquals(response.headers.get("content-disposition"), "inline");
   assertEquals(response.headers.get("x-content-type-options"), "nosniff");
   assertEquals(new Uint8Array(await response.arrayBuffer()), bytes);
+});
+
+Deno.test("noStore adds a no-store cache header", () => {
+  const response = noStore(jsonResponse({ ok: true }));
+  assertEquals(response.headers.get("cache-control"), "no-store");
 });
 
 Deno.test("methodNotAllowed returns 405 and the Allow header", async () => {

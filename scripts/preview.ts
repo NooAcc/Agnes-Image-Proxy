@@ -33,7 +33,9 @@ for (let i = 0; i < 20; i++) {
   const images = ok ? requested : 0;
   const ts = new Date(Date.now() - i * 7 * 60 * 1000).toISOString();
   await harness.logs.record({
+    requestId: crypto.randomUUID(),
     ts,
+    stage: ok ? "complete" : "dispatch",
     endpoint: i % 3 === 0 ? "edits" : "generations",
     path: i % 3 === 0 ? "/v1/images/edits" : "/v1/images/generations",
     model: models[i % models.length],
@@ -45,16 +47,28 @@ for (let i = 0; i < 20; i++) {
     requested,
     images,
     failed: requested - images,
-    size: "1K 1:1",
+    sizeRequest: "1K 1:1",
+    sizeActual: ok ? "1024x1024" : null,
+    errorCode: ok ? null : "rate_limit_exceeded",
     error: ok ? null : "upstream rate limited",
-    attempts: [{ account: "primary", status: ok ? 200 : 429 }],
+    attempts: [{
+      index: 0,
+      traces: [{
+        accountId: primary.id,
+        accountName: primary.name,
+        status: ok ? 200 : 429,
+        code: ok ? null : "rate_limit_exceeded",
+        durationMs: 1200 + i * 37,
+        message: ok ? null : "upstream rate limited",
+      }],
+    }],
   });
   await harness.modelUsage.record({
     model: models[i % models.length],
-    endpoint: "generations",
     day: ts.slice(0, 10),
-    ok,
     images,
+    requested,
+    failed: requested - images,
     at: ts,
   });
 }

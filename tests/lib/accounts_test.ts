@@ -87,14 +87,28 @@ Deno.test("claim accepts an exclusion list", async () => {
   sql.close();
 });
 
-Deno.test("addImages accumulates request and image counters", async () => {
+Deno.test("recordUpstreamSuccess accumulates upstream call and image counters", async () => {
   const { sql, store } = await setup();
   const account = await store.create({ name: "a", apiKey: "key-a" });
-  await store.addImages(account.id, 2);
-  await store.addImages(account.id, 3);
+  await store.recordUpstreamSuccess(account.id, 2);
+  await store.recordUpstreamSuccess(account.id, 3);
   const row = await store.get(account.id);
-  assertEquals(row?.requestCount, 2);
-  assertEquals(row?.imageCount, 5);
+  assertEquals(row?.upstreamRequests, 2);
+  assertEquals(row?.upstreamImages, 5);
+  sql.close();
+});
+
+Deno.test("a stale success cannot clear a newer failure cooldown", async () => {
+  const { sql, store } = await setup();
+  const account = await store.create({ name: "a", apiKey: "key-a" });
+  const claimed = await store.claim();
+  await store.recordFailure(account.id, 60_000);
+  await store.recordSuccess(account.id, claimed!.consecutiveFailures);
+  const row = await store.get(account.id);
+  assertEquals(row?.status, "degraded");
+  assertEquals((row?.failCount ?? 0) > 0, true);
+  await store.recordSuccess(account.id, row!.failCount);
+  assertEquals((await store.get(account.id))?.status, "healthy");
   sql.close();
 });
 
@@ -104,7 +118,7 @@ Deno.test("recordSuccess and resetHealth clear the cooldown", async () => {
   await store.recordFailure(account.id, 60_000);
   assertEquals((await store.get(account.id))?.status, "degraded");
 
-  await store.recordSuccess(account.id);
+  await store.recordSuccess(account.id, 1);
   const row = await store.get(account.id);
   assertEquals(row?.status, "healthy");
   assertEquals(row?.failCount, 0);
