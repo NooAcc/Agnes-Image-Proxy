@@ -116,13 +116,24 @@ Deno.test("recordSuccess and resetHealth clear the cooldown", async () => {
   sql.close();
 });
 
-Deno.test("update renames and toggles an account, remove deletes it", async () => {
+Deno.test("update renames, toggles and rotates the key, remove deletes it", async () => {
   const { sql, store } = await setup();
   const account = await store.create({ name: "a", apiKey: "key-a" });
-  await store.update(account.id, { name: "renamed", enabled: false });
+  await store.recordFailure(account.id, 60_000);
+  await store.update(account.id, { name: "renamed", enabled: false, apiKey: "key-b" });
   const row = await store.get(account.id);
   assertEquals(row?.name, "renamed");
   assertEquals(row?.enabled, false);
+  assertEquals(row?.apiKey, "key-b");
+  assertEquals(row?.status, "healthy");
+  assertEquals(row?.failCount, 0);
+  assertEquals(row?.cooldownUntil, null);
+
+  const error = await assertRejects(
+    () => store.update(account.id, { apiKey: "  " }),
+    ApiError,
+  );
+  assertEquals(error.status, 400);
 
   assert(await store.remove(account.id));
   assertEquals(await store.get(account.id), null);

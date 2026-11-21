@@ -103,7 +103,9 @@ export interface AccountStore {
   list(): Promise<AccountSummary[]>;
   get(id: number): Promise<AccountRecord | null>;
   create(input: { name: string; apiKey: string }): Promise<AccountRecord>;
-  update(id: number, patch: { name?: string; enabled?: boolean }): Promise<AccountRecord>;
+  update(id: number, patch: { name?: string; enabled?: boolean; apiKey?: string }): Promise<
+    AccountRecord
+  >;
   remove(id: number): Promise<boolean>;
   claim(excludeIds?: number[]): Promise<ClaimedAccount | null>;
   resetHealth(id: number): Promise<boolean>;
@@ -208,6 +210,14 @@ export function createAccountStore(sql: SqlExecutor): AccountStore {
       if (patch.enabled !== undefined) {
         sets.push("enabled = ?");
         args.push(patch.enabled ? 1 : 0);
+      }
+      if (patch.apiKey !== undefined) {
+        const apiKey = patch.apiKey.trim();
+        if (apiKey === "") {
+          throw new ApiError(400, "account apiKey is required", "invalid_request_error", "apiKey");
+        }
+        sets.push("api_key = ?", "status = 'healthy'", "fail_count = 0", "cooldown_until = NULL");
+        args.push(apiKey);
       }
       if (sets.length > 0) {
         args.push(id);

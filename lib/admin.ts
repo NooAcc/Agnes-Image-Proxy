@@ -222,9 +222,10 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
   ): Promise<Response> => {
     if (request.method === "PATCH") {
       const body = asObject(await readJsonBody(request)) ?? {};
-      const patch: { name?: string; enabled?: boolean } = {};
+      const patch: { name?: string; enabled?: boolean; apiKey?: string } = {};
       if (typeof body.name === "string") patch.name = body.name;
       if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+      if (typeof body.apiKey === "string") patch.apiKey = body.apiKey;
       return jsonResponse(summaryOf(await options.store.update(id, patch)));
     }
     if (request.method === "DELETE") {

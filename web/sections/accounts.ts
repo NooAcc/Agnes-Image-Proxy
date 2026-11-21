@@ -84,20 +84,25 @@ export const ACCOUNTS_DIALOGS = `
     </form>
   </div>
 </dialog>
-<dialog data-role="rename-dialog" aria-labelledby="rename-dialog-title">
+<dialog data-role="edit-dialog" aria-labelledby="edit-dialog-title">
   <div class="dialog-body">
     <div class="dialog-head">
-      <h2 id="rename-dialog-title">重命名账号</h2>
+      <h2 id="edit-dialog-title">编辑账号</h2>
       <button class="icon-btn" type="button" data-action="close-dialog" aria-label="关闭">${
   icon("close")
 }</button>
     </div>
-    <form data-form="rename">
+    <form data-form="edit">
       <div class="field">
-        <label for="rename-name">名称</label>
-        <input class="input" id="rename-name" name="name" autocomplete="off" required>
+        <label for="edit-name">名称</label>
+        <input class="input" id="edit-name" name="name" autocomplete="off" required>
       </div>
-      <p class="form-error" data-role="rename-error" role="alert"></p>
+      <div class="field" style="margin-top:14px">
+        <label for="edit-key">API Key</label>
+        <input class="input" id="edit-key" name="apiKey" autocomplete="off" spellcheck="false" placeholder="留空则保持不变">
+        <span class="hint" data-role="edit-key-hint"></span>
+      </div>
+      <p class="form-error" data-role="edit-error" role="alert"></p>
       <div class="dialog-actions">
         <button class="btn" type="button" data-action="close-dialog">取消</button>
         <button class="btn primary" type="submit">保存</button>
@@ -176,7 +181,7 @@ export const ACCOUNTS_SCRIPT = String.raw`
     key.append(document.createTextNode(account.apiKeyMasked));
     identity.append(key);
     var tools = A.el("div", "row-actions");
-    tools.append(iconButton("pencil", "重命名 " + account.name, "rename-account", account.id));
+    tools.append(iconButton("pencil", "编辑 " + account.name, "edit-account", account.id));
     tools.append(iconButton("trash", "删除 " + account.name, "delete-account", account.id, "danger"));
     top.append(identity);
     top.append(tools);
@@ -381,13 +386,18 @@ export const ACCOUNTS_SCRIPT = String.raw`
     else if (action === "reset-account") resetAccount(target, account);
     else if (action === "toggle-account") toggleAccount(account, target);
     else if (action === "delete-account") deleteAccount(account);
-    else if (action === "rename-account") {
+    else if (action === "edit-account") {
       state.editingId = account.id;
-      showFormError("rename-error", "");
-      var form = document.querySelector('[data-form="rename"]');
-      if (form) form.elements.namedItem("name").value = account.name;
-      var renameDialog = node("rename-dialog");
-      if (renameDialog) renameDialog.showModal();
+      showFormError("edit-error", "");
+      var form = document.querySelector('[data-form="edit"]');
+      if (form) {
+        form.elements.namedItem("name").value = account.name;
+        form.elements.namedItem("apiKey").value = "";
+      }
+      var hint = node("edit-key-hint");
+      if (hint) hint.textContent = "当前 Key：" + account.apiKeyMasked + "；留空则保持不变。";
+      var editDialog = node("edit-dialog");
+      if (editDialog) editDialog.showModal();
     }
   });
 
@@ -441,24 +451,27 @@ export const ACCOUNTS_SCRIPT = String.raw`
         showFormError("import-error", error.message);
       }
       A.setBusy(importSubmit, false);
-    } else if (form.matches('[data-form="rename"]')) {
+    } else if (form.matches('[data-form="edit"]')) {
       event.preventDefault();
-      showFormError("rename-error", "");
-      var renameSubmit = form.querySelector('button[type="submit"]');
-      A.setBusy(renameSubmit, true, "保存中…");
+      showFormError("edit-error", "");
+      var editSubmit = form.querySelector('button[type="submit"]');
+      A.setBusy(editSubmit, true, "保存中…");
       try {
+        var patch = { name: form.elements.namedItem("name").value };
+        var apiKey = form.elements.namedItem("apiKey").value.trim();
+        if (apiKey !== "") patch.apiKey = apiKey;
         await A.api("/admin/api/accounts/" + state.editingId, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: form.elements.namedItem("name").value }),
+          body: JSON.stringify(patch),
         });
-        node("rename-dialog").close();
-        A.toast("账号已重命名");
+        node("edit-dialog").close();
+        A.toast("账号已更新");
         await load();
       } catch (error) {
-        showFormError("rename-error", error.message);
+        showFormError("edit-error", error.message);
       }
-      A.setBusy(renameSubmit, false);
+      A.setBusy(editSubmit, false);
     }
   });
 

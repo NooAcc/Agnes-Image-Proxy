@@ -48,7 +48,7 @@ Deno.test("admin page wires account interactions", () => {
       "reset-account",
       "toggle-account",
       "delete-account",
-      "rename-account",
+      "edit-account",
     ]
   ) {
     assert(html.includes(`"${action}"`), `missing handler for ${action}`);

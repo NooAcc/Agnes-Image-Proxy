@@ -146,6 +146,14 @@ Deno.test("account CRUD masks keys and rejects duplicates", async () => {
   });
   assertEquals((await patched.json()).name, "renamed");
 
+  const rotated = await json(`/admin/api/accounts/${body.id}`, "PATCH", {
+    apiKey: "agk_ZZZZZZZZZZzzzz",
+  });
+  const rotatedBody = await rotated.json();
+  assertEquals(rotatedBody.apiKeyMasked, maskKey("agk_ZZZZZZZZZZzzzz"));
+  assertEquals(rotatedBody.name, "renamed");
+  assertEquals("apiKey" in rotatedBody, false);
+
   const removed = await call(`/admin/api/accounts/${body.id}`, { method: "DELETE" });
   assertEquals(removed.status, 204);
   sql.close();
