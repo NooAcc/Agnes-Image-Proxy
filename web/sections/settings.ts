@@ -54,15 +54,6 @@ export const SETTINGS_HTML = `
           </div>
         </div>
         <div class="field">
-          <label for="defaultRatio">默认比例</label>
-          <select class="select" id="defaultRatio" name="defaultRatio">
-            <option value="1:1">1:1</option><option value="3:4">3:4</option>
-            <option value="4:3">4:3</option><option value="16:9">16:9</option>
-            <option value="9:16">9:16</option><option value="2:3">2:3</option>
-            <option value="3:2">3:2</option><option value="21:9">21:9</option>
-          </select>
-        </div>
-        <div class="field">
           <span class="field-label" id="imageParamMode-label">参考图参数位置</span>
           <div class="segmented" role="radiogroup" aria-labelledby="imageParamMode-label">
             <label><input type="radio" name="imageParamMode" value="auto"><span>auto</span></label>
@@ -206,7 +197,7 @@ export const SETTINGS_SCRIPT = String.raw`
 
   function collect() {
     var names = [
-      "agnesBaseUrl", "defaultResponseFormat", "defaultSize", "defaultRatio",
+      "agnesBaseUrl", "defaultResponseFormat", "defaultSize",
       "imageParamMode", "probeModel",
     ];
     var payload = {};

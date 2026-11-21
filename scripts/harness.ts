@@ -19,6 +19,7 @@ export interface HarnessOptions {
   archiver?: Archiver;
   corsAllowedOrigins?: string[];
   now?: () => Date;
+  fetchImpl?: typeof fetch;
 }
 
 export interface Harness {
@@ -79,6 +80,7 @@ export async function buildHarness(options: HarnessOptions): Promise<Harness> {
       await options.sql.execute("SELECT 1");
     },
     now: options.now,
+    fetchImpl: options.fetchImpl,
   });
 
   return { handler, sql: options.sql, store, settings, logs, modelUsage, gallery, session, api };

@@ -28,7 +28,8 @@ import {
   type ProtocolDefaults,
 } from "./protocol.ts";
 import type { AppSettings, SettingsStore } from "./settings.ts";
-import { formatPixel } from "./size.ts";
+import { formatPixel, formatRequestSize, type PixelSize } from "./size.ts";
+import { measureOutputImages } from "./output-size.ts";
 
 export const SESSION_COOKIE = "agnes_session";
 
@@ -52,12 +53,14 @@ export interface HandlerOptions {
   corsAllowedOrigins?: string[];
   readyCheck?: () => Promise<void>;
   now?: () => Date;
+  fetchImpl?: typeof fetch;
 }
 
 interface SubRequestSuccess {
   status: number;
   account: { id: number; name: string };
   normalized: NormalizedResponse;
+  actualSizes: (PixelSize | null)[];
 }
 
 interface AttemptRecord {
@@ -78,7 +81,6 @@ function bearerToken(request: Request): string | null {
 function parseJsonOrDefaults(settings: AppSettings): ProtocolDefaults {
   return {
     defaultSize: settings.defaultSize,
-    defaultRatio: settings.defaultRatio,
     defaultResponseFormat: settings.defaultResponseFormat,
   };
 }
@@ -178,11 +180,15 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       const gateway = options.pool.gateway(settings.agnesBaseUrl, undefined, gatewayOptions);
       const result = await gateway.generate(agnesPayload(parsed, mode));
       const normalized = normalizeAgnesResponse(result.body, parsed);
+      const measured = await measureOutputImages(normalized.images, options.fetchImpl);
+      if (measured.first) normalized.body.size = formatPixel(measured.first);
+      normalized.warnings.push(...measured.warnings);
       return {
         result: {
           status: result.status,
           account: result.account,
           normalized,
+          actualSizes: measured.sizes,
         },
         warnings: normalized.warnings,
       };
@@ -223,7 +229,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
           prompt: parsed.prompt,
           size: formatPixel(parsed.size.pixel),
           tier: parsed.size.tier,
-          ratio: parsed.size.ratio,
+          ratio: parsed.size.derivedRatio,
           images: outcome.result.normalized.images,
         });
       } catch (error) {
@@ -269,7 +275,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
           requested: parsed.n,
           images: 0,
           failed: failures.length,
-          size: `${parsed.size.tier} ${parsed.size.ratio}`,
+          size: formatRequestSize(parsed.size),
           error: errorMessage(first),
           attempts,
         },
@@ -282,12 +288,23 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     }
 
     const merged = mergeNormalizedResponses(successes.map((success) => success.normalized));
+    const firstActual = successes[0]?.actualSizes[0] ?? null;
+    merged.body.size = formatPixel(firstActual ?? parsed.size.pixel);
+    const uniqueSizes = [
+      ...new Set(
+        successes
+          .flatMap((success) => success.actualSizes)
+          .filter((size): size is PixelSize => size !== null)
+          .map(formatPixel),
+      ),
+    ];
+    const logSize = uniqueSizes.length > 0 ? uniqueSizes.join(",") : null;
     const headers = new Headers();
     headers.set("content-type", JSON_TYPE);
     headers.set("x-agnes-requested", String(parsed.n));
     headers.set("x-agnes-succeeded", String(successes.length));
     headers.set("x-agnes-failed", String(failures.length));
-    headers.set("x-agnes-resolved-size", `${parsed.size.tier} ${parsed.size.ratio}`);
+    headers.set("x-agnes-resolved-size", formatRequestSize(parsed.size));
     if (failures.length > 0) {
       const statuses = [...new Set(failures.map((failure) => errorStatus(failure)))];
       headers.set("x-agnes-failure-statuses", statuses.join(","));
@@ -305,7 +322,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         requested: parsed.n,
         images: merged.images.length,
         failed: failures.length,
-        size: `${parsed.size.tier} ${parsed.size.ratio}`,
+        size: logSize,
         error: failures.length > 0
           ? failures.map((failure) => errorMessage(failure)).join("; ")
           : null,
@@ -355,7 +372,9 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
 
       let parsed: ParsedImageRequest;
       if (endpoint === "edits" && contentType.toLowerCase().startsWith("multipart/form-data")) {
-        parsed = await parseImageRequestMultipart(request, defaults);
+        parsed = await parseImageRequestMultipart(request, defaults, {
+          fetchImpl: options.fetchImpl,
+        });
       } else {
         if (
           endpoint === "generations" && contentType.toLowerCase().startsWith("multipart/form-data")
@@ -368,7 +387,15 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
             "unsupported_content_type",
           );
         }
-        parsed = parseImageRequestJson(await readJsonBody(request), endpoint, defaults);
+        parsed = await parseImageRequestJson(
+          await readJsonBody(request),
+          endpoint,
+          defaults,
+          undefined,
+          {
+            fetchImpl: options.fetchImpl,
+          },
+        );
       }
 
       return await handleImageRequest(parsed, settings, path, startedAt);

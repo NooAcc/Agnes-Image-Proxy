@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { encodeBase64 } from "@std/encoding/base64";
 import { ApiError } from "../../lib/errors.ts";
 import { MAX_INPUT_IMAGE_BYTES, MAX_REQUEST_BYTES } from "../../lib/limits.ts";
@@ -10,7 +10,6 @@ import {
 
 const defaults = {
   defaultSize: "1K",
-  defaultRatio: "1:1",
   defaultResponseFormat: "b64_json",
 } as const;
 
@@ -25,12 +24,15 @@ function pngHeader(width: number, height: number): Uint8Array {
   return bytes;
 }
 
-function multipart(fields: Record<string, string>, files: [string, File][]): Request {
+function multipart(fields: Record<string, string>, files: [string, File | string][]): Request {
   const form = new FormData();
   form.set("model", "agnes-image-2.5-flash");
   form.set("prompt", "edit this");
   for (const [key, value] of Object.entries(fields)) form.set(key, value);
-  for (const [key, file] of files) form.append(key, file);
+  for (const [key, file] of files) {
+    if (typeof file === "string") form.append(key, file);
+    else form.append(key, file, file.name);
+  }
   return new Request("https://x/v1/images/edits", { method: "POST", body: form });
 }
 
@@ -130,36 +132,84 @@ Deno.test("multipart rejects a cumulative body over the limit", async () => {
   assertEquals(error.status, 413);
 });
 
-Deno.test("auto size derives the ratio from the first file header", async () => {
+Deno.test("auto size uses the first file's real dimensions", async () => {
   const parsed = await parseImageRequestMultipart(
     multipart({ size: "auto" }, [["image", pngFile("a.png", 2, 3)]]),
     defaults,
   );
+  assertEquals(parsed.size.mode, "exact");
   assertEquals(parsed.size.tier, "1K");
-  assertEquals(parsed.size.ratio, "2:3");
+  assertEquals(parsed.size.ratio, null);
+  assertEquals(parsed.size.derivedRatio, "2:3");
+  assertEquals(parsed.size.requestedPixel, { width: 2, height: 3 });
+  const payload = agnesPayload(parsed, "nested");
+  assertEquals(payload.body.size, "2x3");
+  assertEquals("ratio" in payload.body, false);
 });
 
-Deno.test("auto size with only a URL reference falls back to 1K 1:1 with a warning", () => {
-  const parsed = parseImageRequestJson(
+Deno.test("multipart omitted size uses the first file's real dimensions", async () => {
+  const parsed = await parseImageRequestMultipart(
+    multipart({}, [["image", pngFile("a.png", 900, 1200)]]),
+    defaults,
+  );
+  const payload = agnesPayload(parsed, "nested");
+  assertEquals(payload.body.size, "900x1200");
+  assertEquals("ratio" in payload.body, false);
+});
+
+Deno.test("auto with a URL reference fetches the first URL only", async () => {
+  let calls = 0;
+  const fetchImpl = () => {
+    calls++;
+    return Promise.resolve(
+      new Response(pngHeader(900, 1200) as unknown as BodyInit),
+    );
+  };
+  const parsed = await parseImageRequestJson(
     {
       model: "agnes-image-2.5-flash",
       prompt: "p",
       size: "auto",
-      images: [{ image_url: "https://example.com/a.png" }],
+      images: [{ image_url: "https://a.example/1.png" }, {
+        image_url: "https://a.example/2.png",
+      }],
     },
     "edits",
     defaults,
+    undefined,
+    { fetchImpl },
   );
-  assertEquals(parsed.size.tier, "1K");
-  assertEquals(parsed.size.ratio, "1:1");
-  assertEquals(parsed.warnings.includes("auto-size-from-url"), true);
+  assertEquals(agnesPayload(parsed, "nested").body.size, "900x1200");
+  assertEquals(calls, 1);
 });
 
-Deno.test("JSON edits accept a mix of image URLs and data URIs", () => {
-  const parsed = parseImageRequestJson(
+Deno.test("an unreadable reference URL fails with a 400", async () => {
+  const fetchImpl = () => Promise.reject(new Error("boom"));
+  const error = await assertRejects(
+    () =>
+      parseImageRequestJson(
+        {
+          model: "agnes-image-2.5-flash",
+          prompt: "p",
+          size: "auto",
+          images: [{ image_url: "https://a.example/x.png" }],
+        },
+        "edits",
+        defaults,
+        undefined,
+        { fetchImpl },
+      ),
+    ApiError,
+  );
+  assertEquals(error.status, 400);
+});
+
+Deno.test("JSON edits accept a mix of image URLs and data URIs", async () => {
+  const parsed = await parseImageRequestJson(
     {
       model: "m",
       prompt: "p",
+      size: "1K",
       images: [
         { image_url: "https://example.com/a.png" },
         { image_url: "data:image/png;base64,AAAA" },
@@ -174,8 +224,8 @@ Deno.test("JSON edits accept a mix of image URLs and data URIs", () => {
   ]);
 });
 
-Deno.test("JSON edits reject file_id and normalize extra_body.image", () => {
-  const fileIdError = assertThrows(
+Deno.test("JSON edits reject file_id and normalize extra_body.image", async () => {
+  const fileIdError = await assertRejects(
     () =>
       parseImageRequestJson(
         {
@@ -190,10 +240,11 @@ Deno.test("JSON edits reject file_id and normalize extra_body.image", () => {
   );
   assertEquals(fileIdError.code, "unsupported_parameter");
 
-  const viaExtraBody = parseImageRequestJson(
+  const viaExtraBody = await parseImageRequestJson(
     {
       model: "m",
       prompt: "p",
+      size: "1K",
       extra_body: { image: ["https://example.com/a.png"] },
     },
     "edits",
@@ -201,10 +252,11 @@ Deno.test("JSON edits reject file_id and normalize extra_body.image", () => {
   );
   assertEquals(viaExtraBody.images, ["https://example.com/a.png"]);
 
-  const single = parseImageRequestJson(
+  const single = await parseImageRequestJson(
     {
       model: "m",
       prompt: "p",
+      size: "1K",
       image: "https://example.com/a.png",
     },
     "edits",
@@ -213,8 +265,8 @@ Deno.test("JSON edits reject file_id and normalize extra_body.image", () => {
   assertEquals(single.images, ["https://example.com/a.png"]);
 });
 
-Deno.test("JSON edits reject non-http(s) image references", () => {
-  const error = assertThrows(
+Deno.test("JSON edits reject non-http(s) image references", async () => {
+  const error = await assertRejects(
     () =>
       parseImageRequestJson(
         {
@@ -230,8 +282,8 @@ Deno.test("JSON edits reject non-http(s) image references", () => {
   assertEquals(error.status, 400);
 });
 
-Deno.test("payload placement follows the nested and top_level modes", () => {
-  const parsed = parseImageRequestJson(
+Deno.test("payload placement follows the nested and top_level modes", async () => {
+  const parsed = await parseImageRequestJson(
     {
       model: "m",
       prompt: "p",
@@ -255,9 +307,9 @@ Deno.test("payload placement follows the nested and top_level modes", () => {
   assertEquals((topLevel.body.extra_body as Record<string, unknown>).response_format, "b64_json");
 });
 
-Deno.test("auto size derives the ratio from a JSON data URI reference", () => {
+Deno.test("auto size uses a JSON data URI reference as exact pixels", async () => {
   const dataUri = `data:image/png;base64,${encodeBase64(pngHeader(2, 3))}`;
-  const parsed = parseImageRequestJson(
+  const parsed = await parseImageRequestJson(
     {
       model: "m",
       prompt: "p",
@@ -267,27 +319,34 @@ Deno.test("auto size derives the ratio from a JSON data URI reference", () => {
     "edits",
     defaults,
   );
-  assertEquals(parsed.size.tier, "1K");
-  assertEquals(parsed.size.ratio, "2:3");
+  assertEquals(parsed.size.mode, "exact");
+  assertEquals(parsed.size.requestedPixel, { width: 2, height: 3 });
+  assertEquals(parsed.size.derivedRatio, "2:3");
+  assertEquals(parsed.size.ratio, null);
+  const payload = agnesPayload(parsed, "nested");
+  assertEquals(payload.body.size, "2x3");
+  assertEquals("ratio" in payload.body, false);
 });
 
-Deno.test("auto size falls back when the first reference is a URL", () => {
-  const dataUri = `data:image/png;base64,${encodeBase64(pngHeader(2, 3))}`;
-  const parsed = parseImageRequestJson(
-    {
-      model: "m",
-      prompt: "p",
-      size: "auto",
-      images: [{ image_url: "https://example.com/a.png" }, { image_url: dataUri }],
-    },
-    "edits",
+Deno.test("multipart auto with a URL reference fetches the first URL only", async () => {
+  let calls = 0;
+  const fetchImpl = () => {
+    calls++;
+    return Promise.resolve(new Response(pngHeader(900, 1200) as unknown as BodyInit));
+  };
+  const parsed = await parseImageRequestMultipart(
+    multipart({ size: "auto" }, [
+      ["image", "https://a.example/1.png"],
+      ["image", "https://a.example/2.png"],
+    ]),
     defaults,
+    { fetchImpl },
   );
-  assertEquals(parsed.size.ratio, "1:1");
-  assertEquals(parsed.warnings.includes("auto-size-from-url"), true);
+  assertEquals(agnesPayload(parsed, "nested").body.size, "900x1200");
+  assertEquals(calls, 1);
 });
 
-Deno.test("multipart auto size derives the ratio from a data URI field", async () => {
+Deno.test("multipart auto size reads a data URI field", async () => {
   const dataUri = `data:image/png;base64,${encodeBase64(pngHeader(2, 3))}`;
   const form = new FormData();
   form.set("model", "m");
@@ -296,6 +355,7 @@ Deno.test("multipart auto size derives the ratio from a data URI field", async (
   form.set("image", dataUri);
   const request = new Request("https://x/v1/images/edits", { method: "POST", body: form });
   const parsed = await parseImageRequestMultipart(request, defaults);
-  assertEquals(parsed.size.tier, "1K");
-  assertEquals(parsed.size.ratio, "2:3");
+  assertEquals(parsed.size.mode, "exact");
+  assertEquals(parsed.size.requestedPixel, { width: 2, height: 3 });
+  assertEquals(parsed.size.derivedRatio, "2:3");
 });

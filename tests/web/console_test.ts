@@ -33,7 +33,6 @@ Deno.test("settings form exposes every setting", () => {
       "agnesBaseUrl",
       "defaultResponseFormat",
       "defaultSize",
-      "defaultRatio",
       "imageParamMode",
       "probeModel",
       "probeConcurrency",
@@ -45,6 +44,7 @@ Deno.test("settings form exposes every setting", () => {
     assert(html.includes(`name="${field}"`), `missing setting ${field}`);
   }
   assert(html.includes('type="radio" name="defaultSize" value="4K"'));
+  assert(!html.includes('name="defaultRatio"'));
   assert(html.includes('data-role="settings-status"'));
 });
 

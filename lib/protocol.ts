@@ -10,14 +10,18 @@ import {
 } from "./limits.ts";
 import { formatPixel, type ResolvedSize, resolveSize, type SizeTier } from "./size.ts";
 import type { PixelSize } from "./size.ts";
+import { fetchImageDimensions } from "./remote-image.ts";
 import type { ResponseFormat } from "./settings.ts";
 
 export type ImageEndpoint = "generations" | "edits";
 
 export interface ProtocolDefaults {
   defaultSize: SizeTier;
-  defaultRatio: string;
   defaultResponseFormat: ResponseFormat;
+}
+
+export interface ParseImageOptions {
+  fetchImpl?: typeof fetch;
 }
 
 export interface ParsedImageRequest {
@@ -74,10 +78,6 @@ const KNOWN_FIELDS = new Set([
 
 function invalid(message: string, param: string, code: string | null = null): ApiError {
   return new ApiError(400, message, "invalid_request_error", param, code);
-}
-
-function isPixelSizeInput(value: string): boolean {
-  return /^\d{1,6}\s*[x×]\s*\d{1,6}$/i.test(value);
 }
 
 function readImageValue(value: unknown, param: string): string[] {
@@ -138,6 +138,35 @@ function referenceFromImage(image: string | undefined): PixelSize | null {
   }
 }
 
+function unreadableReference(): ApiError {
+  return new ApiError(
+    400,
+    "reference image dimensions could not be read",
+    "invalid_request_error",
+    "image",
+    "reference_image_unsupported",
+  );
+}
+
+/** Resolves the real pixel size of the first reference image for auto sizing. */
+async function referenceSizeForAuto(
+  image: string | undefined,
+  provided: PixelSize | null | undefined,
+  fetchImpl?: typeof fetch,
+): Promise<PixelSize> {
+  if (provided) return provided;
+  if (!image) throw unreadableReference();
+  if (image.startsWith("data:image/")) {
+    const dimensions = referenceFromImage(image);
+    if (dimensions) return dimensions;
+    throw unreadableReference();
+  }
+  if (isHttpUrl(image)) {
+    return await fetchImageDimensions(image, { fetchImpl, allowHttp: true });
+  }
+  throw unreadableReference();
+}
+
 /** Collects reference images from the top-level image/images fields. */
 function collectImages(obj: Record<string, unknown>): string[] {
   const images: string[] = [];
@@ -170,12 +199,13 @@ function readResponseFormat(
   return format;
 }
 
-export function parseImageRequestJson(
+export async function parseImageRequestJson(
   raw: unknown,
   endpoint: ImageEndpoint,
   defaults: ProtocolDefaults,
   reference?: PixelSize | null,
-): ParsedImageRequest {
+  options?: ParseImageOptions,
+): Promise<ParsedImageRequest> {
   const obj = asObject(raw);
   if (!obj) throw invalid("request body must be a JSON object", "", "invalid_body");
 
@@ -214,9 +244,7 @@ export function parseImageRequestJson(
 
   const rawSize = typeof obj.size === "string" ? obj.size.trim() : undefined;
   const rawRatio = typeof obj.ratio === "string" ? obj.ratio.trim() : undefined;
-  const sizeInput = rawSize && rawSize !== "" ? rawSize : defaults.defaultSize;
-  const isAuto = sizeInput.toLowerCase() === "auto";
-  const isPixel = isPixelSizeInput(sizeInput);
+  const autoTrigger = rawSize === undefined || rawSize === "" || rawSize.toLowerCase() === "auto";
 
   const extraBody: Record<string, unknown> = {};
   if (obj.extra_body !== undefined) {
@@ -232,16 +260,15 @@ export function parseImageRequestJson(
     );
   }
 
-  // Only the first reference image is inspected, and only locally readable bytes.
-  const effectiveReference = isAuto ? (reference ?? referenceFromImage(images[0])) : null;
-
-  let ratioInput = rawRatio;
-  if (!ratioInput) {
-    if (isPixel || (isAuto && effectiveReference)) ratioInput = undefined;
-    else ratioInput = defaults.defaultRatio;
+  let size: ResolvedSize;
+  if (autoTrigger && images.length > 0) {
+    const referenceSize = await referenceSizeForAuto(images[0], reference, options?.fetchImpl);
+    size = resolveSize({ size: "auto", ratio: rawRatio, reference: referenceSize });
+  } else if (autoTrigger) {
+    size = resolveSize({ size: defaults.defaultSize, ratio: rawRatio });
+  } else {
+    size = resolveSize({ size: rawSize, ratio: rawRatio });
   }
-
-  const size = resolveSize({ size: sizeInput, ratio: ratioInput, reference: effectiveReference });
   const responseFormat = readResponseFormat(obj, defaults);
 
   const warnings: string[] = [];
@@ -250,9 +277,6 @@ export function parseImageRequestJson(
   }
   for (const key of Object.keys(obj)) {
     if (!KNOWN_FIELDS.has(key)) warnings.push(key);
-  }
-  if (isAuto && !effectiveReference && images.length > 0 && isHttpUrl(images[0])) {
-    warnings.push("auto-size-from-url");
   }
 
   return {
@@ -277,11 +301,16 @@ export function agnesPayload(
     prompt: request.prompt,
   };
 
-  body.size = request.size.tier;
-  body.ratio = request.size.ratio;
+  if (request.size.mode === "exact" && request.size.requestedPixel) {
+    body.size = formatPixel(request.size.requestedPixel);
+  } else {
+    body.size = request.size.tier;
+  }
+  if (request.size.ratio !== null) body.ratio = request.size.ratio;
 
   const extra: Record<string, unknown> = { ...request.extraBody };
   delete extra.image;
+  delete extra.ratio;
   delete extra.response_format;
   delete extra.return_base64;
   delete extra.n;
@@ -365,6 +394,7 @@ const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 export async function parseImageRequestMultipart(
   request: Request,
   defaults: ProtocolDefaults,
+  options: ParseImageOptions = {},
 ): Promise<ParsedImageRequest> {
   const declared = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > MAX_REQUEST_BYTES) {
@@ -463,13 +493,14 @@ export async function parseImageRequestMultipart(
     );
   }
 
-  const autoSize = typeof raw.size === "string" && raw.size.toLowerCase() === "auto";
-  const reference = autoSize
+  const rawSizeValue = typeof raw.size === "string" ? raw.size.trim() : "";
+  const autoTrigger = rawSizeValue === "" || rawSizeValue.toLowerCase() === "auto";
+  const reference = autoTrigger
     ? (firstBytes ? readImageDimensions(firstBytes) : referenceFromImage(urlImages[0]))
     : null;
 
   const images = [...dataUris, ...urlImages].map(validateImageReference);
   raw.image = images;
 
-  return parseImageRequestJson(raw, "edits", defaults, reference);
+  return parseImageRequestJson(raw, "edits", defaults, reference, options);
 }

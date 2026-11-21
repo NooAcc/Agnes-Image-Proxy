@@ -66,12 +66,52 @@ function request(images: { url: string | null; b64_json: string | null }[]) {
   };
 }
 
-function pngResponse(bytes = PNG): Response {
+function pngResponse(bytes: Uint8Array = PNG): Response {
   return new Response(bytes as unknown as BodyInit, {
     status: 200,
     headers: { "content-type": "image/png", "content-length": String(bytes.length) },
   });
 }
+
+function pngWithSize(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  bytes.set([0x49, 0x48, 0x44, 0x52], 12);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  return bytes;
+}
+
+Deno.test("gallery stores the actual size of a b64 image", async () => {
+  const gallery = fakeGallery();
+  const archiver = createArchiver({ gallery: gallery.store });
+  const bytes = pngWithSize(900, 1200);
+  await archiver.archive(request([{ url: null, b64_json: encodeBase64(bytes) }]));
+  assertEquals(gallery.rows[0].size, "900x1200");
+});
+
+Deno.test("gallery stores the actual size of a downloaded URL image", async () => {
+  const gallery = fakeGallery();
+  const bytes = pngWithSize(1024, 1024);
+  const archiver = createArchiver({
+    gallery: gallery.store,
+    fetchImpl: () => Promise.resolve(pngResponse(bytes)),
+  });
+  await archiver.archive(request([{ url: "https://out.example/a.png", b64_json: null }]));
+  assertEquals(gallery.rows[0].size, "1024x1024");
+});
+
+Deno.test("gallery falls back to the request size when no bytes are available", async () => {
+  const gallery = fakeGallery();
+  const archiver = createArchiver({
+    gallery: gallery.store,
+    fetchImpl: () => Promise.reject(new Error("boom")),
+  });
+  await archiver.archive(request([{ url: "https://out.example/a.png", b64_json: null }]));
+  assertEquals(gallery.rows[0].size, "1024x1024");
+  assertEquals(gallery.rows[0].bytes, null);
+});
 
 Deno.test("sniffImageMime detects PNG, JPEG and WebP", () => {
   assertEquals(sniffImageMime(PNG), "image/png");

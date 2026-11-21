@@ -1,4 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
+import { encodeBase64 } from "@std/encoding/base64";
 import { ApiError } from "../../lib/errors.ts";
 import { createAccountStore, ensureSchema } from "../../lib/accounts.ts";
 import { createSessionSigner } from "../../lib/auth.ts";
@@ -11,7 +12,22 @@ import type { AgnesGateway, AgnesRequest } from "../../lib/pool.ts";
 import type { ArchiveRequest } from "../../lib/archive.ts";
 
 const API_KEY = "proxy-key";
-const TINY_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB";
+
+function pngHeader(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  bytes.set([0x49, 0x48, 0x44, 0x52], 12);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  return bytes;
+}
+
+function pngB64(width: number, height: number): string {
+  return encodeBase64(pngHeader(width, height));
+}
+
+const TINY_B64 = pngB64(1024, 1024);
 
 interface GatewayCall {
   baseUrl: string;
@@ -165,6 +181,7 @@ Deno.test("the edits alias routes to the edit handler", async () => {
   const form = new FormData();
   form.set("model", "m");
   form.set("prompt", "p");
+  form.set("size", "1K");
   form.set(
     "image",
     new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "a.png", {
@@ -332,6 +349,7 @@ Deno.test("image_param_mode auto retries edits at the top level and caches it", 
   const editBody = {
     model: "m",
     prompt: "p",
+    size: "1K",
     images: ["https://example.com/a.png"],
   };
   const first = await postJson(call, "/v1/images/edits", editBody);
@@ -428,5 +446,77 @@ Deno.test("malformed JSON bodies are rejected", async () => {
     body: "{",
   });
   assertEquals(response.status, 400);
+  sql.close();
+});
+
+Deno.test("response and log use the actual output size", async () => {
+  const { sql, logs, call } = await setup(() =>
+    Promise.resolve({ created: 1, data: [{ b64_json: pngB64(900, 1200) }] })
+  );
+  const reference = `data:image/png;base64,${pngB64(900, 1200)}`;
+  const response = await postJson(call, "/v1/images/generations", {
+    model: "agnes-image-2.5-flash",
+    prompt: "x",
+    images: [reference],
+  });
+  assertEquals(response.status, 200);
+  assertEquals((await response.json()).size, "900x1200");
+  assertEquals(response.headers.get("x-agnes-resolved-size"), "900x1200");
+  const rows = await logs.list(10);
+  assertEquals(rows[0].size, "900x1200");
+  sql.close();
+});
+
+Deno.test("URL output measurement failure falls back to the expected size", async () => {
+  const { sql, logs, call } = await setup(
+    () => Promise.resolve({ created: 1, data: [{ url: "https://out.example/a.png" }] }),
+    { fetchImpl: () => Promise.reject(new Error("boom")) },
+  );
+  const reference = `data:image/png;base64,${pngB64(900, 1200)}`;
+  const response = await postJson(call, "/v1/images/generations", {
+    model: "agnes-image-2.5-flash",
+    prompt: "x",
+    images: [reference],
+  });
+  assertEquals(response.status, 200);
+  assertEquals((await response.json()).size, "864x1152");
+  assert(response.headers.get("x-agnes-warnings")?.includes("size-measure-failed"));
+  const rows = await logs.list(10);
+  assertEquals(rows[0].size, null);
+  sql.close();
+});
+
+Deno.test("partial success with mixed sizes joins unique actual sizes in the log", async () => {
+  const outputs = [[900, 1200], [1024, 1024]] as const;
+  const { sql, logs, call } = await setup((_call, index) =>
+    Promise.resolve({
+      created: 1,
+      data: [{ b64_json: pngB64(outputs[index][0], outputs[index][1]) }],
+    })
+  );
+  const reference = `data:image/png;base64,${pngB64(900, 1200)}`;
+  const response = await postJson(call, "/v1/images/generations", {
+    model: "agnes-image-2.5-flash",
+    prompt: "x",
+    n: 2,
+    images: [reference],
+  });
+  assertEquals(response.status, 200);
+  assertEquals((await response.json()).size, "900x1200");
+  assertEquals((await logs.list(10))[0].size, "900x1200,1024x1024");
+  sql.close();
+});
+
+Deno.test("all failures log the request expression", async () => {
+  const { sql, logs, call } = await setup(() => Promise.reject(new ApiError(400, "bad request")));
+  const response = await postJson(call, "/v1/images/generations", {
+    model: "agnes-image-2.5-flash",
+    prompt: "x",
+    size: "2K",
+    ratio: "16:9",
+    n: 2,
+  });
+  assertEquals(response.status, 400);
+  assertEquals((await logs.list(10))[0].size, "2K 16:9");
   sql.close();
 });

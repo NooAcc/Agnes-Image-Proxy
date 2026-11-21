@@ -11,10 +11,15 @@ export interface PixelSize {
   height: number;
 }
 
+export type SizeMode = "tier" | "exact";
+
 export interface ResolvedSize {
+  mode: SizeMode;
   tier: SizeTier;
-  ratio: Ratio;
+  ratio: Ratio | null;
+  derivedRatio: Ratio;
   pixel: PixelSize;
+  requestedPixel: PixelSize | null;
 }
 
 /**
@@ -95,25 +100,62 @@ export interface ResolveSizeInput {
   reference?: PixelSize | null;
 }
 
+function scaledPixel(ratio: Ratio, tier: SizeTier): PixelSize {
+  const base = BASE_SIZES[ratio];
+  const scale = TIER_SCALE[tier];
+  return { width: base.width * scale, height: base.height * scale };
+}
+
 /**
  * Translates any client size (tier, WxH or auto) into the Agnes tier/ratio
- * pair plus the native pixel dimensions for that pair.
+ * pair plus the native pixel dimensions for that pair. When `auto` is paired
+ * with a reference image, `exact` mode keeps the reference pixel size for the
+ * upstream request while still deriving a tier and ratio for metadata.
  */
 export function resolveSize(input: ResolveSizeInput): ResolvedSize {
   const rawSize = input.size?.trim();
-  let tier: SizeTier;
-  let derivedRatio: Ratio = "1:1";
+  const reference = input.reference ?? null;
 
-  if (!rawSize || rawSize.toLowerCase() === "auto") {
-    tier = "1K";
-    if (input.reference) {
-      derivedRatio = nearestRatio(input.reference.width / input.reference.height);
+  let explicitRatio: Ratio | null = null;
+  const rawRatio = input.ratio?.trim();
+  if (rawRatio) {
+    if (!isRatio(rawRatio)) {
+      throw new ApiError(
+        400,
+        `unsupported ratio: ${rawRatio}`,
+        "invalid_request_error",
+        "ratio",
+        "invalid_ratio",
+      );
     }
+    explicitRatio = rawRatio;
+  }
+
+  const isAuto = !rawSize || rawSize.toLowerCase() === "auto";
+
+  if (isAuto && reference) {
+    const tier = nearestTier(reference.width * reference.height);
+    const derivedRatio = nearestRatio(reference.width / reference.height);
+    return {
+      mode: "exact",
+      tier,
+      ratio: explicitRatio,
+      derivedRatio,
+      pixel: scaledPixel(derivedRatio, tier),
+      requestedPixel: { width: reference.width, height: reference.height },
+    };
+  }
+
+  let tier: SizeTier;
+  let inferredRatio: Ratio = "1:1";
+  let ratio: Ratio | null = explicitRatio;
+
+  if (isAuto) {
+    tier = "1K";
+    if (reference) inferredRatio = nearestRatio(reference.width / reference.height);
   } else if (isSizeTier(rawSize)) {
     tier = rawSize.toUpperCase() as SizeTier;
-    if (input.reference) {
-      derivedRatio = nearestRatio(input.reference.width / input.reference.height);
-    }
+    if (reference) inferredRatio = nearestRatio(reference.width / reference.height);
   } else {
     const pixel = parsePixelSize(rawSize);
     if (!pixel) {
@@ -126,33 +168,26 @@ export function resolveSize(input: ResolveSizeInput): ResolvedSize {
       );
     }
     tier = nearestTier(pixel.width * pixel.height);
-    derivedRatio = nearestRatio(pixel.width / pixel.height);
+    inferredRatio = nearestRatio(pixel.width / pixel.height);
+    ratio = explicitRatio ?? inferredRatio;
   }
 
-  let ratio = derivedRatio;
-  const rawRatio = input.ratio?.trim();
-  if (rawRatio) {
-    if (!isRatio(rawRatio)) {
-      throw new ApiError(
-        400,
-        `unsupported ratio: ${rawRatio}`,
-        "invalid_request_error",
-        "ratio",
-        "invalid_ratio",
-      );
-    }
-    ratio = rawRatio;
-  }
-
-  const base = BASE_SIZES[ratio];
-  const scale = TIER_SCALE[tier];
   return {
+    mode: "tier",
     tier,
     ratio,
-    pixel: { width: base.width * scale, height: base.height * scale },
+    derivedRatio: explicitRatio ?? inferredRatio,
+    pixel: scaledPixel(ratio ?? "1:1", tier),
+    requestedPixel: null,
   };
 }
 
 export function formatPixel(size: PixelSize): string {
   return `${size.width}x${size.height}`;
+}
+
+/** Renders how the upstream size was requested, for headers and logs. */
+export function formatRequestSize(size: ResolvedSize): string {
+  if (size.mode === "exact" && size.requestedPixel) return formatPixel(size.requestedPixel);
+  return size.ratio ? `${size.tier} ${size.ratio}` : size.tier;
 }

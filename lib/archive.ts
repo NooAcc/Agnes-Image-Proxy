@@ -1,7 +1,12 @@
 import { decodeBase64 } from "@std/encoding/base64";
 import type { GalleryInsert, GalleryStore } from "./gallery.ts";
+import { readImageDimensions } from "./image-dimensions.ts";
 import { ARCHIVE_TIMEOUT_MS, MAX_ARCHIVE_BYTES } from "./limits.ts";
 import type { NormalizedImage } from "./protocol.ts";
+import { isPublicHttpsUrl } from "./remote-image.ts";
+import { formatPixel } from "./size.ts";
+
+export { isPublicHttpsUrl } from "./remote-image.ts";
 
 export interface ArchiveRequest {
   ts: string;
@@ -29,50 +34,6 @@ export interface ArchiverOptions {
 }
 
 const MAX_REDIRECTS = 2;
-
-function isPublicIPv4(host: string): boolean {
-  const parts = host.split(".");
-  if (parts.length !== 4) return false;
-  const values = parts.map(Number);
-  if (values.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) return false;
-  const [a, b] = values;
-  if (a === 0 || a === 10 || a === 127) return false;
-  if (a === 172 && b >= 16 && b <= 31) return false;
-  if (a === 192 && b === 168) return false;
-  if (a === 169 && b === 254) return false;
-  if (a === 100 && b >= 64 && b <= 127) return false;
-  return true;
-}
-
-function isPublicHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (host === "" || host === "localhost" || host.endsWith(".localhost")) return false;
-
-  if (host.includes(":")) {
-    if (host === "::" || host === "::1") return false;
-    if (host.startsWith("::ffff:")) return isPublicIPv4(host.slice("::ffff:".length));
-    const first = host.split(":")[0];
-    if (/^f[cd][0-9a-f]{0,2}$/.test(first)) return false; // fc00::/7
-    if (/^fe[89ab][0-9a-f]{0,2}$/.test(first)) return false; // fe80::/10
-    return true;
-  }
-
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return isPublicIPv4(host);
-  return true;
-}
-
-/** Only https URLs without credentials on public hosts are acceptable. */
-export function isPublicHttpsUrl(value: string): boolean {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return false;
-  }
-  if (url.protocol !== "https:") return false;
-  if (url.username !== "" || url.password !== "") return false;
-  return isPublicHost(url.hostname);
-}
 
 export function sniffImageMime(bytes: Uint8Array): string | null {
   if (
@@ -206,6 +167,11 @@ export function createArchiver(options: ArchiverOptions): Archiver {
   };
 
   const run = async (request: ArchiveRequest): Promise<void> => {
+    const sizeFromBytes = (bytes: Uint8Array | null): string | null => {
+      const dims = bytes ? readImageDimensions(bytes) : null;
+      return dims ? formatPixel(dims) : request.size;
+    };
+
     for (const image of request.images) {
       const base = {
         ts: request.ts,
@@ -231,7 +197,7 @@ export function createArchiver(options: ArchiverOptions): Archiver {
         } catch {
           bytes = null;
         }
-        await persist({ ...base, mime, bytes, sourceUrl: null });
+        await persist({ ...base, size: sizeFromBytes(bytes), mime, bytes, sourceUrl: null });
         continue;
       }
 
@@ -240,6 +206,7 @@ export function createArchiver(options: ArchiverOptions): Archiver {
         const mime = downloaded?.mime ?? mimeFromUrl(image.url) ?? "image/png";
         await persist({
           ...base,
+          size: sizeFromBytes(downloaded?.bytes ?? null),
           mime,
           bytes: downloaded?.bytes ?? null,
           sourceUrl: image.url,

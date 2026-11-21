@@ -1,10 +1,21 @@
 import { assert, assertEquals } from "@std/assert";
+import { encodeBase64 } from "@std/encoding/base64";
 import { buildHarness } from "../../scripts/harness.ts";
 import { createNodeSqliteExecutor } from "../../lib/testing/node-sqlite-executor.ts";
 import type { AgnesClient } from "../../lib/pool.ts";
 import type { SqlArg } from "../../lib/sql.ts";
 
-const TINY_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB";
+function pngHeader(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  bytes.set([0x49, 0x48, 0x44, 0x52], 12);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  return bytes;
+}
+
+const TINY_B64 = encodeBase64(pngHeader(1024, 1024));
 
 function pngClient(): AgnesClient {
   return {
@@ -33,12 +44,15 @@ Deno.test("harness serves a generation end to end", async () => {
         authorization: "Bearer proxy-key",
         "content-type": "application/json",
       },
-      body: JSON.stringify({ model: "agnes-image-2.5-flash", prompt: "x", size: "1024x1024" }),
+      body: JSON.stringify({ model: "agnes-image-2.5-flash", prompt: "x", size: "2K" }),
     }),
   );
   assertEquals(response.status, 200);
   const body = await response.json();
   assertEquals(body.data[0].b64_json, TINY_B64);
+  // The response size comes from the image bytes, not the request expression.
+  assertEquals(body.size, "1024x1024");
+  assertEquals(response.headers.get("x-agnes-resolved-size"), "2K");
   sql.close();
 });
 

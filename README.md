@@ -155,11 +155,19 @@ const edited = await client.images.edit({
 
 ## 尺寸与 n
 
-- 客户端可传 Agnes 档位（`1K`–`4K`）或任意 `WxH`（含
-  `auto`）。代理按面积与比例的对数距离折成最近的档位 + 比例，响应头 `X-Agnes-Resolved-Size: 2K 16:9`
-  暴露结果，响应体 `size` 填 Agnes 原生输出像素。
-- `size: "auto"` 只在参考图是上传文件或 Data URI 时读取文件头推算比例；参考图是 URL
-  时**不发起任何外部请求**，退回 `1K + 1:1` 并在 `X-Agnes-Warnings` 里标记 `auto-size-from-url`。
+- 客户端可传 Agnes 档位（`1K`–`4K`）、任意 `WxH`，或省略 `size` / 传 `auto`。显式档位与显式 `WxH`
+  由代理按面积与比例的对数距离折成最近的档位 + 比例；客户端没有显式给 `ratio` 时 payload 里不再出现
+  `ratio`，由 Agnes 使用默认 1:1。`X-Agnes-Resolved-Size` 暴露本次请求表达式： `2K 16:9`、`900x1200`
+  或 `2K`。
+- `size` 未传、为空或大小写不敏感等于 `auto`，且带参考图时，代理读取**第一张参考图的真实分辨率**，
+  以 `WIDTHxHEIGHT` 作为上游 `size`。参考图来源：multipart 上传、`data:` URI、http(s) URL
+  （由代理受控读取图片头）。第一张读不到直接返回 400，不再静默退回 `1K + 1:1`。
+- 显式给了 `size` 的请求完全不读取、不下载参考图。
+- Agnes 会把精确 `WIDTHxHEIGHT` 归一化到自己的档位 / 比例表，因此**不能保证输出正好等于参考图
+  分辨率**；实测 `900x1200` 得到 `864x1152`。
+- 响应体 `size`、请求日志 `size`、图片时间线 `size` 都记录**实际输出尺寸**：响应取第一张成功图；
+  日志按出现顺序去重后用逗号连接；相册取归档字节。测量失败时响应退回预期原生尺寸并在
+  `X-Agnes-Warnings` 标记 `size-measure-failed`，日志尺寸记 `null`。
 - `n` 只要求是正整数，**没有 1–10 的上限**，代理按 `n` 并发扇出。上游实测要求
   `n = 1`，因此扇出是必需的。
 - **部分成功也返回**：成功数 ≥1 时 HTTP 200，`data` 只含成功图，并带响应头：
@@ -192,6 +200,7 @@ const edited = await client.images.edit({
 - 每个成功生成并返回给客户端的输出图归档一行；参考输入图不入库。
 - 上游给 `b64_json` 时直接解码为字节存 `BLOB`；上游给 URL 时在响应发出后下载（仅
   `https`、拒绝私网/回环与指向私网的重定向、上限 64 MiB / 60 秒）再入库。
+- 归档行的 `size` 取归档字节的实际宽高；下载失败（`archived=0`）时保留预期原生尺寸与 `source_url`。
 - 下载或写库失败不影响客户端响应：gallery 行保留 `source_url` 且
   `archived=0`，控制台显示占位卡与原始链接。
 - 时间线按 `id DESC` 分页（默认 24 张），按 UTC
@@ -201,10 +210,26 @@ const edited = await client.images.edit({
 ## 已知取舍
 
 - 请求体上限 32 MiB；单张输入图 20 MiB；最多 16 张。
+- 参考图 URL 读头与输出 URL 测量各额外增加一次小请求（通常几百毫秒）；测量失败只降级并告警，
+  不会让请求失败。
+- 参考图读头允许 `http`/`https`，输出 URL 只允许 `https`；两者共用 10 秒超时、1 MiB 字节上限、 最多
+  2 次重定向。与归档下载一样，不额外实现 DNS rebinding 防护，这是已知边界。
 - 代理不设输出体积预算、不按档位限制 `n`：极端组合（`4K × n=10 × Base64`）可能触及 isolate
   的内存上限，这是明确接受的取舍；上游限流错误原样返回（429）。
 - 不实现 `mask` 局部重绘、不流式、不转码、不缩放；只存输出图，不提供图片编辑。
 - 不伪造 `usage`；`revised_prompt` 固定为 `null`；上游未使用字段返回的空字符串一律归一化为 `null`。
+
+## 上游实测结论（2026-11-21）
+
+| 请求                                 | 结果                                      |
+| ------------------------------------ | ----------------------------------------- |
+| `size: "auto"`                       | HTTP 400：`size has invalid value "auto"` |
+| `size: "900x1200"`                   | HTTP 200；输出图实际为 `864x1152`         |
+| `size: "900x1200"` + `ratio: "16:9"` | 输出仍为 `864x1152`，`ratio` 不生效       |
+| `size: "2K"`，不传 `ratio`           | 输出 `2048x2048`，Agnes 默认 1:1          |
+
+结论：`auto` 不能透传，必须由代理换算；精确 `WIDTHxHEIGHT` 会被 Agnes 归一化；`ratio` 只在档位
+模式下有意义。
 
 ## 上游实测结论（2026-11-20）
 
@@ -244,6 +269,9 @@ SQL，生产用 `@libsql/client/web`。
 
 - 控制台 CSP
   `default-src 'none'`，只允许同源连接与内联样式/脚本；`img-src 'self' data:`；`X-Frame-Options: DENY`、`nosniff`、`no-referrer`、`Cache-Control: no-store`。
-- 归档下载只接受 Agnes 响应里给出的输出 URL，并校验
-  `https`、私网/回环地址、重定向与体积上限；代理永不请求客户端提供的 URL。
+- 只有 `auto` 需要参考图尺寸时，代理才会请求客户端提供的参考图 URL，并且只读取图片头： 允许
+  `http`/`https` 与公网主机；拒绝私网/回环/链路本地/带凭据的地址；每次重定向重新校验； 10 秒超时、1
+  MiB 上限、最多 2 次重定向。输出 URL 读头只允许 `https`。
+- 归档下载只接受 Agnes 响应里给出的输出 URL，并校验 `https`、私网/回环地址、重定向与体积上限。
+- 与归档下载一样，URL 读头不额外实现 DNS rebinding 防护。
 - 密钥比较不泄漏长度与前缀；轮换 `PROXY_API_KEY` 会作废全部会话。

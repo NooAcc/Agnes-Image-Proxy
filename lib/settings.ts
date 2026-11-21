@@ -1,7 +1,7 @@
 import { ApiError } from "./errors.ts";
 import { executeBatch, type SqlExecutor } from "./sql.ts";
 import { SETTINGS_CACHE_TTL_MS } from "./limits.ts";
-import { isRatio, isSizeTier, type Ratio, type SizeTier } from "./size.ts";
+import { isSizeTier, type SizeTier } from "./size.ts";
 
 export type ResponseFormat = "b64_json" | "url";
 export type ImageParamMode = "auto" | "nested" | "top_level";
@@ -10,7 +10,6 @@ export interface AppSettings {
   agnesBaseUrl: string;
   defaultResponseFormat: ResponseFormat;
   defaultSize: SizeTier;
-  defaultRatio: Ratio;
   imageParamMode: ImageParamMode;
   probeModel: string;
   probeConcurrency: number;
@@ -23,7 +22,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   agnesBaseUrl: "https://apihub.agnes-ai.com/v1",
   defaultResponseFormat: "b64_json",
   defaultSize: "1K",
-  defaultRatio: "1:1",
   imageParamMode: "auto",
   probeModel: "agnes-image-2.5-flash",
   probeConcurrency: 2,
@@ -98,11 +96,6 @@ export function validateSettings(input: unknown): AppSettings {
     throw invalid("defaultSize", "defaultSize must be one of 1K, 2K, 3K, 4K");
   }
 
-  const defaultRatio = pick("defaultRatio");
-  if (!isRatio(defaultRatio)) {
-    throw invalid("defaultRatio", "defaultRatio is not a supported ratio");
-  }
-
   const imageParamMode = pick("imageParamMode");
   if (imageParamMode !== "auto" && imageParamMode !== "nested" && imageParamMode !== "top_level") {
     throw invalid("imageParamMode", "imageParamMode must be auto, nested or top_level");
@@ -117,7 +110,6 @@ export function validateSettings(input: unknown): AppSettings {
     agnesBaseUrl: normalizeBaseUrl(agnesBaseUrl),
     defaultResponseFormat,
     defaultSize: defaultSize.toUpperCase() as SizeTier,
-    defaultRatio,
     imageParamMode,
     probeModel: probeModel.trim(),
     probeConcurrency: integerInRange("probeConcurrency", pick("probeConcurrency"), 1, 10),

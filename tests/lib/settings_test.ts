@@ -22,13 +22,23 @@ Deno.test("settings default to the documented values", async () => {
   assertEquals(DEFAULT_SETTINGS.agnesBaseUrl, "https://apihub.agnes-ai.com/v1");
   assertEquals(DEFAULT_SETTINGS.defaultResponseFormat, "b64_json");
   assertEquals(DEFAULT_SETTINGS.defaultSize, "1K");
-  assertEquals(DEFAULT_SETTINGS.defaultRatio, "1:1");
+  assertEquals("defaultRatio" in DEFAULT_SETTINGS, false);
   assertEquals(DEFAULT_SETTINGS.imageParamMode, "auto");
   assertEquals(DEFAULT_SETTINGS.probeModel, "agnes-image-2.5-flash");
   assertEquals(DEFAULT_SETTINGS.probeConcurrency, 2);
   assertEquals(DEFAULT_SETTINGS.requestTimeoutMs, 300000);
   assertEquals(DEFAULT_SETTINGS.autoRefreshIntervalMs, 5000);
   assertEquals(DEFAULT_SETTINGS.maxAttempts, 3);
+  sql.close();
+});
+
+Deno.test("the settings store ignores a legacy defaultRatio row", async () => {
+  const { sql, store } = await freshStore();
+  await sql.execute(
+    "INSERT INTO settings (key, value, updated_at) VALUES ('defaultRatio', '\"16:9\"', 'x')",
+  );
+  const settings = await store.read();
+  assertEquals("defaultRatio" in settings, false);
   sql.close();
 });
 

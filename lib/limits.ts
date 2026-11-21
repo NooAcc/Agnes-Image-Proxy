@@ -7,6 +7,10 @@ export const MAX_INPUT_IMAGES = 16;
 export const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 export const ARCHIVE_TIMEOUT_MS = 60_000;
 
+export const REMOTE_IMAGE_TIMEOUT_MS = 10_000;
+export const REMOTE_IMAGE_MAX_BYTES = 1024 * 1024;
+export const REMOTE_IMAGE_MAX_REDIRECTS = 2;
+
 export const UPSTREAM_TIMEOUT_MS = 300_000;
 export const MIN_UPSTREAM_TIMEOUT_MS = 60_000;
 export const MAX_UPSTREAM_TIMEOUT_MS = 360_000;
