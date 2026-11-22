@@ -8,8 +8,8 @@ import {
 } from "./limits.ts";
 import type { SettingsStore } from "./settings.ts";
 
-/** Fixed preference order used to break nsfwjs ties (earlier wins). */
-export const NSFW_TAG_ORDER = ["neutral", "drawing", "sexy", "porn", "hentai"] as const;
+/** Fixed preference order used to break nsfw-detection-2-mini ties (earlier wins). */
+export const NSFW_TAG_ORDER = ["safe", "drawing", "sexy", "porn", "hentai"] as const;
 export type NsfwTag = typeof NSFW_TAG_ORDER[number];
 
 export interface EnrichReport {
@@ -100,7 +100,7 @@ interface BatchItem {
     size: "down";
     format: "webp";
     quality: number;
-    nsfwjs: 1;
+    nsfw: 1;
   };
 }
 
@@ -195,7 +195,7 @@ export function createEnricher(options: EnricherOptions): Enricher {
             size: "down",
             format: "webp",
             quality: settings.thumbnailQuality,
-            nsfwjs: 1,
+            nsfw: 1,
           },
         }));
 
@@ -249,13 +249,13 @@ export function createEnricher(options: EnricherOptions): Enricher {
           const data = item.data;
           if (typeof data !== "object" || data === null) {
             report.failed++;
-            await writeFailed(row.id, at, "nsfwjs: prediction unavailable");
+            await writeFailed(row.id, at, "nsfw: prediction unavailable");
             continue;
           }
           const result = data as { base64?: unknown; nsfw?: unknown };
           if (!isNsfwScores(result.nsfw)) {
             report.failed++;
-            await writeFailed(row.id, at, "nsfwjs: prediction unavailable");
+            await writeFailed(row.id, at, "nsfw: prediction unavailable");
             continue;
           }
 

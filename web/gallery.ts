@@ -27,7 +27,7 @@ export const GALLERY_HTML = `
     </div>
     <div class="tag-chips" data-role="gallery-tags" role="group" aria-label="按标签筛选">
       <button class="chip is-active" type="button" data-action="filter-tag" data-tag="">全部</button>
-      <button class="chip" type="button" data-action="filter-tag" data-tag="neutral">普通</button>
+      <button class="chip" type="button" data-action="filter-tag" data-tag="safe">普通</button>
       <button class="chip" type="button" data-action="filter-tag" data-tag="drawing">绘画</button>
       <button class="chip" type="button" data-action="filter-tag" data-tag="sexy">性感</button>
       <button class="chip" type="button" data-action="filter-tag" data-tag="porn">色情</button>
@@ -108,7 +108,7 @@ export const GALLERY_SCRIPT = String.raw`
   };
 
   var TAG_LABELS = {
-    neutral: "普通",
+    safe: "普通",
     drawing: "绘画",
     sexy: "性感",
     porn: "色情",
@@ -124,9 +124,11 @@ export const GALLERY_SCRIPT = String.raw`
 
   function nsfwText(nsfw) {
     if (!nsfw) return "暂无 NSFW 数据";
-    var nsfwPercent = Math.round((1 - Number(nsfw.neutral)) * 100);
+    var nsfwPercent = Math.round(
+      (Number(nsfw.hentai) + Number(nsfw.porn) + Number(nsfw.sexy)) * 100
+    );
     return (nsfw.isNsfw ? "NSFW " : "非 NSFW ") + nsfwPercent + "%" +
-      " · 普通 " + pct(nsfw.neutral) +
+      " · 普通 " + pct(nsfw.safe) +
       " · 绘画 " + pct(nsfw.drawing) +
       " · 性感 " + pct(nsfw.sexy) +
       " · 色情 " + pct(nsfw.porn) +

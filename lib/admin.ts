@@ -41,7 +41,7 @@ const ACCOUNT_TEST = /^\/admin\/api\/accounts\/(\d+)\/test$/;
 const ACCOUNT_RESET = /^\/admin\/api\/accounts\/(\d+)\/reset$/;
 const GALLERY_PATH = /^\/admin\/api\/gallery(?:\/\d+(?:\/content|\/thumbnail)?)?$/;
 const GALLERY_TAGS = new Set<GalleryTagFilter>([
-  "neutral",
+  "safe",
   "drawing",
   "sexy",
   "porn",

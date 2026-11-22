@@ -10,7 +10,7 @@ const WEBP = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x4
 const SCORES = {
   drawing: 0.02,
   hentai: 0.01,
-  neutral: 0.91,
+  safe: 0.91,
   porn: 0.03,
   sexy: 0.03,
   isNsfw: false,

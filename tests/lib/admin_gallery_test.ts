@@ -21,7 +21,7 @@ const WEBP = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x4
 const NSFW: NsfwScores = {
   drawing: 0.02,
   hentai: 0.01,
-  neutral: 0.91,
+  safe: 0.91,
   porn: 0.03,
   sexy: 0.03,
   isNsfw: false,
@@ -171,16 +171,16 @@ Deno.test("gallery delete removes one row and clear empties the store", async ()
 
 Deno.test("gallery list filters by tag and rejects unknown tags", async () => {
   const { sql, gallery, call } = await setup();
-  const neutral = await gallery.record(row({ prompt: "n" }));
+  const safe = await gallery.record(row({ prompt: "n" }));
   const porn = await gallery.record(row({ prompt: "p" }));
   await gallery.record(row({ prompt: "u" }));
   // A tag without a thumbnail must still be categorized.
-  await gallery.setEnrichment(neutral, { ...enrichment("neutral"), thumb: null, thumbMime: null });
+  await gallery.setEnrichment(safe, { ...enrichment("safe"), thumb: null, thumbMime: null });
   await gallery.setEnrichment(porn, enrichment("porn"));
 
-  const byNeutral = await (await call("/admin/api/gallery?tag=neutral")).json();
-  assertEquals(byNeutral.items.map((item: { prompt: string }) => item.prompt), ["n"]);
-  assertEquals(byNeutral.items[0].hasThumbnail, false);
+  const bySafe = await (await call("/admin/api/gallery?tag=safe")).json();
+  assertEquals(bySafe.items.map((item: { prompt: string }) => item.prompt), ["n"]);
+  assertEquals(bySafe.items[0].hasThumbnail, false);
   const byUncategorized = await (await call("/admin/api/gallery?tag=uncategorized")).json();
   assertEquals(byUncategorized.items.map((item: { prompt: string }) => item.prompt), ["u"]);
 
@@ -195,7 +195,7 @@ Deno.test("gallery thumbnail serves stored bytes and 404s without one", async ()
   const { sql, gallery, call } = await setup();
   const withThumb = await gallery.record(row());
   const without = await gallery.record(row());
-  await gallery.setEnrichment(withThumb, enrichment("neutral"));
+  await gallery.setEnrichment(withThumb, enrichment("safe"));
 
   const response = await call(`/admin/api/gallery/${withThumb}/thumbnail`);
   assertEquals(response.status, 200);
@@ -267,7 +267,7 @@ Deno.test("gallery enrich marks a short page complete", async () => {
     enabled: () => Promise.resolve(true),
     enrich: async (rows) => {
       for (const item of rows) {
-        await gallery.setEnrichment(item.id, enrichment("neutral"));
+        await gallery.setEnrichment(item.id, enrichment("safe"));
       }
       return { processed: rows.length, succeeded: rows.length, failed: 0 };
     },
@@ -292,7 +292,7 @@ Deno.test("gallery enrich stops at the byte budget and resumes without skipping"
     enrich: async (rows) => {
       pages.push(rows.map((item) => item.id));
       for (const item of rows) {
-        await gallery.setEnrichment(item.id, enrichment("neutral"));
+        await gallery.setEnrichment(item.id, enrichment("safe"));
       }
       return { processed: rows.length, succeeded: rows.length, failed: 0 };
     },

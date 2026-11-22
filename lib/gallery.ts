@@ -1,18 +1,18 @@
 import { isAllowedImageMime } from "./image-mime.ts";
 import { bytesFromRow, type SqlArg, type SqlExecutor } from "./sql.ts";
 
-/** nsfwjs five-class scores plus its aggregate flag, as returned by Edge-Images. */
+/** nsfw-detection-2-mini five-class scores plus its aggregate flag, as returned by Edge-Images. */
 export interface NsfwScores {
   drawing: number;
   hentai: number;
-  neutral: number;
+  safe: number;
   porn: number;
   sexy: number;
   isNsfw: boolean;
 }
 
 export type GalleryTagFilter =
-  | "neutral"
+  | "safe"
   | "drawing"
   | "sexy"
   | "porn"

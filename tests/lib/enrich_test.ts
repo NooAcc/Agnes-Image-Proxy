@@ -9,7 +9,7 @@ const WEBP = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x4
 const SCORES = {
   drawing: 0.02,
   hentai: 0.01,
-  neutral: 0.91,
+  safe: 0.91,
   porn: 0.03,
   sexy: 0.03,
   isNsfw: false,
@@ -92,12 +92,12 @@ Deno.test("enrich posts the documented batch shape and stores the result", async
     size: "down",
     format: "webp",
     quality: 75,
-    nsfwjs: 1,
+    nsfw: 1,
   });
 
   assertEquals(writes.length, 1);
   assertEquals(writes[0].id, 7);
-  assertEquals(writes[0].input.tag, "neutral");
+  assertEquals(writes[0].input.tag, "safe");
   assertEquals(writes[0].input.thumb, WEBP);
   assertEquals(writes[0].input.thumbMime, "image/webp");
   assertEquals(writes[0].input.status, "ok");
@@ -109,12 +109,12 @@ Deno.test("tagForNsfw uses a fixed tie order", () => {
   const tied: NsfwScores = {
     drawing: 0.2,
     hentai: 0.2,
-    neutral: 0.2,
+    safe: 0.2,
     porn: 0.2,
     sexy: 0.2,
     isNsfw: false,
   };
-  assertEquals(tagForNsfw(tied), "neutral");
+  assertEquals(tagForNsfw(tied), "safe");
   assertEquals(tagForNsfw({ ...tied, porn: 0.9 }), "porn");
 });
 
@@ -127,7 +127,7 @@ Deno.test("enrich fails items without nsfw and records the batch error", async (
       Promise.resolve(
         new Response(
           JSON.stringify({
-            "1": { success: false, error: "nsfwjs: classifier is not available" },
+            "1": { success: false, error: "nsfw: classifier is not available" },
             "2": {
               success: true,
               data: { base64: encodeBase64(WEBP), contentType: "image/webp" },
@@ -143,9 +143,9 @@ Deno.test("enrich fails items without nsfw and records the batch error", async (
   assertEquals(report, { processed: 2, succeeded: 0, failed: 2 });
   assertEquals(writes.length, 2);
   assertEquals(writes[0].input.status, "failed");
-  assertEquals(writes[0].input.error, "nsfwjs: classifier is not available");
+  assertEquals(writes[0].input.error, "nsfw: classifier is not available");
   assertEquals(writes[1].input.status, "failed");
-  assertEquals(writes[1].input.error?.startsWith("nsfwjs:"), true);
+  assertEquals(writes[1].input.error?.startsWith("nsfw:"), true);
 });
 
 Deno.test("enrich is a no-op when the service URL is empty", async () => {
@@ -199,7 +199,7 @@ Deno.test("enrich does not store a thumbnail that is not smaller than the source
 
   await enricher.enrich([row(1, PNG)]);
   assertEquals(writes[0].input.thumb, null);
-  assertEquals(writes[0].input.tag, "neutral");
+  assertEquals(writes[0].input.tag, "safe");
   assertEquals(writes[0].input.status, "ok");
 });
 

@@ -490,7 +490,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   border-radius: 6px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
   color: #f8fafc; background: rgba(51, 65, 85, 0.82); backdrop-filter: blur(6px);
 }
-.tag-badge.tag-neutral { background: rgba(100, 116, 139, 0.85); }
+.tag-badge.tag-safe { background: rgba(100, 116, 139, 0.85); }
 .tag-badge.tag-drawing { background: rgba(37, 99, 235, 0.85); }
 .tag-badge.tag-sexy { background: rgba(217, 119, 6, 0.88); }
 .tag-badge.tag-porn { background: rgba(220, 38, 38, 0.88); }
