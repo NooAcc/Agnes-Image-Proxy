@@ -93,6 +93,37 @@ export const SETTINGS_HTML = `
     <div class="card">
       <div class="card-head">
         <div>
+          <div class="card-title">图片服务</div>
+          <p>归档后调用 Edge-Images 生成缩略图与 NSFW 分类；基址留空即关闭。</p>
+        </div>
+      </div>
+      <div class="form-grid two">
+        <div class="field">
+          <label for="imageServiceBaseUrl">Edge-Images 基础地址</label>
+          <input class="input" id="imageServiceBaseUrl" name="imageServiceBaseUrl" spellcheck="false">
+          <span class="hint">留空则关闭缩略图与 NSFW；只允许 https，localhost 可用 http。</span>
+        </div>
+        <div class="field">
+          <label for="thumbnailWidth">缩略图宽度（像素）</label>
+          <input class="input" id="thumbnailWidth" name="thumbnailWidth" type="number" min="128" max="2048" step="1" required>
+          <span class="hint">等比缩放到最长边不超过该值，不放大。</span>
+        </div>
+        <div class="field">
+          <label for="thumbnailQuality">缩略图质量</label>
+          <input class="input" id="thumbnailQuality" name="thumbnailQuality" type="number" min="40" max="100" step="1" required>
+          <span class="hint">WebP 质量，范围 40–100。</span>
+        </div>
+        <div class="field">
+          <label for="enrichTimeoutMs">图片服务超时（毫秒）</label>
+          <input class="input" id="enrichTimeoutMs" name="enrichTimeoutMs" type="number" min="5000" max="60000" step="1000" required>
+          <span class="hint">上限 60 秒，与 Edge-Images 服务端超时一致。</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
           <div class="card-title">控制台</div>
           <p>仅当前打开的板块会自动刷新；页面隐藏或选中文字时暂停。</p>
         </div>
@@ -205,6 +236,10 @@ export const SETTINGS_SCRIPT = String.raw`
     payload.requestTimeoutMs = Number(form.elements.namedItem("requestTimeoutMs").value);
     payload.autoRefreshIntervalMs = Number(form.elements.namedItem("autoRefreshIntervalMs").value);
     payload.maxAttempts = Number(form.elements.namedItem("maxAttempts").value);
+    payload.imageServiceBaseUrl = form.elements.namedItem("imageServiceBaseUrl").value;
+    payload.thumbnailWidth = Number(form.elements.namedItem("thumbnailWidth").value);
+    payload.thumbnailQuality = Number(form.elements.namedItem("thumbnailQuality").value);
+    payload.enrichTimeoutMs = Number(form.elements.namedItem("enrichTimeoutMs").value);
     return payload;
   }
 

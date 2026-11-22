@@ -2,7 +2,14 @@ import { assertEquals } from "@std/assert";
 import { createAccountStore, ensureSchema } from "../../lib/accounts.ts";
 import { createAuthStateStore, createSessionService } from "../../lib/auth.ts";
 import { createAdminApi } from "../../lib/admin.ts";
-import { createGalleryStore, type GalleryStore } from "../../lib/gallery.ts";
+import type { Enricher } from "../../lib/enrich.ts";
+import {
+  createGalleryStore,
+  type EnrichInput,
+  type EnrichmentWrite,
+  type GalleryStore,
+  type NsfwScores,
+} from "../../lib/gallery.ts";
 import { createRequestLogStore } from "../../lib/logs.ts";
 import { createModelUsageStore } from "../../lib/model-usage.ts";
 import { createSettingsStore } from "../../lib/settings.ts";
@@ -10,8 +17,29 @@ import { createNodeSqliteExecutor } from "../../lib/testing/node-sqlite-executor
 import type { AgnesClientFactory } from "../../lib/pool.ts";
 
 const API_KEY = "proxy-key";
+const WEBP = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+const NSFW: NsfwScores = {
+  drawing: 0.02,
+  hentai: 0.01,
+  neutral: 0.91,
+  porn: 0.03,
+  sexy: 0.03,
+  isNsfw: false,
+};
 
-async function setup(): Promise<{
+function enrichment(tag: string | null): EnrichmentWrite {
+  return {
+    thumb: WEBP,
+    thumbMime: "image/webp",
+    nsfw: tag === null ? null : NSFW,
+    tag,
+    status: "ok",
+    error: null,
+    at: "2026-11-22T10:00:00.000Z",
+  };
+}
+
+async function setup(enricherFactory?: (gallery: GalleryStore) => Enricher): Promise<{
   sql: ReturnType<typeof createNodeSqliteExecutor>;
   gallery: GalleryStore;
   call: (path: string, init?: RequestInit) => Promise<Response>;
@@ -33,6 +61,7 @@ async function setup(): Promise<{
     apiKey: API_KEY,
     session,
     createClient,
+    enricher: enricherFactory?.(gallery),
   });
 
   const call = (path: string, init: RequestInit = {}) => {
@@ -137,5 +166,172 @@ Deno.test("gallery delete removes one row and clear empties the store", async ()
   const cleared = await call("/admin/api/gallery", { method: "DELETE" });
   assertEquals(cleared.status, 204);
   assertEquals(await gallery.count(), 0);
+  sql.close();
+});
+
+Deno.test("gallery list filters by tag and rejects unknown tags", async () => {
+  const { sql, gallery, call } = await setup();
+  const neutral = await gallery.record(row({ prompt: "n" }));
+  const porn = await gallery.record(row({ prompt: "p" }));
+  await gallery.record(row({ prompt: "u" }));
+  // A tag without a thumbnail must still be categorized.
+  await gallery.setEnrichment(neutral, { ...enrichment("neutral"), thumb: null, thumbMime: null });
+  await gallery.setEnrichment(porn, enrichment("porn"));
+
+  const byNeutral = await (await call("/admin/api/gallery?tag=neutral")).json();
+  assertEquals(byNeutral.items.map((item: { prompt: string }) => item.prompt), ["n"]);
+  assertEquals(byNeutral.items[0].hasThumbnail, false);
+  const byUncategorized = await (await call("/admin/api/gallery?tag=uncategorized")).json();
+  assertEquals(byUncategorized.items.map((item: { prompt: string }) => item.prompt), ["u"]);
+
+  const bogus = await call("/admin/api/gallery?tag=bogus");
+  assertEquals(bogus.status, 400);
+  const body = await bogus.json();
+  assertEquals(body.error.param, "tag");
+  sql.close();
+});
+
+Deno.test("gallery thumbnail serves stored bytes and 404s without one", async () => {
+  const { sql, gallery, call } = await setup();
+  const withThumb = await gallery.record(row());
+  const without = await gallery.record(row());
+  await gallery.setEnrichment(withThumb, enrichment("neutral"));
+
+  const response = await call(`/admin/api/gallery/${withThumb}/thumbnail`);
+  assertEquals(response.status, 200);
+  assertEquals(response.headers.get("content-type"), "image/webp");
+  assertEquals(response.headers.get("cache-control"), "private, no-store");
+  assertEquals(response.headers.get("x-content-type-options"), "nosniff");
+  assertEquals(new Uint8Array(await response.arrayBuffer()), WEBP);
+
+  assertEquals((await call(`/admin/api/gallery/${without}/thumbnail`)).status, 404);
+  sql.close();
+});
+
+Deno.test("gallery enrich requires a configured image service", async () => {
+  const { sql, call } = await setup();
+  const response = await call("/admin/api/gallery/enrich", { method: "POST" });
+  assertEquals(response.status, 400);
+  const body = await response.json();
+  assertEquals(body.error.code, "image_service_disabled");
+  sql.close();
+});
+
+Deno.test("gallery enrich reports progress and advances past a full page", async () => {
+  const { sql, gallery, call } = await setup(() => ({
+    enabled: () => Promise.resolve(true),
+    enrich: (rows) =>
+      Promise.resolve({ processed: rows.length, succeeded: 0, failed: rows.length }),
+  }));
+  for (let i = 0; i < 20; i++) await gallery.record(row({ prompt: `p${i}` }));
+
+  const first = await (await call("/admin/api/gallery/enrich", { method: "POST" })).json();
+  assertEquals(first.processed, 20);
+  assertEquals(first.failed, 20);
+  assertEquals(first.remaining, 20);
+  assertEquals(first.nextBefore, 1);
+
+  const second = await (await call("/admin/api/gallery/enrich", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ before: first.nextBefore }),
+  })).json();
+  assertEquals(second.processed, 0);
+  assertEquals(second.nextBefore, null);
+  sql.close();
+});
+
+Deno.test("gallery enrich marks oversized rows failed without asking the enricher", async () => {
+  const received: EnrichInput[] = [];
+  const { sql, gallery, call } = await setup(() => ({
+    enabled: () => Promise.resolve(true),
+    enrich: (rows) => {
+      received.push(...rows);
+      return Promise.resolve({ processed: rows.length, succeeded: rows.length, failed: 0 });
+    },
+  }));
+  const id = await gallery.record(row());
+  await sql.execute("UPDATE gallery SET byte_size = ? WHERE id = ?", [52428801, id]);
+
+  const body = await (await call("/admin/api/gallery/enrich", { method: "POST" })).json();
+  assertEquals(received.length, 0);
+  assertEquals(body.processed, 1);
+  assertEquals(body.failed, 1);
+  const item = (await gallery.list(null, 10)).items[0];
+  assertEquals(item.enrichStatus, "failed");
+  sql.close();
+});
+
+Deno.test("gallery enrich marks a short page complete", async () => {
+  const { sql, gallery, call } = await setup((gallery) => ({
+    enabled: () => Promise.resolve(true),
+    enrich: async (rows) => {
+      for (const item of rows) {
+        await gallery.setEnrichment(item.id, enrichment("neutral"));
+      }
+      return { processed: rows.length, succeeded: rows.length, failed: 0 };
+    },
+  }));
+  for (let i = 0; i < 3; i++) await gallery.record(row());
+
+  const body = await (await call("/admin/api/gallery/enrich", { method: "POST" })).json();
+  assertEquals(body, {
+    processed: 3,
+    succeeded: 3,
+    failed: 0,
+    remaining: 0,
+    nextBefore: null,
+  });
+  sql.close();
+});
+
+Deno.test("gallery enrich stops at the byte budget and resumes without skipping", async () => {
+  const pages: number[][] = [];
+  const { sql, gallery, call } = await setup((gallery) => ({
+    enabled: () => Promise.resolve(true),
+    enrich: async (rows) => {
+      pages.push(rows.map((item) => item.id));
+      for (const item of rows) {
+        await gallery.setEnrichment(item.id, enrichment("neutral"));
+      }
+      return { processed: rows.length, succeeded: rows.length, failed: 0 };
+    },
+  }));
+  const oldest = await gallery.record(row({ prompt: "a" }));
+  const middle = await gallery.record(row({ prompt: "b" }));
+  const newest = await gallery.record(row({ prompt: "c" }));
+  await sql.execute("UPDATE gallery SET byte_size = ? WHERE id = ?", [
+    1 * 1024 * 1024,
+    oldest,
+  ]);
+  await sql.execute("UPDATE gallery SET byte_size = ? WHERE id = ?", [
+    20 * 1024 * 1024,
+    middle,
+  ]);
+  await sql.execute("UPDATE gallery SET byte_size = ? WHERE id = ?", [
+    20 * 1024 * 1024,
+    newest,
+  ]);
+
+  const first = await (await call("/admin/api/gallery/enrich", { method: "POST" })).json();
+  assertEquals(first.processed, 1);
+  assertEquals(first.nextBefore, newest);
+  assertEquals(pages.length, 1);
+  assertEquals(pages[0], [newest]);
+
+  const second = await (await call("/admin/api/gallery/enrich", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ before: first.nextBefore }),
+  })).json();
+  assertEquals(second.processed, 2);
+  assertEquals(second.nextBefore, null);
+  assertEquals(second.remaining, 0);
+  assertEquals(pages.length, 2);
+  // readForEnrichment uses IN (...), whose row order is not guaranteed.
+  assertEquals(
+    pages[1].slice().sort((a, b) => a - b),
+    [middle, oldest].sort((a, b) => a - b),
+  );
   sql.close();
 });

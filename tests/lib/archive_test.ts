@@ -44,6 +44,11 @@ function fakeGallery() {
     },
     list: () => Promise.resolve({ items: [], nextBefore: null }),
     content: () => Promise.resolve(null),
+    thumbnail: () => Promise.resolve(null),
+    setEnrichment: () => Promise.resolve(),
+    pendingEnrichment: () => Promise.resolve([]),
+    readForEnrichment: () => Promise.resolve([]),
+    countPendingEnrichment: () => Promise.resolve(0),
     remove: () => Promise.resolve(false),
     clear: () => Promise.resolve(),
     count: () => Promise.resolve(rows.length),
@@ -310,4 +315,45 @@ Deno.test("archive uses waitUntil when provided", async () => {
   assertEquals(scheduled.length, 1);
   await scheduled[0];
   assertEquals(rows.length, 1);
+});
+
+Deno.test("archiver enriches archived image bytes", async () => {
+  const { store } = fakeGallery();
+  const calls: { id: number; mime: string; bytes: Uint8Array }[][] = [];
+  const archiver = createArchiver({
+    gallery: store,
+    enricher: {
+      enabled: () => Promise.resolve(true),
+      enrich: (rows) => {
+        calls.push(rows);
+        return Promise.resolve({ processed: rows.length, succeeded: rows.length, failed: 0 });
+      },
+    },
+  });
+  await archiver.archive(request([{ url: null, b64_json: encodeBase64(PNG) }]));
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0][0].id, 1);
+  assertEquals(calls[0][0].mime, "image/png");
+  assertEquals(calls[0][0].bytes, PNG);
+});
+
+Deno.test("archiver skips enrichment for unarchived rows and enricher failures", async () => {
+  const { store } = fakeGallery();
+  let calls = 0;
+  const archiver = createArchiver({
+    gallery: store,
+    enricher: {
+      enabled: () => Promise.resolve(true),
+      enrich: () => {
+        calls++;
+        return Promise.reject(new Error("enrichment down"));
+      },
+    },
+  });
+  const svg = encodeBase64(new TextEncoder().encode("<svg xmlns='http://www.w3.org/2000/svg'/>"));
+  await archiver.archive(request([{ url: null, b64_json: svg }]));
+  assertEquals(calls, 0);
+
+  await archiver.archive(request([{ url: null, b64_json: encodeBase64(PNG) }]));
+  assertEquals(calls, 1); // 拒绝不影响归档完成
 });

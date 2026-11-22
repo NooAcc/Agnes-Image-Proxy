@@ -3,6 +3,7 @@ import { type AdminApi, createAdminApi } from "../lib/admin.ts";
 import { type Archiver, createArchiver } from "../lib/archive.ts";
 import { createAuthStateStore, createSessionService, type SessionService } from "../lib/auth.ts";
 import { createHandler } from "../lib/app.ts";
+import { createEnricher } from "../lib/enrich.ts";
 import { createGalleryStore, type GalleryStore } from "../lib/gallery.ts";
 import { createRequestLogStore, type RequestLogStore } from "../lib/logs.ts";
 import { createModelUsageStore, type ModelUsageStore } from "../lib/model-usage.ts";
@@ -49,7 +50,13 @@ export async function buildHarness(options: HarnessOptions): Promise<Harness> {
   const modelUsage = createModelUsageStore(options.sql);
   const gallery = createGalleryStore(options.sql);
   const session = createSessionService(options.apiKey, createAuthStateStore(options.sql));
-  const archiver = options.archiver ?? createArchiver({ gallery });
+  const enricher = createEnricher({
+    settings,
+    gallery,
+    fetchImpl: options.fetchImpl,
+    now: options.now,
+  });
+  const archiver = options.archiver ?? createArchiver({ gallery, enricher });
   const pool = createAccountPool({ store, createClient: options.createClient });
   const api = createAdminApi({
     store,
@@ -60,6 +67,7 @@ export async function buildHarness(options: HarnessOptions): Promise<Harness> {
     apiKey: options.apiKey,
     session,
     createClient: options.createClient,
+    enricher,
     now: options.now,
   });
 

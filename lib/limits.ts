@@ -1,6 +1,6 @@
 /** Shared numeric limits. Keep in sync with the design document. */
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 export const DB_TIMEOUT_MS = 15_000;
 
 export const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
@@ -26,6 +26,10 @@ export const OVERVIEW_TREND_DAYS = 14;
 
 export const GALLERY_PAGE_SIZE = 24;
 export const GALLERY_PAGE_MAX = 100;
+
+export const IMAGE_SERVICE_MAX_ITEMS = 20;
+export const IMAGE_SERVICE_MAX_SOURCE_BYTES = 50 * 1024 * 1024;
+export const IMAGE_SERVICE_BATCH_SOURCE_BYTES = 32 * 1024 * 1024;
 
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const SESSION_RENEW_BEFORE_MS = 7 * 24 * 60 * 60 * 1000;

@@ -118,3 +118,31 @@ Deno.test("settings store rejects malformed JSON in the database", async () => {
   await assertRejects(() => store.read(), Error);
   sql.close();
 });
+
+Deno.test("image service settings default and validate", () => {
+  assertEquals(DEFAULT_SETTINGS.imageServiceBaseUrl, "");
+  assertEquals(DEFAULT_SETTINGS.thumbnailWidth, 640);
+  assertEquals(DEFAULT_SETTINGS.thumbnailQuality, 75);
+  assertEquals(DEFAULT_SETTINGS.enrichTimeoutMs, 60000);
+
+  assertEquals(validateSettings({}).imageServiceBaseUrl, "");
+  assertEquals(
+    validateSettings({ imageServiceBaseUrl: "https://img.example/" }).imageServiceBaseUrl,
+    "https://img.example",
+  );
+  assertEquals(
+    validateSettings({ imageServiceBaseUrl: "http://localhost:3000/" }).imageServiceBaseUrl,
+    "http://localhost:3000",
+  );
+  assertThrows(
+    () => validateSettings({ imageServiceBaseUrl: "http://img.example" }),
+    ApiError,
+  );
+
+  assertThrows(() => validateSettings({ thumbnailWidth: 127 }), ApiError);
+  assertThrows(() => validateSettings({ thumbnailWidth: 2049 }), ApiError);
+  assertThrows(() => validateSettings({ thumbnailQuality: 39 }), ApiError);
+  assertThrows(() => validateSettings({ thumbnailQuality: 101 }), ApiError);
+  assertThrows(() => validateSettings({ enrichTimeoutMs: 4999 }), ApiError);
+  assertThrows(() => validateSettings({ enrichTimeoutMs: 60001 }), ApiError);
+});

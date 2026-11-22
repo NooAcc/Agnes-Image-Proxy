@@ -9,6 +9,9 @@ export const GALLERY_HTML = `
       <p>每次成功生成并返回给客户端的输出图；按 UTC 日期分组，点击图片查看大图与提示词。</p>
     </div>
     <div class="toolbar">
+      <button class="btn" data-action="enrich-gallery" type="button">${
+  icon("bolt")
+}补齐历史图片</button>
       <button class="btn" data-action="refresh-gallery" type="button">${
   icon("refresh")
 }刷新</button>
@@ -21,6 +24,15 @@ export const GALLERY_HTML = `
     <div class="search">
       ${icon("search")}
       <input class="input" data-role="gallery-search" type="search" placeholder="搜索提示词、模型或账号…" aria-label="搜索图片">
+    </div>
+    <div class="tag-chips" data-role="gallery-tags" role="group" aria-label="按标签筛选">
+      <button class="chip is-active" type="button" data-action="filter-tag" data-tag="">全部</button>
+      <button class="chip" type="button" data-action="filter-tag" data-tag="neutral">普通</button>
+      <button class="chip" type="button" data-action="filter-tag" data-tag="drawing">绘画</button>
+      <button class="chip" type="button" data-action="filter-tag" data-tag="sexy">性感</button>
+      <button class="chip" type="button" data-action="filter-tag" data-tag="porn">色情</button>
+      <button class="chip" type="button" data-action="filter-tag" data-tag="hentai">动漫色情</button>
+      <button class="chip" type="button" data-action="filter-tag" data-tag="uncategorized">未分类</button>
     </div>
     <span class="logs-status" data-role="gallery-status">加载中…</span>
   </div>
@@ -58,6 +70,8 @@ export const GALLERY_DIALOGS = `
       <div class="lightbox-info">
         <p class="lightbox-prompt" data-role="gallery-dialog-prompt"></p>
         <p class="lightbox-meta" data-role="gallery-dialog-meta"></p>
+        <p class="lightbox-meta" data-role="gallery-dialog-tag"></p>
+        <p class="lightbox-meta" data-role="gallery-dialog-nsfw"></p>
       </div>
       <div class="lightbox-actions">
         <button class="btn small" type="button" data-action="gallery-copy">${
@@ -88,11 +102,36 @@ export const GALLERY_SCRIPT = String.raw`
     loaded: false,
     lastDay: null,
     query: "",
+    tag: "",
     current: 0,
     generation: 0,
   };
 
+  var TAG_LABELS = {
+    neutral: "普通",
+    drawing: "绘画",
+    sexy: "性感",
+    porn: "色情",
+    hentai: "动漫色情",
+    "": "未分类",
+  };
+
   function node(role) { return document.querySelector('[data-role="' + role + '"]'); }
+
+  function pct(value) {
+    return Math.round(Number(value) * 100) + "%";
+  }
+
+  function nsfwText(nsfw) {
+    if (!nsfw) return "暂无 NSFW 数据";
+    var nsfwPercent = Math.round((1 - Number(nsfw.neutral)) * 100);
+    return (nsfw.isNsfw ? "NSFW " : "非 NSFW ") + nsfwPercent + "%" +
+      " · 普通 " + pct(nsfw.neutral) +
+      " · 绘画 " + pct(nsfw.drawing) +
+      " · 性感 " + pct(nsfw.sexy) +
+      " · 色情 " + pct(nsfw.porn) +
+      " · 动漫色情 " + pct(nsfw.hentai);
+  }
 
   function extensionOf(mime) {
     if (mime === "image/jpeg") return "jpg";
@@ -154,7 +193,14 @@ export const GALLERY_SCRIPT = String.raw`
       image.loading = "lazy";
       image.decoding = "async";
       image.alt = item.prompt || "生成图片";
-      image.src = "/admin/api/gallery/" + item.id + "/content";
+      image.src = item.hasThumbnail
+        ? "/admin/api/gallery/" + item.id + "/thumbnail"
+        : "/admin/api/gallery/" + item.id + "/content";
+      if (item.hasThumbnail) {
+        image.addEventListener("error", function () {
+          image.src = "/admin/api/gallery/" + item.id + "/content";
+        }, { once: true });
+      }
       open.append(image);
       media.append(open);
 
@@ -175,6 +221,9 @@ export const GALLERY_SCRIPT = String.raw`
       overlay.append(download);
       overlay.append(remove);
       media.append(overlay);
+
+      var tag = item.tag || "";
+      media.append(A.el("span", "tag-badge tag-" + (tag || "none"), TAG_LABELS[tag] || tag || "未分类"));
     } else {
       var placeholder = A.el("div", "gallery-placeholder");
       placeholder.append(A.icon("image"));
@@ -219,7 +268,7 @@ export const GALLERY_SCRIPT = String.raw`
     state.lastDay = null;
 
     var emptyMessage = state.items.length === 0
-      ? "成功生成的输出图会自动出现在这里。"
+      ? (state.tag ? "该分类下还没有图片。" : "成功生成的输出图会自动出现在这里。")
       : "没有匹配的图片，试试其他关键词。";
     if (emptyText) emptyText.textContent = emptyMessage;
     if (empty) empty.hidden = state.visible.length > 0;
@@ -253,6 +302,7 @@ export const GALLERY_SCRIPT = String.raw`
       if (status) status.textContent = "加载中…";
     }
     var url = "/admin/api/gallery?limit=24" +
+      (state.tag ? "&tag=" + encodeURIComponent(state.tag) : "") +
       (state.before === null ? "" : "&before=" + encodeURIComponent(state.before));
     try {
       var response = await fetch(url, { credentials: "same-origin" });
@@ -303,7 +353,10 @@ export const GALLERY_SCRIPT = String.raw`
     var dialog = node("gallery-dialog");
     if (dialog && dialog.open) return;
     try {
-      var response = await fetch("/admin/api/gallery?limit=24", { credentials: "same-origin" });
+      var response = await fetch(
+        "/admin/api/gallery?limit=24" + (state.tag ? "&tag=" + encodeURIComponent(state.tag) : ""),
+        { credentials: "same-origin" },
+      );
       var page = await response.json();
       if (!response.ok) {
         throw new Error(page && page.error && page.error.message ? page.error.message : "加载失败");
@@ -329,6 +382,8 @@ export const GALLERY_SCRIPT = String.raw`
     var image = node("gallery-dialog-image");
     var prompt = node("gallery-dialog-prompt");
     var meta = node("gallery-dialog-meta");
+    var tagInfo = node("gallery-dialog-tag");
+    var nsfwInfo = node("gallery-dialog-nsfw");
     var counter = node("gallery-counter");
     var download = node("gallery-download");
     var prev = dialog ? dialog.querySelector('[data-action="gallery-prev"]') : null;
@@ -342,6 +397,10 @@ export const GALLERY_SCRIPT = String.raw`
     image.alt = item.prompt || "生成图片";
     if (prompt) prompt.textContent = item.prompt || "(无提示词)";
     if (meta) meta.textContent = metaText(item) + " · " + A.fmtTime(item.ts);
+    if (tagInfo) {
+      tagInfo.textContent = "分类：" + (item.tag ? (TAG_LABELS[item.tag] || item.tag) : "未分类");
+    }
+    if (nsfwInfo) nsfwInfo.textContent = nsfwText(item.nsfw);
     if (counter) counter.textContent = (index + 1) + " / " + state.visible.length;
     if (download) {
       download.href = "/admin/api/gallery/" + item.id + "/content";
@@ -403,6 +462,60 @@ export const GALLERY_SCRIPT = String.raw`
     } catch (error) { A.toast(error.message, "error"); }
   }
 
+  async function enrichHistory() {
+    var total = 0;
+    var succeeded = 0;
+    var failed = 0;
+    var before = null;
+    var status = node("gallery-status");
+    while (true) {
+      var body = null;
+      var response;
+      try {
+        response = await fetch("/admin/api/gallery/enrich", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(before === null ? {} : { before: before }),
+        });
+        body = await response.json();
+      } catch (error) {
+        A.toast("补齐失败：" + error.message, "error");
+        return;
+      }
+      if (!response.ok) {
+        var code = body && body.error && body.error.code;
+        if (code === "image_service_disabled") {
+          A.toast("请先在设置里填写图片服务地址", "error");
+        } else {
+          A.toast(
+            body && body.error && body.error.message ? body.error.message : "补齐失败",
+            "error",
+          );
+        }
+        return;
+      }
+      total += Number(body.processed) || 0;
+      succeeded += Number(body.succeeded) || 0;
+      failed += Number(body.failed) || 0;
+      if (status) {
+        status.textContent = "处理中… 已成功 " + succeeded + " / 失败 " + failed +
+          " / 未处理 " + (Number(body.remaining) || 0);
+      }
+      before = body.nextBefore;
+      if (before === null || before === undefined) break;
+    }
+    reset();
+    if (failed > 0) {
+      A.toast(
+        "补齐 " + total + " 张：成功 " + succeeded + "，失败 " + failed + "，可再次点击重试",
+        "info",
+      );
+    } else {
+      A.toast("补齐完成：成功 " + succeeded + " 张", "ok");
+    }
+  }
+
   var search = section.querySelector('[data-role="gallery-search"]');
   if (search) {
     search.addEventListener("input", A.debounce(function () {
@@ -418,6 +531,21 @@ export const GALLERY_SCRIPT = String.raw`
       if (!item) return;
       var index = state.visible.indexOf(item);
       if (index !== -1) openAt(index);
+      return;
+    }
+    var chip = event.target.closest('[data-action="filter-tag"]');
+    if (chip) {
+      state.tag = chip.getAttribute("data-tag") || "";
+      var chips = section.querySelectorAll('[data-action="filter-tag"]');
+      for (var c = 0; c < chips.length; c++) {
+        chips[c].classList.toggle("is-active", chips[c] === chip);
+      }
+      reset();
+      return;
+    }
+    var enrich = event.target.closest('[data-action="enrich-gallery"]');
+    if (enrich) {
+      enrichHistory();
       return;
     }
     var remove = event.target.closest('[data-action="delete-image"]');

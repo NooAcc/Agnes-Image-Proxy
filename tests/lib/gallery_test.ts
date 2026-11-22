@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert";
 import { ensureSchema } from "../../lib/accounts.ts";
 import { createGalleryStore } from "../../lib/gallery.ts";
+import type { EnrichmentWrite, NsfwScores } from "../../lib/gallery.ts";
 import { createNodeSqliteExecutor } from "../../lib/testing/node-sqlite-executor.ts";
 
 async function setup() {
@@ -94,5 +95,96 @@ Deno.test("gallery remove and clear", async () => {
   assertEquals(await gallery.count(), 1);
   await gallery.clear();
   assertEquals(await gallery.count(), 0);
+  sql.close();
+});
+
+const NSFW: NsfwScores = {
+  drawing: 0.02,
+  hentai: 0.01,
+  neutral: 0.91,
+  porn: 0.03,
+  sexy: 0.03,
+  isNsfw: false,
+};
+
+function enrichment(tag: string | null): EnrichmentWrite {
+  return {
+    thumb: new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]),
+    thumbMime: "image/webp",
+    nsfw: tag === null ? null : NSFW,
+    tag,
+    status: "ok",
+    error: null,
+    at: "2026-11-22T10:00:00.000Z",
+  };
+}
+
+Deno.test("gallery stores enrichment and serves thumbnails", async () => {
+  const { sql, gallery } = await setup();
+  const id = await gallery.record(insert());
+  await gallery.setEnrichment(id, enrichment("neutral"));
+
+  const thumb = await gallery.thumbnail(id);
+  assertEquals(thumb?.mime, "image/webp");
+  assertEquals(thumb?.bytes.byteLength, 12);
+
+  const item = (await gallery.list(null, 10)).items[0];
+  assertEquals(item.hasThumbnail, true);
+  assertEquals(item.tag, "neutral");
+  assertEquals(item.nsfw?.neutral, 0.91);
+  assertEquals(item.enrichStatus, "ok");
+  assertEquals(item.enrichError, null);
+  assertEquals(await gallery.content(id), {
+    mime: "image/png",
+    bytes: new Uint8Array([1, 2, 3, 4]),
+  });
+  sql.close();
+});
+
+Deno.test("gallery filters by tag and uncategorized", async () => {
+  const { sql, gallery } = await setup();
+  const neutral = await gallery.record(insert({ prompt: "n" }));
+  const porn = await gallery.record(insert({ prompt: "p" }));
+  await gallery.record(insert({ prompt: "u" }));
+  await gallery.setEnrichment(neutral, enrichment("neutral"));
+  await gallery.setEnrichment(porn, enrichment("porn"));
+
+  assertEquals((await gallery.list(null, 10, "neutral")).items.map((i) => i.prompt), ["n"]);
+  assertEquals((await gallery.list(null, 10, "porn")).items.map((i) => i.prompt), ["p"]);
+  assertEquals(
+    (await gallery.list(null, 10, "uncategorized")).items.map((i) => i.prompt),
+    ["u"],
+  );
+  assertEquals((await gallery.list(null, 10)).items.length, 3);
+  sql.close();
+});
+
+Deno.test("gallery thumbnail refuses non-image MIME", async () => {
+  const { sql, gallery } = await setup();
+  const id = await gallery.record(insert());
+  await gallery.setEnrichment(id, { ...enrichment("neutral"), thumbMime: "image/svg+xml" });
+  assertEquals(await gallery.thumbnail(id), null);
+  sql.close();
+});
+
+Deno.test("gallery pending enrichment pages by id cursor and counts only never-processed", async () => {
+  const { sql, gallery } = await setup();
+  const failed = await gallery.record(insert());
+  const ok = await gallery.record(insert());
+  const fresh = await gallery.record(insert());
+  await gallery.setEnrichment(failed, { ...enrichment(null), status: "failed", error: "boom" });
+  await gallery.setEnrichment(ok, enrichment("neutral"));
+  await gallery.record(insert({ bytes: null, sourceUrl: "https://example.com/a.png" }));
+
+  assertEquals(
+    (await gallery.pendingEnrichment(null, 10)).map((row) => row.id),
+    [fresh, failed],
+  );
+  assertEquals((await gallery.pendingEnrichment(fresh, 10)).map((row) => row.id), [failed]);
+  assertEquals(await gallery.countPendingEnrichment(), 1);
+
+  const inputs = await gallery.readForEnrichment([fresh, failed]);
+  assertEquals(inputs.map((row) => row.id).sort(), [failed, fresh].sort());
+  assertEquals(inputs[0].bytes.byteLength, 4);
   sql.close();
 });

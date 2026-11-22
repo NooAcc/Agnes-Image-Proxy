@@ -8,6 +8,8 @@
   Key。
 - 控制台 `/admin`
   提供总览、图片、账号、日志、设置五个板块；深色/浅色主题首次跟随系统，右上角可随时切换。
+- 图库卡片默认加载 Edge-Images 生成的缩略图；归档时自动取得 nsfwjs 五分类并落为 tag，可按分类筛选、
+  手动补齐历史图片。
 
 模型名原样透传，**不做名称映射**——`gpt-image-1` 不会变成 `agnes-image-2.5-flash`，请直接使用 Agnes
 的模型名（见下文模型目录）。
@@ -212,9 +214,25 @@ const edited = await client.images.edit({
 
 ## 数据库与 schema
 
-- schema 版本为 `2`。版本不匹配或非空旧库缺少版本时进程拒绝启动，不会自动改表。
-- 升级必须执行 `RESET_SCHEMA=1 deno task reset-db`；它会**删除账号、请求日志、用量、
-  相册与设置**后重建当前 schema。
+- schema 版本为 `3`。版本不匹配或非空旧库缺少版本时进程拒绝启动，不会自动改表。
+- 从 v2 升级到 v3 只新增列与索引，**先对现有库执行下面 9 条 SQL，再部署新代码**；不需要清库，也不
+  提供自动迁移分支：
+
+  ```sql
+  ALTER TABLE gallery ADD COLUMN thumb BLOB;
+  ALTER TABLE gallery ADD COLUMN thumb_mime TEXT;
+  ALTER TABLE gallery ADD COLUMN nsfw TEXT;
+  ALTER TABLE gallery ADD COLUMN tag TEXT;
+  ALTER TABLE gallery ADD COLUMN enrich_status TEXT;
+  ALTER TABLE gallery ADD COLUMN enrich_error TEXT;
+  ALTER TABLE gallery ADD COLUMN enriched_at TEXT;
+  CREATE INDEX IF NOT EXISTS gallery_tag_id ON gallery (tag, id DESC);
+  UPDATE schema_meta SET value = '3' WHERE key = 'version';
+  ```
+
+- 顺序反过来（先部署新代码）会因版本仍是 `2` 拒绝启动。
+- `RESET_SCHEMA=1 deno task reset-db` 仍可作为可选的重来手段；它会**删除账号、请求日志、用量、
+  相册与设置**后重建当前 schema，本次升级不需要它。
 - 数据库请求 15 秒超时，超时/连接失败映射为 503 `database_timeout` / `database_unavailable`；
   `/health?deep=1` 失败只返回通用 `database unavailable`，不回显原始错误。
 
@@ -242,6 +260,37 @@ const edited = await client.images.edit({
 - 时间线按 `id DESC` 分页（默认 24 张），按 UTC
   日期分组；单张删除与清空全部由用户在控制台决定，**没有自动保留上限**。BLOB 存在 Turso
   中，请留意数据库体积与费用。
+- 归档后（在 `waitUntil` 内）调用图片服务生成缩略图与 nsfwjs 五分类；卡片优先加载缩略图，失败回退
+  原图，查看大图与下载始终用原图。分类标签为普通 / 绘画 / 性感 / 色情 / 动漫色情，未富化显示未分类。
+- 缩略图只在比原图更小且能嗅探为图片时保存；返回的「缩略图」不小于原图时不保存缩略图，但仍保存 tag
+  与 NSFW 数据。删除与清空图片会随行删除缩略图与 NSFW 数据。
+
+## 图片服务接入（缩略图与 NSFW）
+
+缩略图与 NSFW 分类由外部 **Edge-Images** 服务生成，基址在控制台「设置 →
+图片服务」填写；**留空即关闭** （归档与图库照常工作，卡片回退原图，补齐接口返回
+`image_service_disabled`）。
+
+| 字段                  | 默认  | 说明                                                                         |
+| --------------------- | ----- | ---------------------------------------------------------------------------- |
+| `imageServiceBaseUrl` | `""`  | 空=关闭；非空必须 https（localhost/127.0.0.1/[::1] 可用 http），去掉尾部 `/` |
+| `thumbnailWidth`      | 640   | 整数 128–2048                                                                |
+| `thumbnailQuality`    | 75    | 整数 40–100                                                                  |
+| `enrichTimeoutMs`     | 60000 | 整数 5000–60000，与 Edge-Images 服务端超时一致                               |
+
+调用契约：`POST {imageServiceBaseUrl}/api/batch`，请求体是**顶层 JSON 数组**。
+
+- 每项 `{ uuid, base64, contentType, params }`；`uuid = String(gallery.id)`，
+  `params = { width: height: thumbnailWidth, crop: "none", size: "down", format: "webp", quality: thumbnailQuality, nsfwjs: 1 }`。
+- 响应按 uuid 映射；`data.base64` 是缩略图，`data.nsfw` 是原图的 nsfwjs 五分类
+  （`drawing/hentai/neutral/porn/sexy/isNsfw`）。分数最大者成为 `tag`，并列时按
+  `neutral, drawing, sexy, porn, hentai` 顺序取靠前者。
+- 每批 ≤20 项且源字节累计 ≤32 MiB（发送前自动分块）；单张 >50 MiB 不发起 HTTP，直接记为失败
+  `source exceeds 50 MiB`。
+- 不要求鉴权头；服务不可达、超时或 nsfwjs 不可用时该批行记为 `failed`，归档与客户端响应不受影响。
+
+历史图片在控制台点击「补齐历史图片」手动处理：一次点击从新到旧走一遍待处理行，失败行不在本遍重试，
+下次点击再试。
 
 ## 已知取舍
 
@@ -254,6 +303,8 @@ const edited = await client.images.edit({
   的内存上限，这是明确接受的取舍；上游限流错误原样返回（429）。
 - 不实现 `mask` 局部重绘、不流式、不转码、不缩放；只存输出图，不提供图片编辑。
 - 不伪造 `usage`；`revised_prompt` 固定为 `null`；上游未使用字段返回的空字符串一律归一化为 `null`。
+- 图片服务是外部依赖：未配置时缩略图 / NSFW / 补齐全部关闭；配置后 Turso 会因缩略图与 NSFW 数据
+  增加体积。>50 MiB 的原图无法富化（直接记为失败），历史补齐是手动操作，不做启动自动补齐。
 
 ## 上游实测结论（2026-11-21）
 

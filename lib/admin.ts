@@ -2,8 +2,9 @@ import type { AccountRecord, AccountStore, AccountSummary } from "./accounts.ts"
 import { maskKey } from "./accounts.ts";
 import type { SessionService } from "./auth.ts";
 import { readCookie, timingSafeEqual } from "./auth.ts";
+import type { Enricher } from "./enrich.ts";
 import { ApiError } from "./errors.ts";
-import type { GalleryStore } from "./gallery.ts";
+import type { GalleryStore, GalleryTagFilter } from "./gallery.ts";
 import {
   asObject,
   bytesResponse,
@@ -16,6 +17,9 @@ import {
 import {
   GALLERY_PAGE_MAX,
   GALLERY_PAGE_SIZE,
+  IMAGE_SERVICE_BATCH_SOURCE_BYTES,
+  IMAGE_SERVICE_MAX_ITEMS,
+  IMAGE_SERVICE_MAX_SOURCE_BYTES,
   LOG_LIST_LIMIT,
   LOGIN_RATE_LIMIT,
   LOGIN_RATE_WINDOW_MS,
@@ -35,7 +39,15 @@ export const SESSION_COOKIE = "agnes_session";
 const ACCOUNT_ITEM = /^\/admin\/api\/accounts\/(\d+)$/;
 const ACCOUNT_TEST = /^\/admin\/api\/accounts\/(\d+)\/test$/;
 const ACCOUNT_RESET = /^\/admin\/api\/accounts\/(\d+)\/reset$/;
-const GALLERY_PATH = /^\/admin\/api\/gallery(?:\/\d+(?:\/content)?)?$/;
+const GALLERY_PATH = /^\/admin\/api\/gallery(?:\/\d+(?:\/content|\/thumbnail)?)?$/;
+const GALLERY_TAGS = new Set<GalleryTagFilter>([
+  "neutral",
+  "drawing",
+  "sexy",
+  "porn",
+  "hentai",
+  "uncategorized",
+]);
 const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface AdminApiOptions {
@@ -47,6 +59,7 @@ export interface AdminApiOptions {
   apiKey: string;
   session: SessionService;
   createClient: AgnesClientFactory;
+  enricher?: Enricher;
   now?: () => Date;
 }
 
@@ -141,6 +154,7 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
     path === "/admin/api/settings" ||
     path === "/admin/api/logs" ||
     path === "/admin/api/overview" ||
+    path === "/admin/api/gallery/enrich" ||
     ACCOUNT_ITEM.test(path) ||
     ACCOUNT_TEST.test(path) ||
     ACCOUNT_RESET.test(path) ||
@@ -402,7 +416,20 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
         }
         before = parsed;
       }
-      return jsonResponse(await options.gallery.list(before, limit));
+      const rawTag = url.searchParams.get("tag");
+      let tag: GalleryTagFilter | null = null;
+      if (rawTag !== null) {
+        if (!GALLERY_TAGS.has(rawTag as GalleryTagFilter)) {
+          throw new ApiError(
+            400,
+            `tag must be one of ${[...GALLERY_TAGS].join(", ")}`,
+            "invalid_request_error",
+            "tag",
+          );
+        }
+        tag = rawTag as GalleryTagFilter;
+      }
+      return jsonResponse(await options.gallery.list(before, limit, tag));
     }
     if (request.method === "DELETE") {
       await options.gallery.clear();
@@ -420,6 +447,120 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
       throw new ApiError(404, "image not found", "invalid_request_error", "id");
     }
     return bytesResponse(content.bytes, content.mime);
+  };
+
+  const handleGalleryThumbnail = async (request: Request, id: number): Promise<Response> => {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return methodNotAllowed(["GET", "HEAD"]);
+    }
+    const thumbnail = await options.gallery.thumbnail(id);
+    if (!thumbnail) {
+      throw new ApiError(404, "image not found", "invalid_request_error", "id");
+    }
+    return bytesResponse(thumbnail.bytes, thumbnail.mime);
+  };
+
+  const handleGalleryEnrich = async (request: Request): Promise<Response> => {
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    const enricher = options.enricher;
+    if (!enricher || !(await enricher.enabled())) {
+      throw new ApiError(
+        400,
+        "image service is not configured",
+        "invalid_request_error",
+        null,
+        "image_service_disabled",
+      );
+    }
+
+    let before: number | null = null;
+    const text = await request.text();
+    if (text.trim() !== "") {
+      let body: unknown;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        throw new ApiError(400, "request body is not valid JSON", "invalid_request_error");
+      }
+      const object = asObject(body);
+      if (!object) {
+        throw new ApiError(400, "request body must be a JSON object", "invalid_request_error");
+      }
+      if (object.before !== undefined && object.before !== null) {
+        const value = object.before;
+        if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+          throw new ApiError(
+            400,
+            "before must be a positive integer",
+            "invalid_request_error",
+            "before",
+          );
+        }
+        before = value;
+      }
+    }
+
+    const rows = await options.gallery.pendingEnrichment(before, IMAGE_SERVICE_MAX_ITEMS);
+    const at = now().toISOString();
+    let oversized = 0;
+    let attemptedCount = 0;
+    let budget = 0;
+    const eligibleIds: number[] = [];
+    for (const row of rows) {
+      if (row.byteSize > IMAGE_SERVICE_MAX_SOURCE_BYTES) {
+        oversized++;
+        attemptedCount++;
+        try {
+          await options.gallery.setEnrichment(row.id, {
+            thumb: null,
+            thumbMime: null,
+            nsfw: null,
+            tag: null,
+            status: "failed",
+            error: "source exceeds 50 MiB",
+            at,
+          });
+        } catch (error) {
+          console.error("image enrichment write failed:", error);
+        }
+        continue;
+      }
+      if (
+        eligibleIds.length > 0 &&
+        budget + row.byteSize > IMAGE_SERVICE_BATCH_SOURCE_BYTES
+      ) {
+        break;
+      }
+      eligibleIds.push(row.id);
+      budget += row.byteSize;
+      attemptedCount++;
+    }
+
+    let processed = 0;
+    let succeeded = 0;
+    let failed = 0;
+    if (eligibleIds.length > 0) {
+      const inputs = await options.gallery.readForEnrichment(eligibleIds);
+      if (inputs.length > 0) {
+        const report = await enricher.enrich(inputs);
+        processed = report.processed;
+        succeeded = report.succeeded;
+        failed = report.failed;
+      }
+    }
+
+    const nextBefore = rows.length === 0 ||
+        (attemptedCount === rows.length && rows.length < IMAGE_SERVICE_MAX_ITEMS)
+      ? null
+      : rows[attemptedCount - 1].id;
+
+    return jsonResponse({
+      processed: oversized + processed,
+      succeeded,
+      failed: oversized + failed,
+      remaining: await options.gallery.countPendingEnrichment(),
+      nextBefore,
+    });
   };
 
   const handleGalleryItem = async (request: Request, id: number): Promise<Response> => {
@@ -534,10 +675,15 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
     if (path === "/admin/api/logs") return await handleLogs(request);
     if (path === "/admin/api/overview") return await handleOverview(request);
     if (path === "/admin/api/gallery") return await handleGallery(request);
+    if (path === "/admin/api/gallery/enrich") return await handleGalleryEnrich(request);
 
     const galleryContent = /^\/admin\/api\/gallery\/(\d+)\/content$/.exec(path);
     if (galleryContent) {
       return await handleGalleryContent(request, Number(galleryContent[1]));
+    }
+    const galleryThumbnail = /^\/admin\/api\/gallery\/(\d+)\/thumbnail$/.exec(path);
+    if (galleryThumbnail) {
+      return await handleGalleryThumbnail(request, Number(galleryThumbnail[1]));
     }
     const galleryItem = /^\/admin\/api\/gallery\/(\d+)$/.exec(path);
     if (galleryItem) return await handleGalleryItem(request, Number(galleryItem[1]));

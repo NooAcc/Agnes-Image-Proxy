@@ -1,9 +1,20 @@
 import { assert, assertEquals } from "@std/assert";
 import { encodeBase64 } from "@std/encoding/base64";
 import { buildHarness } from "../../scripts/harness.ts";
+import { DEFAULT_SETTINGS } from "../../lib/settings.ts";
 import { createNodeSqliteExecutor } from "../../lib/testing/node-sqlite-executor.ts";
 import type { AgnesClient } from "../../lib/pool.ts";
 import type { SqlArg } from "../../lib/sql.ts";
+
+const WEBP = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+const SCORES = {
+  drawing: 0.02,
+  hentai: 0.01,
+  neutral: 0.91,
+  porn: 0.03,
+  sexy: 0.03,
+  isNsfw: false,
+};
 
 function pngHeader(width: number, height: number): Uint8Array {
   const bytes = new Uint8Array(24);
@@ -101,5 +112,77 @@ Deno.test("admin shows the login page without a session", async () => {
     }),
   );
   assert((await authorized.text()).includes('data-section="overview"'));
+  sql.close();
+});
+
+Deno.test("harness disables enrichment until an image service is configured", async () => {
+  const sql = createNodeSqliteExecutor();
+  const harness = await buildHarness({
+    apiKey: "proxy-key",
+    sql,
+    createClient: pngClient,
+    archiver: { archive: () => Promise.resolve() },
+  });
+  const response = await harness.handler(
+    new Request("https://proxy.test/admin/api/gallery/enrich", {
+      method: "POST",
+      headers: { authorization: "Bearer proxy-key" },
+    }),
+  );
+  assertEquals(response.status, 400);
+  const body = await response.json();
+  assertEquals(body.error.code, "image_service_disabled");
+  sql.close();
+});
+
+Deno.test("harness wires the enricher into the admin backfill endpoint", async () => {
+  const sql = createNodeSqliteExecutor();
+  const calls: string[] = [];
+  const harness = await buildHarness({
+    apiKey: "proxy-key",
+    sql,
+    createClient: pngClient,
+    archiver: { archive: () => Promise.resolve() },
+    fetchImpl: (input) => {
+      calls.push(String(input));
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            "1": {
+              success: true,
+              data: { base64: encodeBase64(WEBP), contentType: "image/webp", nsfw: SCORES },
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    },
+  });
+  await harness.settings.write({ ...DEFAULT_SETTINGS, imageServiceBaseUrl: "https://img.example" });
+  await harness.gallery.record({
+    ts: "2026-11-20T10:00:00.000Z",
+    endpoint: "generations",
+    model: "agnes-image-2.5-flash",
+    accountId: 1,
+    accountName: "main",
+    prompt: "a cat",
+    size: "1024x1024",
+    tier: "1K",
+    ratio: "1:1",
+    mime: "image/png",
+    bytes: pngHeader(1024, 1024),
+    sourceUrl: null,
+  });
+
+  const response = await harness.handler(
+    new Request("https://proxy.test/admin/api/gallery/enrich", {
+      method: "POST",
+      headers: { authorization: "Bearer proxy-key" },
+    }),
+  );
+  assertEquals(response.status, 200);
+  const body = await response.json();
+  assertEquals(body.succeeded, 1);
+  assertEquals(calls, ["https://img.example/api/batch"]);
   sql.close();
 });

@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { ensureSchema, resetSchema } from "../../lib/accounts.ts";
 import { SCHEMA_VERSION } from "../../lib/limits.ts";
 import { createNodeSqliteExecutor } from "../../lib/testing/node-sqlite-executor.ts";
@@ -18,6 +18,16 @@ Deno.test("a version mismatch fails instead of altering tables", async () => {
   await sql.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   await sql.execute("INSERT INTO schema_meta (key, value) VALUES ('version', '1')");
   await assertRejects(() => ensureSchema(sql), Error, "schema version mismatch");
+  sql.close();
+});
+
+Deno.test("a v2 database is pointed at the in-place upgrade", async () => {
+  const sql = createNodeSqliteExecutor();
+  await sql.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  await sql.execute("INSERT INTO schema_meta (key, value) VALUES ('version', '2')");
+  const error = await assertRejects(() => ensureSchema(sql), Error);
+  assertStringIncludes(error.message, "upgraded in place");
+  assertStringIncludes(error.message, "reset-db deletes all data");
   sql.close();
 });
 
@@ -46,5 +56,31 @@ Deno.test("resetSchema recreates the current schema", async () => {
     "SELECT value FROM schema_meta WHERE key = 'version'",
   )).rows[0];
   assertEquals(row.value, String(SCHEMA_VERSION));
+  sql.close();
+});
+
+Deno.test("schema v3 adds gallery enrichment columns and tag index", async () => {
+  const sql = createNodeSqliteExecutor();
+  await ensureSchema(sql);
+  const columns = (await sql.execute("PRAGMA table_info(gallery)")).rows.map((row) =>
+    String(row.name)
+  );
+  for (
+    const name of [
+      "thumb",
+      "thumb_mime",
+      "nsfw",
+      "tag",
+      "enrich_status",
+      "enrich_error",
+      "enriched_at",
+    ]
+  ) {
+    assertEquals(columns.includes(name), true, `missing column ${name}`);
+  }
+  const indexes = (await sql.execute("PRAGMA index_list(gallery)")).rows.map((row) =>
+    String(row.name)
+  );
+  assertEquals(indexes.includes("gallery_tag_id"), true);
   sql.close();
 });

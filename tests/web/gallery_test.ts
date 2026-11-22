@@ -46,3 +46,16 @@ Deno.test("gallery filtering is client-side and preserves day grouping", () => {
   assert(GALLERY_SCRIPT.includes("timeline-day"));
   assert(GALLERY_SCRIPT.includes("filteredItems"));
 });
+
+Deno.test("gallery exposes tag filters, thumbnails and backfill", () => {
+  assert(GALLERY_HTML.includes('data-role="gallery-tags"'));
+  assert(GALLERY_HTML.includes('data-action="filter-tag"'));
+  assert(GALLERY_HTML.includes('data-tag="uncategorized"'));
+  assert(GALLERY_HTML.includes('data-action="enrich-gallery"'));
+  assert(GALLERY_SCRIPT.includes("/thumbnail"));
+  assert(GALLERY_SCRIPT.includes("hasThumbnail"));
+  assert(GALLERY_SCRIPT.includes("gallery-dialog-tag"));
+  assert(GALLERY_SCRIPT.includes("gallery-dialog-nsfw"));
+  assert(GALLERY_SCRIPT.includes("nextBefore"));
+  assert(GALLERY_SCRIPT.includes("TAG_LABELS"));
+});

@@ -16,6 +16,10 @@ export interface AppSettings {
   requestTimeoutMs: number;
   autoRefreshIntervalMs: number;
   maxAttempts: number;
+  imageServiceBaseUrl: string;
+  thumbnailWidth: number;
+  thumbnailQuality: number;
+  enrichTimeoutMs: number;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -28,6 +32,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   requestTimeoutMs: 300000,
   autoRefreshIntervalMs: 5000,
   maxAttempts: 3,
+  imageServiceBaseUrl: "",
+  thumbnailWidth: 640,
+  thumbnailQuality: 75,
+  enrichTimeoutMs: 60000,
 };
 
 export interface SettingsStore {
@@ -41,22 +49,28 @@ function invalid(field: string, message: string): ApiError {
   return new ApiError(400, message, "invalid_request_error", field, "invalid_setting");
 }
 
-function normalizeBaseUrl(value: string): string {
+function normalizeBaseUrl(value: string, field = "agnesBaseUrl"): string {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    throw invalid("agnesBaseUrl", "agnesBaseUrl must be a valid URL");
+    throw invalid(field, `${field} must be a valid URL`);
   }
   const isLocalhost = url.hostname === "localhost" || url.hostname === "127.0.0.1" ||
     url.hostname === "[::1]" || url.hostname === "::1";
   if (url.protocol !== "https:" && !(url.protocol === "http:" && isLocalhost)) {
     throw invalid(
-      "agnesBaseUrl",
-      "agnesBaseUrl must use https (http is only allowed for localhost)",
+      field,
+      `${field} must use https (http is only allowed for localhost)`,
     );
   }
   return value.trim().replace(/\/+$/, "");
+}
+
+function normalizeImageServiceBaseUrl(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed === "") return "";
+  return normalizeBaseUrl(trimmed, "imageServiceBaseUrl");
 }
 
 function integerInRange(field: string, value: unknown, min: number, max: number): number {
@@ -106,6 +120,11 @@ export function validateSettings(input: unknown): AppSettings {
     throw invalid("probeModel", "probeModel must be a non-empty string");
   }
 
+  const imageServiceBaseUrl = pick("imageServiceBaseUrl");
+  if (typeof imageServiceBaseUrl !== "string") {
+    throw invalid("imageServiceBaseUrl", "imageServiceBaseUrl must be a string");
+  }
+
   return {
     agnesBaseUrl: normalizeBaseUrl(agnesBaseUrl),
     defaultResponseFormat,
@@ -121,6 +140,10 @@ export function validateSettings(input: unknown): AppSettings {
       60_000,
     ),
     maxAttempts: integerInRange("maxAttempts", pick("maxAttempts"), 1, 10),
+    imageServiceBaseUrl: normalizeImageServiceBaseUrl(imageServiceBaseUrl),
+    thumbnailWidth: integerInRange("thumbnailWidth", pick("thumbnailWidth"), 128, 2048),
+    thumbnailQuality: integerInRange("thumbnailQuality", pick("thumbnailQuality"), 40, 100),
+    enrichTimeoutMs: integerInRange("enrichTimeoutMs", pick("enrichTimeoutMs"), 5_000, 60_000),
   };
 }
 

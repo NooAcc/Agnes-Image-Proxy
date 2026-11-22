@@ -76,8 +76,16 @@ const SCHEMA = [
     byte_size INTEGER NOT NULL DEFAULT 0,
     source_url TEXT,
     archived INTEGER NOT NULL DEFAULT 0,
+    thumb BLOB,
+    thumb_mime TEXT,
+    nsfw TEXT,
+    tag TEXT,
+    enrich_status TEXT,
+    enrich_error TEXT,
+    enriched_at TEXT,
     created_at TEXT NOT NULL
   )`,
+  `CREATE INDEX IF NOT EXISTS gallery_tag_id ON gallery (tag, id DESC)`,
   `CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -90,6 +98,13 @@ const SCHEMA = [
   )`,
 ];
 
+function versionMismatchMessage(found: string): string {
+  const hint = found === "2" && SCHEMA_VERSION === 3
+    ? "v2→v3 can be upgraded in place: run the SQL in README (schema v3 upgrade) before deploying; reset-db deletes all data"
+    : "run deno task reset-db";
+  return `schema version mismatch: found ${found}, expected ${SCHEMA_VERSION}; ${hint}`;
+}
+
 export async function ensureSchema(sql: SqlExecutor): Promise<void> {
   await sql.execute(
     "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -101,9 +116,7 @@ export async function ensureSchema(sql: SqlExecutor): Promise<void> {
   if (versionRows.length > 0) {
     const found = String(versionRows[0].value);
     if (found !== String(SCHEMA_VERSION)) {
-      throw new Error(
-        `schema version mismatch: found ${found}, expected ${SCHEMA_VERSION}; run deno task reset-db`,
-      );
+      throw new Error(versionMismatchMessage(found));
     }
   } else {
     const existing = await sql.execute(
@@ -126,9 +139,7 @@ export async function ensureSchema(sql: SqlExecutor): Promise<void> {
     )).rows[0];
     const stored = String(confirmed?.value ?? "");
     if (stored !== String(SCHEMA_VERSION)) {
-      throw new Error(
-        `schema version mismatch: found ${stored}, expected ${SCHEMA_VERSION}; run deno task reset-db`,
-      );
+      throw new Error(versionMismatchMessage(stored));
     }
   }
 

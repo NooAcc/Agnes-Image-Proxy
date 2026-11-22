@@ -39,10 +39,18 @@ Deno.test("settings form exposes every setting", () => {
       "requestTimeoutMs",
       "autoRefreshIntervalMs",
       "maxAttempts",
+      "imageServiceBaseUrl",
+      "thumbnailWidth",
+      "thumbnailQuality",
+      "enrichTimeoutMs",
     ]
   ) {
     assert(html.includes(`name="${field}"`), `missing setting ${field}`);
   }
+  assert(html.includes('name="imageServiceBaseUrl"'));
+  assert(html.includes('name="thumbnailWidth"'));
+  assert(html.includes('name="thumbnailQuality"'));
+  assert(html.includes('name="enrichTimeoutMs"'));
   assert(html.includes('type="radio" name="defaultSize" value="4K"'));
   assert(!html.includes('name="defaultRatio"'));
   assert(!html.includes('name="imageParamMode" value="auto"'));
@@ -56,6 +64,8 @@ Deno.test("gallery timeline and lightbox are part of the console", () => {
   assert(html.includes('data-role="gallery-grid"'));
   assert(html.includes('data-action="clear-gallery"'));
   assert(html.includes('data-role="gallery-search"'));
+  assert(html.includes('data-role="gallery-tags"'));
+  assert(html.includes('data-action="enrich-gallery"'));
   assert(html.includes("IntersectionObserver"));
   assert(html.includes('data-action="delete-image"'));
   assert(html.includes('data-action="gallery-prev"'));

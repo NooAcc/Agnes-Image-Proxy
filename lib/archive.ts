@@ -1,5 +1,6 @@
 import { decodeBase64 } from "@std/encoding/base64";
-import type { GalleryInsert, GalleryStore } from "./gallery.ts";
+import type { Enricher } from "./enrich.ts";
+import type { EnrichInput, GalleryInsert, GalleryStore } from "./gallery.ts";
 import { readImageDimensions } from "./image-dimensions.ts";
 import { sniffImageMime } from "./image-mime.ts";
 import { ARCHIVE_TIMEOUT_MS, MAX_ARCHIVE_BYTES } from "./limits.ts";
@@ -29,6 +30,7 @@ export interface Archiver {
 
 export interface ArchiverOptions {
   gallery: GalleryStore;
+  enricher?: Enricher;
   fetchImpl?: typeof fetch;
   waitUntil?: (promise: Promise<unknown>) => void;
   maxBytes?: number;
@@ -36,6 +38,11 @@ export interface ArchiverOptions {
 }
 
 const MAX_REDIRECTS = 2;
+
+interface PersistedRow {
+  id: number;
+  bytes: Uint8Array | null;
+}
 
 async function readBody(
   response: Response,
@@ -125,20 +132,24 @@ export function createArchiver(options: ArchiverOptions): Archiver {
   const maxBytes = options.maxBytes ?? MAX_ARCHIVE_BYTES;
   const timeoutMs = options.timeoutMs ?? ARCHIVE_TIMEOUT_MS;
 
-  const persist = async (row: GalleryInsert): Promise<void> => {
+  const persist = async (row: GalleryInsert): Promise<PersistedRow | null> => {
     try {
-      await options.gallery.record(row);
+      const id = await options.gallery.record(row);
+      return { id, bytes: row.bytes };
     } catch (error) {
       console.error("gallery write failed, falling back to source_url:", error);
       try {
-        await options.gallery.record({ ...row, bytes: null });
+        const id = await options.gallery.record({ ...row, bytes: null });
+        return { id, bytes: null };
       } catch (fallbackError) {
         console.error("gallery fallback write failed:", fallbackError);
+        return null;
       }
     }
   };
 
   const run = async (request: ArchiveRequest): Promise<void> => {
+    const enrichable: EnrichInput[] = [];
     const sizeFromBytes = (bytes: Uint8Array | null): string | null => {
       const dims = bytes ? readImageDimensions(bytes) : null;
       return dims ? formatPixel(dims) : request.size;
@@ -170,20 +181,40 @@ export function createArchiver(options: ArchiverOptions): Archiver {
         } catch {
           bytes = null;
         }
-        await persist({ ...base, size: sizeFromBytes(bytes), mime, bytes, sourceUrl: null });
+        const persisted = await persist({
+          ...base,
+          size: sizeFromBytes(bytes),
+          mime,
+          bytes,
+          sourceUrl: null,
+        });
+        if (persisted?.bytes) {
+          enrichable.push({ id: persisted.id, mime, bytes: persisted.bytes });
+        }
         continue;
       }
 
       if (image.url) {
         const downloaded = await download(image.url, fetchImpl, maxBytes, timeoutMs);
         const mime = downloaded?.mime ?? "application/octet-stream";
-        await persist({
+        const persisted = await persist({
           ...base,
           size: sizeFromBytes(downloaded?.bytes ?? null),
           mime,
           bytes: downloaded?.bytes ?? null,
           sourceUrl: image.url,
         });
+        if (persisted?.bytes) {
+          enrichable.push({ id: persisted.id, mime, bytes: persisted.bytes });
+        }
+      }
+    }
+
+    if (options.enricher && enrichable.length > 0) {
+      try {
+        await options.enricher.enrich(enrichable);
+      } catch (error) {
+        console.error("image enrichment failed:", error);
       }
     }
   };

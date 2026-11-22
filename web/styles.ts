@@ -293,6 +293,16 @@ code, .mono { font-family: var(--font-mono); font-size: 0.92em; font-variant-num
 }
 .segmented input:checked + span { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
 .segmented input:focus-visible + span { outline: 2px solid var(--ring); outline-offset: 1px; }
+.tag-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  display: inline-flex; align-items: center; min-height: 28px; padding: 0 11px;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2);
+  color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.chip:hover { background: var(--surface-3); border-color: var(--border-strong); color: var(--text); }
+.chip.is-active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent-text) 30%, transparent); color: var(--accent-text); }
+.chip:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .switch { display: inline-flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--muted); cursor: pointer; user-select: none; }
 .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .switch .track {
@@ -467,13 +477,25 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .gallery-open:focus-visible { outline-offset: -3px; }
 .gallery-card:hover .gallery-media img { transform: scale(1.025); }
 .gallery-overlay {
-  position: absolute; top: 8px; right: 8px; display: flex; gap: 6px;
+  position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; z-index: 2;
   opacity: 0; transition: opacity var(--dur-fast) var(--ease);
 }
 .gallery-card:hover .gallery-overlay, .gallery-card:focus-within .gallery-overlay { opacity: 1; }
 .gallery-overlay .icon-btn { width: 34px; height: 34px; border-radius: 9px; background: rgba(3, 10, 20, 0.72); color: #f1f5f9; backdrop-filter: blur(6px); }
 .gallery-overlay .icon-btn:hover { background: rgba(3, 10, 20, 0.9); color: #fff; }
 .gallery-overlay .icon-btn.danger:hover { background: rgba(127, 29, 29, 0.9); }
+.tag-badge {
+  position: absolute; top: 8px; left: 8px; z-index: 1;
+  display: inline-flex; align-items: center; min-height: 20px; padding: 0 8px;
+  border-radius: 6px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
+  color: #f8fafc; background: rgba(51, 65, 85, 0.82); backdrop-filter: blur(6px);
+}
+.tag-badge.tag-neutral { background: rgba(100, 116, 139, 0.85); }
+.tag-badge.tag-drawing { background: rgba(37, 99, 235, 0.85); }
+.tag-badge.tag-sexy { background: rgba(217, 119, 6, 0.88); }
+.tag-badge.tag-porn { background: rgba(220, 38, 38, 0.88); }
+.tag-badge.tag-hentai { background: rgba(127, 29, 29, 0.9); }
+.tag-badge.tag-none { background: rgba(51, 65, 85, 0.82); }
 .gallery-body { display: flex; flex-direction: column; gap: 5px; padding: 10px 12px 12px; }
 .gallery-prompt {
   margin: 0; font-size: 12.5px; font-weight: 600; line-height: 1.45; word-break: break-word;
