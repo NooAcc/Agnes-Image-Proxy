@@ -109,6 +109,7 @@ export const GALLERY_SCRIPT = String.raw`
     tag: "",
     current: 0,
     generation: 0,
+    imageToken: 0,
   };
 
   var TAG_LABELS = {
@@ -401,6 +402,20 @@ export const GALLERY_SCRIPT = String.raw`
     }
   }
 
+  function setDialogImage(image, stage, item) {
+    var token = ++state.imageToken;
+    function settle() {
+      if (token === state.imageToken && stage) stage.classList.remove("is-loading");
+    }
+    // Hide the previous frame until the new one is decoded, so opening or paging
+    // never shows the image the user just left behind.
+    if (stage) stage.classList.add("is-loading");
+    image.onload = settle;
+    image.onerror = settle;
+    image.src = "/admin/api/gallery/" + item.id + "/content";
+    image.alt = item.prompt || "生成图片";
+  }
+
   function openAt(index) {
     var dialog = node("gallery-dialog");
     var image = node("gallery-dialog-image");
@@ -408,6 +423,7 @@ export const GALLERY_SCRIPT = String.raw`
     var tagInfo = node("gallery-dialog-tag");
     var nsfwInfo = node("gallery-dialog-nsfw");
     var download = node("gallery-download");
+    var stage = dialog ? dialog.querySelector(".lightbox-stage") : null;
     var prev = dialog ? dialog.querySelector('[data-action="gallery-prev"]') : null;
     var next = dialog ? dialog.querySelector('[data-action="gallery-next"]') : null;
     if (!dialog || !image) return;
@@ -415,8 +431,7 @@ export const GALLERY_SCRIPT = String.raw`
 
     state.current = index;
     var item = state.visible[index];
-    image.src = "/admin/api/gallery/" + item.id + "/content";
-    image.alt = item.prompt || "生成图片";
+    setDialogImage(image, stage, item);
     setPrompt(item.prompt || "(无提示词)");
     if (meta) meta.textContent = metaText(item) + " · " + A.fmtTime(item.ts);
     if (tagInfo) {

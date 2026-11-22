@@ -578,7 +578,13 @@ dialog[open] { animation: dialog-in 180ms var(--ease); }
 }
 .lightbox-body { display: flex; flex-direction: column; gap: 12px; padding: 14px; }
 .lightbox-stage { position: relative; display: grid; place-items: center; background: var(--surface-2); border-radius: var(--radius); min-height: 240px; }
-.lightbox-stage img { display: block; max-width: 100%; max-height: 64dvh; object-fit: contain; border-radius: var(--radius); }
+.lightbox-stage img { display: block; max-width: 100%; max-height: 64dvh; object-fit: contain; border-radius: var(--radius); transition: opacity 120ms var(--ease); }
+.lightbox-stage.is-loading img { opacity: 0; }
+.lightbox-stage.is-loading::after {
+  content: ""; position: absolute; inset: 0; margin: auto; width: 30px; height: 30px;
+  border-radius: 50%; border: 3px solid var(--border); border-top-color: var(--accent);
+  animation: spin 800ms linear infinite;
+}
 .lightbox-nav {
   position: absolute; top: 50%; transform: translateY(-50%);
   width: 42px; height: 42px; border-radius: 50%;

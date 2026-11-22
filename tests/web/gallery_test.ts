@@ -1,5 +1,6 @@
 import { assert } from "@std/assert";
 import { GALLERY_DIALOGS, GALLERY_HTML, GALLERY_SCRIPT } from "../../web/gallery.ts";
+import { BASE_STYLE } from "../../web/styles.ts";
 
 Deno.test("gallery section exposes its hooks", () => {
   const html = GALLERY_HTML;
@@ -70,6 +71,15 @@ Deno.test("gallery exposes tag filters, thumbnails and backfill", () => {
   assert(GALLERY_SCRIPT.includes("gallery-dialog-nsfw"));
   assert(GALLERY_SCRIPT.includes("nextBefore"));
   assert(GALLERY_SCRIPT.includes("TAG_LABELS"));
+});
+
+Deno.test("gallery lightbox hides the stale frame while the next image loads", () => {
+  assert(GALLERY_SCRIPT.includes("setDialogImage"));
+  assert(GALLERY_SCRIPT.includes('"is-loading"'));
+  assert(GALLERY_SCRIPT.includes("image.onload"));
+  assert(GALLERY_SCRIPT.includes("image.onerror"));
+  assert(BASE_STYLE.includes(".lightbox-stage.is-loading"));
+  assert(BASE_STYLE.includes(".lightbox-stage.is-loading img"));
 });
 
 Deno.test("gallery backfill button reflects idle, running and error states", () => {

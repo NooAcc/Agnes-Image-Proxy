@@ -116,13 +116,16 @@ Deno.test("gallery list paginates and never returns bytes", async () => {
   sql.close();
 });
 
-Deno.test("gallery content returns bytes with no-store, CSP and inline disposition", async () => {
+Deno.test("gallery content is immutable-cached with CSP and inline disposition", async () => {
   const { sql, gallery, call } = await setup();
   const id = await gallery.record(row());
   const response = await call(`/admin/api/gallery/${id}/content`);
   assertEquals(response.status, 200);
   assertEquals(response.headers.get("content-type"), "image/png");
-  assertEquals(response.headers.get("cache-control"), "private, no-store");
+  assertEquals(
+    response.headers.get("cache-control"),
+    "private, max-age=31536000, immutable",
+  );
   assertEquals(
     response.headers.get("content-security-policy"),
     "default-src 'none'; sandbox",
@@ -202,7 +205,10 @@ Deno.test("gallery thumbnail serves stored bytes and 404s without one", async ()
   const response = await call(`/admin/api/gallery/${withThumb}/thumbnail`);
   assertEquals(response.status, 200);
   assertEquals(response.headers.get("content-type"), "image/webp");
-  assertEquals(response.headers.get("cache-control"), "private, no-store");
+  assertEquals(
+    response.headers.get("cache-control"),
+    "private, max-age=31536000, immutable",
+  );
   assertEquals(response.headers.get("x-content-type-options"), "nosniff");
   assertEquals(new Uint8Array(await response.arrayBuffer()), WEBP);
 

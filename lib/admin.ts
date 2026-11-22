@@ -40,6 +40,9 @@ const ACCOUNT_ITEM = /^\/admin\/api\/accounts\/(\d+)$/;
 const ACCOUNT_TEST = /^\/admin\/api\/accounts\/(\d+)\/test$/;
 const ACCOUNT_RESET = /^\/admin\/api\/accounts\/(\d+)\/reset$/;
 const GALLERY_PATH = /^\/admin\/api\/gallery(?:\/\d+(?:\/content|\/thumbnail)?)?$/;
+// Gallery ids are AUTOINCREMENT and bytes are never rewritten, so both endpoints
+// are safe to cache for the browser session; `private` keeps proxies out.
+const GALLERY_IMAGE_CACHE = "private, max-age=31536000, immutable";
 const GALLERY_TAGS = new Set<GalleryTagFilter>([
   "safe",
   "drawing",
@@ -446,7 +449,9 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
     if (!content) {
       throw new ApiError(404, "image not found", "invalid_request_error", "id");
     }
-    return bytesResponse(content.bytes, content.mime);
+    return bytesResponse(content.bytes, content.mime, {
+      headers: { "cache-control": GALLERY_IMAGE_CACHE },
+    });
   };
 
   const handleGalleryThumbnail = async (request: Request, id: number): Promise<Response> => {
@@ -457,7 +462,9 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
     if (!thumbnail) {
       throw new ApiError(404, "image not found", "invalid_request_error", "id");
     }
-    return bytesResponse(thumbnail.bytes, thumbnail.mime);
+    return bytesResponse(thumbnail.bytes, thumbnail.mime, {
+      headers: { "cache-control": GALLERY_IMAGE_CACHE },
+    });
   };
 
   const handleGalleryEnrich = async (request: Request): Promise<Response> => {
