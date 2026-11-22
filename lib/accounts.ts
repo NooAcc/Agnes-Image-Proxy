@@ -31,6 +31,7 @@ const SCHEMA = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     request_id TEXT NOT NULL,
     ts TEXT NOT NULL,
+    category TEXT NOT NULL,
     stage TEXT NOT NULL,
     endpoint TEXT NOT NULL,
     path TEXT,
@@ -99,10 +100,8 @@ const SCHEMA = [
 ];
 
 function versionMismatchMessage(found: string): string {
-  const hint = found === "2" && SCHEMA_VERSION === 3
-    ? "v2→v3 can be upgraded in place: run the SQL in README (schema v3 upgrade) before deploying; reset-db deletes all data"
-    : "run deno task reset-db";
-  return `schema version mismatch: found ${found}, expected ${SCHEMA_VERSION}; ${hint}`;
+  return `schema version mismatch: found ${found}, expected ${SCHEMA_VERSION}; ` +
+    "run deno task reset-db to recreate the schema";
 }
 
 export async function ensureSchema(sql: SqlExecutor): Promise<void> {

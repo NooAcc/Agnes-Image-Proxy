@@ -2,6 +2,7 @@ import { assertEquals } from "@std/assert";
 import { encodeBase64 } from "@std/encoding/base64";
 import { createArchiver, isPublicHttpsUrl, sniffImageMime } from "../../lib/archive.ts";
 import type { GalleryInsert, GalleryStore } from "../../lib/gallery.ts";
+import type { RequestLogInput, RequestLogStore } from "../../lib/logs.ts";
 
 const PNG = new Uint8Array([
   0x89,
@@ -356,4 +357,36 @@ Deno.test("archiver skips enrichment for unarchived rows and enricher failures",
 
   await archiver.archive(request([{ url: null, b64_json: encodeBase64(PNG) }]));
   assertEquals(calls, 1); // 拒绝不影响归档完成
+});
+
+Deno.test("archiver records image-info runs in the enrich log category", async () => {
+  const { store } = fakeGallery();
+  const recorded: RequestLogInput[] = [];
+  const logs: RequestLogStore = {
+    record: (input) => {
+      recorded.push(input);
+      return Promise.resolve();
+    },
+    list: () => Promise.resolve([]),
+    count: () => Promise.resolve(0),
+    clear: () => Promise.resolve(),
+  };
+  const archiver = createArchiver({
+    gallery: store,
+    logs,
+    enricher: {
+      enabled: () => Promise.resolve(true),
+      enrich: (rows) =>
+        Promise.resolve({ processed: rows.length, succeeded: rows.length - 1, failed: 1 }),
+    },
+  });
+  await archiver.archive(request([{ url: null, b64_json: encodeBase64(PNG) }]));
+
+  assertEquals(recorded.length, 1);
+  assertEquals(recorded[0].category, "enrich");
+  assertEquals(recorded[0].endpoint, "archive/enrich");
+  assertEquals(recorded[0].requested, 1);
+  assertEquals(recorded[0].images, 0);
+  assertEquals(recorded[0].failed, 1);
+  assertEquals(recorded[0].ok, false);
 });

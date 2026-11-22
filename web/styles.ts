@@ -214,6 +214,35 @@ code, .mono { font-family: var(--font-mono); font-size: 0.92em; font-variant-num
 .btn .icon { width: 16px; height: 16px; }
 .btn.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
 .btn.primary:hover { background: var(--accent-strong); }
+.btn.primary.is-unavailable,
+.btn.primary.is-unavailable:hover {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--faint);
+  opacity: 1;
+  cursor: not-allowed;
+}
+.btn.primary.is-running,
+.btn.primary.is-running:hover,
+.btn.primary.is-running:disabled {
+  background-image: linear-gradient(110deg, #1d4ed8, #7c3aed, #1d4ed8);
+  background-size: 220% 100%;
+  border-color: transparent;
+  color: #fff;
+  opacity: 1;
+  cursor: progress;
+  animation: btn-flow 2.4s linear infinite;
+}
+.btn.primary.is-error,
+.btn.primary.is-error:hover {
+  background: var(--danger);
+  border-color: transparent;
+  color: var(--on-accent);
+}
+@keyframes btn-flow {
+  from { background-position: 0% 50%; }
+  to { background-position: -220% 50%; }
+}
 .btn.danger { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 30%, transparent); color: var(--danger); }
 .btn.danger:hover { background: color-mix(in srgb, var(--danger) 20%, transparent); }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }

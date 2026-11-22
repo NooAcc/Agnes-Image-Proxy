@@ -14,6 +14,9 @@ Deno.test("auto refresh is global, active-section scoped and configurable", () =
   assert(html.includes("/admin/api/settings"));
   assert(html.includes('data-filter="bad"'));
   assert(html.includes('data-action="clear-logs"'));
+  assert(html.includes('data-category="request"'));
+  assert(html.includes('data-category="enrich"'));
+  assert(html.includes("图片信息"));
   // The logs section no longer owns its own auto-refresh toggle or preference.
   assert(!html.includes("agnes-logs-auto"));
   assert(!html.includes('data-role="logs-auto"'));

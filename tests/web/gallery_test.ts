@@ -60,3 +60,20 @@ Deno.test("gallery exposes tag filters, thumbnails and backfill", () => {
   assert(GALLERY_SCRIPT.includes("nextBefore"));
   assert(GALLERY_SCRIPT.includes("TAG_LABELS"));
 });
+
+Deno.test("gallery backfill button reflects idle, running and error states", () => {
+  assert(GALLERY_HTML.includes('class="btn primary is-unavailable" data-action="enrich-gallery"'));
+  assert(GALLERY_HTML.includes('title="请先在设置里填写 Edge-Images 基础地址"'));
+  assert(GALLERY_SCRIPT.includes("setEnrichState"));
+  assert(GALLERY_SCRIPT.includes("is-running"));
+  assert(GALLERY_SCRIPT.includes("is-error"));
+  assert(GALLERY_SCRIPT.includes('setEnrichState(hadError ? "error" : "idle")'));
+});
+
+Deno.test("gallery backfill is unavailable until the image service is configured", () => {
+  assert(GALLERY_SCRIPT.includes("setEnrichAvailability"));
+  assert(GALLERY_SCRIPT.includes("imageServiceConfigured"));
+  assert(GALLERY_SCRIPT.includes("imageServiceBaseUrl"));
+  assert(GALLERY_SCRIPT.includes("is-unavailable"));
+  assert(GALLERY_SCRIPT.includes('"agnes:settings"'));
+});

@@ -9,7 +9,8 @@ export const GALLERY_HTML = `
       <p>每次成功生成并返回给客户端的输出图；按 UTC 日期分组，点击图片查看大图与提示词。</p>
     </div>
     <div class="toolbar">
-      <button class="btn" data-action="enrich-gallery" type="button">${
+      <button class="btn primary is-unavailable" data-action="enrich-gallery" type="button"
+        title="请先在设置里填写 Edge-Images 基础地址" disabled>${
   icon("bolt")
 }补齐历史图片</button>
       <button class="btn" data-action="refresh-gallery" type="button">${
@@ -92,6 +93,8 @@ export const GALLERY_SCRIPT = String.raw`
   var A = window.Agnes;
   var section = document.querySelector('[data-section="gallery"]');
   if (!section) return;
+  var enrichButton = section.querySelector('[data-action="enrich-gallery"]');
+  var enrichAvailable = false;
 
   var state = {
     items: [],
@@ -464,57 +467,103 @@ export const GALLERY_SCRIPT = String.raw`
     } catch (error) { A.toast(error.message, "error"); }
   }
 
+  function applyEnrichUi() {
+    if (!enrichButton) return;
+    var running = enrichButton.classList.contains("is-running");
+    var unavailable = !enrichAvailable && !running;
+    enrichButton.classList.toggle("is-unavailable", unavailable);
+    enrichButton.disabled = running || !enrichAvailable;
+    enrichButton.setAttribute("aria-busy", running ? "true" : "false");
+    if (enrichAvailable) {
+      enrichButton.title = "";
+    } else {
+      enrichButton.classList.remove("is-error");
+      enrichButton.title = "请先在设置里填写 Edge-Images 基础地址";
+    }
+  }
+
+  function setEnrichState(next) {
+    if (!enrichButton) return;
+    enrichButton.classList.toggle("is-running", next === "running");
+    enrichButton.classList.toggle("is-error", next === "error");
+    applyEnrichUi();
+  }
+
+  function setEnrichAvailability(available) {
+    enrichAvailable = Boolean(available);
+    applyEnrichUi();
+  }
+
+  function imageServiceConfigured(settings) {
+    return Boolean(
+      settings && typeof settings.imageServiceBaseUrl === "string" &&
+        settings.imageServiceBaseUrl.trim() !== "",
+    );
+  }
+
   async function enrichHistory() {
+    if (!enrichButton || !enrichAvailable || enrichButton.classList.contains("is-running")) return;
     var total = 0;
     var succeeded = 0;
     var failed = 0;
     var before = null;
+    var hadError = false;
     var status = node("gallery-status");
-    while (true) {
-      var body = null;
-      var response;
-      try {
-        response = await fetch("/admin/api/gallery/enrich", {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(before === null ? {} : { before: before }),
-        });
-        body = await response.json();
-      } catch (error) {
-        A.toast("补齐失败：" + error.message, "error");
-        return;
-      }
-      if (!response.ok) {
-        var code = body && body.error && body.error.code;
-        if (code === "image_service_disabled") {
-          A.toast("请先在设置里填写图片服务地址", "error");
-        } else {
-          A.toast(
-            body && body.error && body.error.message ? body.error.message : "补齐失败",
-            "error",
-          );
+    setEnrichState("running");
+    try {
+      while (true) {
+        var body = null;
+        var response;
+        try {
+          response = await fetch("/admin/api/gallery/enrich", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(before === null ? {} : { before: before }),
+          });
+          body = await response.json();
+        } catch (error) {
+          hadError = true;
+          A.toast("补齐失败：" + error.message, "error");
+          break;
         }
-        return;
+        if (!response.ok) {
+          hadError = true;
+          var code = body && body.error && body.error.code;
+          if (code === "image_service_disabled") {
+            A.toast("请先在设置里填写图片服务地址", "error");
+          } else {
+            A.toast(
+              body && body.error && body.error.message ? body.error.message : "补齐失败",
+              "error",
+            );
+          }
+          break;
+        }
+        total += Number(body.processed) || 0;
+        succeeded += Number(body.succeeded) || 0;
+        failed += Number(body.failed) || 0;
+        if (status) {
+          status.textContent = "处理中… 已成功 " + succeeded + " / 失败 " + failed +
+            " / 未处理 " + (Number(body.remaining) || 0);
+        }
+        before = body.nextBefore;
+        if (before === null || before === undefined) break;
       }
-      total += Number(body.processed) || 0;
-      succeeded += Number(body.succeeded) || 0;
-      failed += Number(body.failed) || 0;
-      if (status) {
-        status.textContent = "处理中… 已成功 " + succeeded + " / 失败 " + failed +
-          " / 未处理 " + (Number(body.remaining) || 0);
+      if (total > 0) reset();
+      if (hadError) {
+        // The failure toast was already shown above.
+      } else if (failed > 0) {
+        hadError = true;
+        A.toast(
+          "补齐 " + total + " 张：成功 " + succeeded + "，失败 " + failed + "，可再次点击重试",
+          "info",
+        );
+      } else {
+        A.toast("补齐完成：成功 " + succeeded + " 张", "ok");
       }
-      before = body.nextBefore;
-      if (before === null || before === undefined) break;
-    }
-    reset();
-    if (failed > 0) {
-      A.toast(
-        "补齐 " + total + " 张：成功 " + succeeded + "，失败 " + failed + "，可再次点击重试",
-        "info",
-      );
-    } else {
-      A.toast("补齐完成：成功 " + succeeded + " 张", "ok");
+    } finally {
+      setEnrichState(hadError ? "error" : "idle");
     }
   }
 
@@ -623,6 +672,14 @@ export const GALLERY_SCRIPT = String.raw`
     }, { rootMargin: "300px" });
     observer.observe(sentinel);
   }
+
+  A.api("/admin/api/settings").then(function (settings) {
+    setEnrichAvailability(imageServiceConfigured(settings));
+  }).catch(function () { /* stay unavailable until settings arrive */ });
+
+  document.addEventListener("agnes:settings", function (event) {
+    setEnrichAvailability(imageServiceConfigured(event.detail));
+  });
 
   A.autoRefresh.register("gallery", refreshNewest);
 })();

@@ -26,7 +26,7 @@ import {
   OVERVIEW_TREND_DAYS,
   SESSION_TTL_MS,
 } from "./limits.ts";
-import type { RequestLogStore } from "./logs.ts";
+import { recordEnrichmentLog, type RequestLogStore } from "./logs.ts";
 import { imageModelList } from "./model-catalog.ts";
 import type { ModelUsageStore } from "./model-usage.ts";
 import { type AgnesClientFactory, cappedCooldownMs, classifyFailure } from "./pool.ts";
@@ -462,6 +462,7 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
 
   const handleGalleryEnrich = async (request: Request): Promise<Response> => {
     if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    const startedAt = Date.now();
     const enricher = options.enricher;
     if (!enricher || !(await enricher.enabled())) {
       throw new ApiError(
@@ -554,10 +555,22 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
       ? null
       : rows[attemptedCount - 1].id;
 
-    return jsonResponse({
-      processed: oversized + processed,
+    const requestedTotal = oversized + processed;
+    const failedTotal = oversized + failed;
+    await recordEnrichmentLog(options.logs, {
+      ts: now().toISOString(),
+      endpoint: "gallery/enrich",
+      path: "/admin/api/gallery/enrich",
+      requested: requestedTotal,
       succeeded,
-      failed: oversized + failed,
+      failed: failedTotal,
+      durationMs: Date.now() - startedAt,
+    });
+
+    return jsonResponse({
+      processed: requestedTotal,
+      succeeded,
+      failed: failedTotal,
       remaining: await options.gallery.countPendingEnrichment(),
       nextBefore,
     });

@@ -3,6 +3,9 @@ import { LOG_LIST_LIMIT, REQUEST_LOG_LIMIT } from "./limits.ts";
 
 export type LogStage = "parse" | "dispatch" | "complete";
 
+/** `request` covers client image requests; `enrich` covers image-info jobs (thumbnails/NSFW). */
+export type LogCategory = "request" | "enrich";
+
 export interface AttemptTrace {
   accountId: number | null;
   accountName: string | null;
@@ -20,9 +23,10 @@ export interface SubRequestTrace {
 export interface RequestLogInput {
   requestId: string;
   ts: string;
+  category: LogCategory;
   stage: LogStage;
   endpoint: string;
-  path: string;
+  path: string | null;
   model: string | null;
   accountId: number | null;
   accountName: string | null;
@@ -43,6 +47,7 @@ export interface RequestLogRow {
   id: number;
   requestId: string;
   ts: string;
+  category: LogCategory;
   stage: LogStage;
   endpoint: string;
   path: string | null;
@@ -91,6 +96,7 @@ function toRow(row: Record<string, unknown>): RequestLogRow {
     id: Number(row.id),
     requestId: String(row.request_id),
     ts: String(row.ts),
+    category: row.category === "enrich" ? "enrich" : "request",
     stage: String(row.stage) as LogStage,
     endpoint: String(row.endpoint),
     path: optionalString(row.path),
@@ -117,6 +123,7 @@ export function createRequestLogStore(sql: SqlExecutor): RequestLogStore {
       const args: SqlArg[] = [
         input.requestId,
         input.ts,
+        input.category,
         input.stage,
         input.endpoint,
         input.path,
@@ -138,10 +145,10 @@ export function createRequestLogStore(sql: SqlExecutor): RequestLogStore {
       await executeBatch(sql, [
         {
           sql: `INSERT INTO request_log
-            (request_id, ts, stage, endpoint, path, model, account_id, account_name, status, ok,
-             duration_ms, requested, images, failed, size_request, size_actual, error_code, error,
-             attempts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (request_id, ts, category, stage, endpoint, path, model, account_id, account_name,
+             status, ok, duration_ms, requested, images, failed, size_request, size_actual,
+             error_code, error, attempts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           args,
         },
         {
@@ -169,4 +176,56 @@ export function createRequestLogStore(sql: SqlExecutor): RequestLogStore {
       await sql.execute("DELETE FROM request_log");
     },
   };
+}
+
+export interface EnrichmentLogInput {
+  ts: string;
+  /** Log endpoint name, e.g. `gallery/enrich` (backfill) or `archive/enrich` (post-generation). */
+  endpoint: string;
+  path: string | null;
+  requested: number;
+  succeeded: number;
+  failed: number;
+  durationMs: number;
+}
+
+/**
+ * Records one image-info job (thumbnail + NSFW enrichment) as an `enrich` category log.
+ * No-op jobs are skipped so idle backfill clicks do not flood the log.
+ */
+export async function recordEnrichmentLog(
+  logs: RequestLogStore,
+  input: EnrichmentLogInput,
+): Promise<void> {
+  if (input.requested === 0) return;
+  const failed = Math.max(0, input.failed);
+  const succeeded = Math.max(0, input.succeeded);
+  const ok = failed === 0;
+  const status = ok || succeeded > 0 ? 200 : 502;
+  try {
+    await logs.record({
+      requestId: crypto.randomUUID(),
+      ts: input.ts,
+      category: "enrich",
+      stage: "complete",
+      endpoint: input.endpoint,
+      path: input.path,
+      model: null,
+      accountId: null,
+      accountName: null,
+      status,
+      ok,
+      durationMs: input.durationMs,
+      requested: input.requested,
+      images: succeeded,
+      failed,
+      sizeRequest: null,
+      sizeActual: null,
+      errorCode: ok ? null : (succeeded > 0 ? "partial_success" : "enrich_failed"),
+      error: ok ? null : `${failed} of ${input.requested} images failed enrichment`,
+      attempts: [],
+    });
+  } catch (error) {
+    console.error("enrichment log write failed:", error);
+  }
 }

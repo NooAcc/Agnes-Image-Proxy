@@ -13,6 +13,7 @@ function entry(overrides: Partial<RequestLogInput> = {}): RequestLogInput {
   return {
     requestId: "req-1",
     ts: "2026-11-20T10:00:00.000Z",
+    category: "request",
     stage: "complete",
     endpoint: "generations",
     path: "/v1/images/generations",
@@ -52,6 +53,7 @@ Deno.test("request logs round-trip the stage fields", async () => {
   await logs.record(entry());
   const row = (await logs.list())[0];
   assertEquals(row.requestId, "req-1");
+  assertEquals(row.category, "request");
   assertEquals(row.stage, "complete");
   assertEquals(row.sizeRequest, "1K 1:1");
   assertEquals(row.sizeActual, "900x1200");

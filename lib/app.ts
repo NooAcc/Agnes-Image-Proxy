@@ -152,7 +152,14 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
   async function writeLog(
     input: Omit<
       RequestLogInput,
-      "ts" | "endpoint" | "path" | "model" | "accountId" | "accountName" | "durationMs"
+      | "ts"
+      | "category"
+      | "endpoint"
+      | "path"
+      | "model"
+      | "accountId"
+      | "accountName"
+      | "durationMs"
     >,
     parsed: ParsedImageRequest,
     path: string,
@@ -163,6 +170,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     try {
       await options.logs.record({
         ts,
+        category: "request",
         endpoint: parsed.endpoint,
         path,
         model: parsed.model,
@@ -196,6 +204,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       await options.logs.record({
         requestId,
         ts: now().toISOString(),
+        category: "request",
         stage: "parse",
         endpoint,
         path,

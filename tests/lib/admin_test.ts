@@ -271,6 +271,7 @@ Deno.test("logs list and clear", async () => {
     await logs.record({
       requestId: `req-${i}`,
       ts: `2026-11-20T10:00:0${i}.000Z`,
+      category: "request",
       stage: "complete",
       endpoint: "generations",
       path: "/v1/images/generations",

@@ -10,7 +10,7 @@ import {
   type GalleryStore,
   type NsfwScores,
 } from "../../lib/gallery.ts";
-import { createRequestLogStore } from "../../lib/logs.ts";
+import { createRequestLogStore, type RequestLogStore } from "../../lib/logs.ts";
 import { createModelUsageStore } from "../../lib/model-usage.ts";
 import { createSettingsStore } from "../../lib/settings.ts";
 import { createNodeSqliteExecutor } from "../../lib/testing/node-sqlite-executor.ts";
@@ -42,12 +42,14 @@ function enrichment(tag: string | null): EnrichmentWrite {
 async function setup(enricherFactory?: (gallery: GalleryStore) => Enricher): Promise<{
   sql: ReturnType<typeof createNodeSqliteExecutor>;
   gallery: GalleryStore;
+  logs: RequestLogStore;
   call: (path: string, init?: RequestInit) => Promise<Response>;
   anon: (path: string, init?: RequestInit) => Promise<Response>;
 }> {
   const sql = createNodeSqliteExecutor();
   await ensureSchema(sql);
   const gallery = createGalleryStore(sql);
+  const logs = createRequestLogStore(sql);
   const session = createSessionService(API_KEY, createAuthStateStore(sql));
   const createClient: AgnesClientFactory = () => ({
     generate: () => Promise.resolve({ status: 200, body: {} }),
@@ -55,7 +57,7 @@ async function setup(enricherFactory?: (gallery: GalleryStore) => Enricher): Pro
   const api = createAdminApi({
     store: createAccountStore(sql),
     settings: createSettingsStore(sql),
-    logs: createRequestLogStore(sql),
+    logs,
     modelUsage: createModelUsageStore(sql),
     gallery,
     apiKey: API_KEY,
@@ -75,7 +77,7 @@ async function setup(enricherFactory?: (gallery: GalleryStore) => Enricher): Pro
   const anon = (path: string, init: RequestInit = {}) =>
     api.handle(new Request(`https://proxy.test${path}`, init), path.split("?")[0]);
 
-  return { sql, gallery, call, anon };
+  return { sql, gallery, logs, call, anon };
 }
 
 function row(overrides: Record<string, unknown> = {}) {
@@ -282,6 +284,50 @@ Deno.test("gallery enrich marks a short page complete", async () => {
     remaining: 0,
     nextBefore: null,
   });
+  sql.close();
+});
+
+Deno.test("gallery enrich logs image-info runs apart from client requests", async () => {
+  const { sql, gallery, logs, call } = await setup((gallery) => ({
+    enabled: () => Promise.resolve(true),
+    enrich: async (rows) => {
+      for (const item of rows) {
+        await gallery.setEnrichment(item.id, enrichment("safe"));
+      }
+      return { processed: rows.length, succeeded: rows.length, failed: 0 };
+    },
+  }));
+  await gallery.record(row());
+
+  await call("/admin/api/gallery/enrich", { method: "POST" });
+  const [entry] = await logs.list(1);
+  assertEquals(entry.category, "enrich");
+  assertEquals(entry.endpoint, "gallery/enrich");
+  assertEquals(entry.requested, 1);
+  assertEquals(entry.images, 1);
+  assertEquals(entry.failed, 0);
+  assertEquals(entry.ok, true);
+  sql.close();
+});
+
+Deno.test("gallery enrich logs failures and skips no-op runs", async () => {
+  const { sql, gallery, logs, call } = await setup(() => ({
+    enabled: () => Promise.resolve(true),
+    enrich: (rows) =>
+      Promise.resolve({ processed: rows.length, succeeded: 0, failed: rows.length }),
+  }));
+
+  await call("/admin/api/gallery/enrich", { method: "POST" });
+  assertEquals(await logs.count(), 0);
+
+  await gallery.record(row());
+  await call("/admin/api/gallery/enrich", { method: "POST" });
+  const [entry] = await logs.list(1);
+  assertEquals(entry.category, "enrich");
+  assertEquals(entry.ok, false);
+  assertEquals(entry.status, 502);
+  assertEquals(entry.failed, 1);
+  assertEquals(entry.errorCode, "enrich_failed");
   sql.close();
 });
 

@@ -4,6 +4,7 @@ import type { EnrichInput, GalleryInsert, GalleryStore } from "./gallery.ts";
 import { readImageDimensions } from "./image-dimensions.ts";
 import { sniffImageMime } from "./image-mime.ts";
 import { ARCHIVE_TIMEOUT_MS, MAX_ARCHIVE_BYTES } from "./limits.ts";
+import { recordEnrichmentLog, type RequestLogStore } from "./logs.ts";
 import type { NormalizedImage } from "./protocol.ts";
 import { isPublicHttpsUrl } from "./remote-image.ts";
 import { formatPixel } from "./size.ts";
@@ -31,10 +32,12 @@ export interface Archiver {
 export interface ArchiverOptions {
   gallery: GalleryStore;
   enricher?: Enricher;
+  logs?: RequestLogStore;
   fetchImpl?: typeof fetch;
   waitUntil?: (promise: Promise<unknown>) => void;
   maxBytes?: number;
   timeoutMs?: number;
+  now?: () => Date;
 }
 
 const MAX_REDIRECTS = 2;
@@ -211,10 +214,34 @@ export function createArchiver(options: ArchiverOptions): Archiver {
     }
 
     if (options.enricher && enrichable.length > 0) {
+      const startedAt = Date.now();
+      const at = options.now ? options.now() : new Date();
       try {
-        await options.enricher.enrich(enrichable);
+        const report = await options.enricher.enrich(enrichable);
+        if (options.logs) {
+          await recordEnrichmentLog(options.logs, {
+            ts: at.toISOString(),
+            endpoint: "archive/enrich",
+            path: null,
+            requested: report.processed,
+            succeeded: report.succeeded,
+            failed: report.failed,
+            durationMs: Date.now() - startedAt,
+          });
+        }
       } catch (error) {
         console.error("image enrichment failed:", error);
+        if (options.logs) {
+          await recordEnrichmentLog(options.logs, {
+            ts: at.toISOString(),
+            endpoint: "archive/enrich",
+            path: null,
+            requested: enrichable.length,
+            succeeded: 0,
+            failed: enrichable.length,
+            durationMs: Date.now() - startedAt,
+          });
+        }
       }
     }
   };

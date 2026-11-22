@@ -56,7 +56,8 @@ export async function buildHarness(options: HarnessOptions): Promise<Harness> {
     fetchImpl: options.fetchImpl,
     now: options.now,
   });
-  const archiver = options.archiver ?? createArchiver({ gallery, enricher });
+  const archiver = options.archiver ??
+    createArchiver({ gallery, enricher, logs, now: options.now });
   const pool = createAccountPool({ store, createClient: options.createClient });
   const api = createAdminApi({
     store,

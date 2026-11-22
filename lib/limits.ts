@@ -1,6 +1,6 @@
 /** Shared numeric limits. Keep in sync with the design document. */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 export const DB_TIMEOUT_MS = 15_000;
 
 export const MAX_REQUEST_BYTES = 32 * 1024 * 1024;

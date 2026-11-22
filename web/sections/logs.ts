@@ -6,7 +6,7 @@ export const LOGS_HTML = `
   <div class="section-head">
     <div class="section-lead">
       <h2>请求日志</h2>
-      <p>最新 200 条请求；刷新间隔与开关由顶栏「自动刷新」和「设置」统一控制。</p>
+      <p>最新 200 条请求与图片信息任务；刷新间隔与开关由顶栏「自动刷新」和「设置」统一控制。</p>
     </div>
     <div class="toolbar">
       <button class="btn" data-action="refresh-logs" type="button">${icon("refresh")}刷新</button>
@@ -20,6 +20,11 @@ export const LOGS_HTML = `
       ${icon("search")}
       <input class="input" data-role="logs-search" type="search" placeholder="搜索模型、账号或错误…" aria-label="搜索日志">
     </div>
+    <div class="toolbar" role="group" aria-label="按类型筛选">
+      <button class="btn small" data-category="all" aria-pressed="true" type="button">全部类型</button>
+      <button class="btn small" data-category="request" aria-pressed="false" type="button">常规请求</button>
+      <button class="btn small" data-category="enrich" aria-pressed="false" type="button">图片信息</button>
+    </div>
     <div class="toolbar" role="group" aria-label="按状态筛选">
       <button class="btn small" data-filter="all" aria-pressed="true" type="button">全部</button>
       <button class="btn small" data-filter="ok" aria-pressed="false" type="button">成功</button>
@@ -32,6 +37,7 @@ export const LOGS_HTML = `
       <thead>
         <tr>
           <th scope="col">时间</th>
+          <th scope="col">类型</th>
           <th scope="col">端点</th>
           <th scope="col">模型</th>
           <th scope="col">状态</th>
@@ -75,7 +81,7 @@ export const LOGS_SCRIPT = String.raw`
   var section = document.querySelector('[data-section="logs"]');
   if (!section) return;
 
-  var state = { entries: [], filter: "all", query: "", at: null };
+  var state = { entries: [], filter: "all", category: "all", query: "", at: null };
 
   function node(role) { return document.querySelector('[data-role="' + role + '"]'); }
 
@@ -89,6 +95,7 @@ export const LOGS_SCRIPT = String.raw`
   function visibleEntries() {
     var query = state.query.trim().toLowerCase();
     return state.entries.filter(function (entry) {
+      if (state.category !== "all" && entry.category !== state.category) return false;
       if (state.filter === "ok" && !entry.ok) return false;
       if (state.filter === "bad" && entry.ok) return false;
       if (!query) return true;
@@ -98,10 +105,14 @@ export const LOGS_SCRIPT = String.raw`
     });
   }
 
+  function categoryLabel(category) {
+    return category === "enrich" ? "图片信息" : "常规请求";
+  }
+
   function emptyRow(message) {
     var row = A.el("tr", "table-empty");
     var td = A.el("td");
-    td.colSpan = 9;
+    td.colSpan = 10;
     var empty = A.el("div", "empty");
     empty.append(A.icon("info"));
     empty.append(A.el("strong", null, message));
@@ -123,6 +134,14 @@ export const LOGS_SCRIPT = String.raw`
       var entry = entries[i];
       var row = A.el("tr");
       row.append(cell("时间", A.fmtTime(entry.ts), "mono"));
+
+      var category = A.el("td");
+      category.setAttribute("data-label", "类型");
+      category.append(
+        A.badge(categoryLabel(entry.category), entry.category === "enrich" ? "info" : "muted"),
+      );
+      row.append(category);
+
       row.append(cell("端点", entry.endpoint, "mono"));
       row.append(cell("模型", entry.model, "mono"));
 
@@ -195,6 +214,15 @@ export const LOGS_SCRIPT = String.raw`
     render();
   }
 
+  function setCategory(category) {
+    state.category = category;
+    var buttons = section.querySelectorAll("[data-category]");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute("aria-pressed", buttons[i].getAttribute("data-category") === category ? "true" : "false");
+    }
+    render();
+  }
+
   function openDetail(entry) {
     var grid = node("log-detail-grid");
     if (!grid) return;
@@ -203,6 +231,7 @@ export const LOGS_SCRIPT = String.raw`
     var rows = [
       ["请求 ID", entry.requestId || "—"],
       ["时间", A.fmtTime(entry.ts)],
+      ["类型", categoryLabel(entry.category)],
       ["阶段", entry.stage || "—"],
       ["端点", entry.endpoint],
       ["路径", entry.path || "—"],
@@ -249,6 +278,11 @@ export const LOGS_SCRIPT = String.raw`
   }
 
   section.addEventListener("click", async function (event) {
+    var category = event.target.closest("[data-category]");
+    if (category) {
+      setCategory(category.getAttribute("data-category"));
+      return;
+    }
     var filter = event.target.closest("[data-filter]");
     if (filter) {
       setFilter(filter.getAttribute("data-filter"));

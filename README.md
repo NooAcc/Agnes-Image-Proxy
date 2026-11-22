@@ -192,9 +192,10 @@ const edited = await client.images.edit({
 ## 可观测性
 
 - 每个图片请求生成 `X-Request-Id`（鉴权失败也带，但不写库）；`/v1/models` 不生成。
-- `request_log` 记录 `stage`（`parse` / `dispatch` / `complete`）、`error_code`、
+- `request_log` 记录 `category`、`stage`（`parse` / `dispatch` / `complete`）、`error_code`、
   `size_request`/`size_actual`、逐 Key `attempts`（每个子请求的账号、状态、耗时、错误）。
-  解析失败也会落库；未鉴权的 401 不落库，防止匿名请求刷掉历史日志。
+  `category` 为 `request`（客户端图片请求）或 `enrich`（缩略图 / NSFW 图片信息任务）；
+  控制台日志页可按类型筛选。解析失败也会落库；未鉴权的 401 不落库，防止匿名请求刷掉历史日志。
 - 用量指标为 `requests / successes / partials / failures / images`，满足
   `requests = successes + failures`，部分成功同时计入 `successes` 与 `partials`。
 - 账号计数字段是 `upstreamRequests` / `upstreamImages`，语义是**成功的上游子请求数与返回图片数**，
@@ -214,25 +215,9 @@ const edited = await client.images.edit({
 
 ## 数据库与 schema
 
-- schema 版本为 `3`。版本不匹配或非空旧库缺少版本时进程拒绝启动，不会自动改表。
-- 从 v2 升级到 v3 只新增列与索引，**先对现有库执行下面 9 条 SQL，再部署新代码**；不需要清库，也不
-  提供自动迁移分支：
-
-  ```sql
-  ALTER TABLE gallery ADD COLUMN thumb BLOB;
-  ALTER TABLE gallery ADD COLUMN thumb_mime TEXT;
-  ALTER TABLE gallery ADD COLUMN nsfw TEXT;
-  ALTER TABLE gallery ADD COLUMN tag TEXT;
-  ALTER TABLE gallery ADD COLUMN enrich_status TEXT;
-  ALTER TABLE gallery ADD COLUMN enrich_error TEXT;
-  ALTER TABLE gallery ADD COLUMN enriched_at TEXT;
-  CREATE INDEX IF NOT EXISTS gallery_tag_id ON gallery (tag, id DESC);
-  UPDATE schema_meta SET value = '3' WHERE key = 'version';
-  ```
-
-- 顺序反过来（先部署新代码）会因版本仍是 `2` 拒绝启动。
-- `RESET_SCHEMA=1 deno task reset-db` 仍可作为可选的重来手段；它会**删除账号、请求日志、用量、
-  相册与设置**后重建当前 schema，本次升级不需要它。
+- schema 版本为 `4`。版本不匹配或非空旧库缺少版本时进程拒绝启动，不会自动改表。
+- v4 为不兼容变更（`request_log` 新增 `category` 列），**不提供迁移 SQL**；旧库请用
+  `RESET_SCHEMA=1 deno task reset-db` 重建。该命令会**删除账号、请求日志、用量、相册与设置**。
 - 数据库请求 15 秒超时，超时/连接失败映射为 503 `database_timeout` / `database_unavailable`；
   `/health?deep=1` 失败只返回通用 `database unavailable`，不回显原始错误。
 
@@ -291,7 +276,8 @@ const edited = await client.images.edit({
 - 不要求鉴权头；服务不可达、超时或分类器不可用时该批行记为 `failed`，归档与客户端响应不受影响。
 
 历史图片在控制台点击「补齐历史图片」手动处理：一次点击从新到旧走一遍待处理行，失败行不在本遍重试，
-下次点击再试。
+下次点击再试。归档后的自动富化与手动补齐都会写一条 `category = enrich` 的日志
+（`archive/enrich` / `gallery/enrich`），在日志页与常规图片请求分开筛选；空跑的补齐不记日志。
 
 ## 已知取舍
 

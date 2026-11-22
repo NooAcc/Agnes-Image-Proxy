@@ -21,13 +21,13 @@ Deno.test("a version mismatch fails instead of altering tables", async () => {
   sql.close();
 });
 
-Deno.test("a v2 database is pointed at the in-place upgrade", async () => {
+Deno.test("a version mismatch asks for a destructive reset", async () => {
   const sql = createNodeSqliteExecutor();
   await sql.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   await sql.execute("INSERT INTO schema_meta (key, value) VALUES ('version', '2')");
   const error = await assertRejects(() => ensureSchema(sql), Error);
-  assertStringIncludes(error.message, "upgraded in place");
-  assertStringIncludes(error.message, "reset-db deletes all data");
+  assertStringIncludes(error.message, "schema version mismatch");
+  assertStringIncludes(error.message, "reset-db");
   sql.close();
 });
 
@@ -59,9 +59,13 @@ Deno.test("resetSchema recreates the current schema", async () => {
   sql.close();
 });
 
-Deno.test("schema v3 adds gallery enrichment columns and tag index", async () => {
+Deno.test("schema includes log categories and gallery enrichment columns", async () => {
   const sql = createNodeSqliteExecutor();
   await ensureSchema(sql);
+  const logColumns = (await sql.execute("PRAGMA table_info(request_log)")).rows.map((row) =>
+    String(row.name)
+  );
+  assertEquals(logColumns.includes("category"), true, "missing request_log.category");
   const columns = (await sql.execute("PRAGMA table_info(gallery)")).rows.map((row) =>
     String(row.name)
   );
