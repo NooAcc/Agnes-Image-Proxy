@@ -26,13 +26,24 @@ Deno.test("gallery lightbox supports keyboard paging and actions", () => {
   const html = GALLERY_DIALOGS;
   assert(html.includes('data-action="gallery-prev"'));
   assert(html.includes('data-action="gallery-next"'));
-  assert(html.includes('data-role="gallery-counter"'));
-  assert(html.includes('data-action="gallery-copy"'));
-  assert(html.includes('data-action="gallery-delete"'));
+  assert(html.includes("lightbox-close"));
+  assert(!html.includes("gallery-counter"));
+  assert(html.includes('data-action="toggle-prompt"'));
+  assert(html.includes("is-clamped"));
+  assert(GALLERY_SCRIPT.includes("setPrompt"));
+  assert(GALLERY_SCRIPT.includes("is-clamped"));
+  assert(GALLERY_SCRIPT.includes('data-action="gallery-copy"'));
+  assert(GALLERY_SCRIPT.includes('data-action="gallery-delete"'));
   assert(html.includes('data-role="gallery-download"'));
   assert(GALLERY_SCRIPT.includes("ArrowLeft"));
   assert(GALLERY_SCRIPT.includes("ArrowRight"));
   assert(GALLERY_SCRIPT.includes("download"));
+});
+
+Deno.test("gallery lightbox nsfw line keeps only the five base classes", () => {
+  assert(GALLERY_SCRIPT.includes("暂无 NSFW 数据"));
+  assert(!GALLERY_SCRIPT.includes("非 NSFW "));
+  assert(!GALLERY_SCRIPT.includes("nsfwPercent"));
 });
 
 Deno.test("gallery cards fall back to the source URL when unarchived", () => {

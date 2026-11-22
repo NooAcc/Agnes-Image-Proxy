@@ -51,12 +51,9 @@ export const GALLERY_DIALOGS = `
   <div class="lightbox-body">
     <div class="dialog-head">
       <h2 id="gallery-dialog-title">图片详情</h2>
-      <div class="toolbar">
-        <span class="muted mono" data-role="gallery-counter"></span>
-        <button class="icon-btn" type="button" data-action="close-gallery-dialog" aria-label="关闭">${
+      <button class="btn small lightbox-close" type="button" data-action="close-gallery-dialog" aria-label="关闭">${
   icon("close")
-}</button>
-      </div>
+}<span>关闭</span></button>
     </div>
     <div class="lightbox-stage">
       <button class="lightbox-nav prev" type="button" data-action="gallery-prev" aria-label="上一张">${
@@ -69,7 +66,11 @@ export const GALLERY_DIALOGS = `
     </div>
     <div class="lightbox-foot">
       <div class="lightbox-info">
-        <p class="lightbox-prompt" data-role="gallery-dialog-prompt"></p>
+        <div class="lightbox-prompt-wrap">
+          <p class="lightbox-prompt is-clamped" data-role="gallery-dialog-prompt"></p>
+          <button class="lightbox-prompt-toggle" type="button" data-action="toggle-prompt"
+            aria-expanded="false" hidden>展开全部</button>
+        </div>
         <p class="lightbox-meta" data-role="gallery-dialog-meta"></p>
         <p class="lightbox-meta" data-role="gallery-dialog-tag"></p>
         <p class="lightbox-meta" data-role="gallery-dialog-nsfw"></p>
@@ -127,15 +128,33 @@ export const GALLERY_SCRIPT = String.raw`
 
   function nsfwText(nsfw) {
     if (!nsfw) return "暂无 NSFW 数据";
-    var nsfwPercent = Math.round(
-      (Number(nsfw.hentai) + Number(nsfw.porn) + Number(nsfw.sexy)) * 100
-    );
-    return (nsfw.isNsfw ? "NSFW " : "非 NSFW ") + nsfwPercent + "%" +
-      " · 普通 " + pct(nsfw.safe) +
+    return "普通 " + pct(nsfw.safe) +
       " · 绘画 " + pct(nsfw.drawing) +
       " · 性感 " + pct(nsfw.sexy) +
       " · 色情 " + pct(nsfw.porn) +
       " · 动漫色情 " + pct(nsfw.hentai);
+  }
+
+  function promptToggleNode() {
+    return document.querySelector('[data-action="toggle-prompt"]');
+  }
+
+  function setPrompt(text) {
+    var prompt = node("gallery-dialog-prompt");
+    var toggle = promptToggleNode();
+    if (!prompt) return;
+    prompt.textContent = text;
+    prompt.classList.add("is-clamped");
+    if (toggle) {
+      toggle.hidden = true;
+      toggle.textContent = "展开全部";
+      toggle.setAttribute("aria-expanded", "false");
+    }
+    // Measure after layout: line-clamp keeps the full text in scrollHeight.
+    requestAnimationFrame(function () {
+      if (!toggle) return;
+      toggle.hidden = prompt.scrollHeight <= prompt.clientHeight + 1;
+    });
   }
 
   function extensionOf(mime) {
@@ -385,11 +404,9 @@ export const GALLERY_SCRIPT = String.raw`
   function openAt(index) {
     var dialog = node("gallery-dialog");
     var image = node("gallery-dialog-image");
-    var prompt = node("gallery-dialog-prompt");
     var meta = node("gallery-dialog-meta");
     var tagInfo = node("gallery-dialog-tag");
     var nsfwInfo = node("gallery-dialog-nsfw");
-    var counter = node("gallery-counter");
     var download = node("gallery-download");
     var prev = dialog ? dialog.querySelector('[data-action="gallery-prev"]') : null;
     var next = dialog ? dialog.querySelector('[data-action="gallery-next"]') : null;
@@ -400,13 +417,12 @@ export const GALLERY_SCRIPT = String.raw`
     var item = state.visible[index];
     image.src = "/admin/api/gallery/" + item.id + "/content";
     image.alt = item.prompt || "生成图片";
-    if (prompt) prompt.textContent = item.prompt || "(无提示词)";
+    setPrompt(item.prompt || "(无提示词)");
     if (meta) meta.textContent = metaText(item) + " · " + A.fmtTime(item.ts);
     if (tagInfo) {
       tagInfo.textContent = "分类：" + (item.tag ? (TAG_LABELS[item.tag] || item.tag) : "未分类");
     }
     if (nsfwInfo) nsfwInfo.textContent = nsfwText(item.nsfw);
-    if (counter) counter.textContent = (index + 1) + " / " + state.visible.length;
     if (download) {
       download.href = "/admin/api/gallery/" + item.id + "/content";
       download.setAttribute("download", "agnes-" + item.id + "." + extensionOf(item.mime));
@@ -632,6 +648,16 @@ export const GALLERY_SCRIPT = String.raw`
     var next = event.target.closest('[data-action="gallery-next"]');
     if (next) {
       openAt(state.current + 1);
+      return;
+    }
+    var promptToggle = event.target.closest('[data-action="toggle-prompt"]');
+    if (promptToggle) {
+      var promptEl = node("gallery-dialog-prompt");
+      if (promptEl) {
+        var clamped = promptEl.classList.toggle("is-clamped");
+        promptToggle.textContent = clamped ? "展开全部" : "收起";
+        promptToggle.setAttribute("aria-expanded", clamped ? "false" : "true");
+      }
       return;
     }
     var copy = event.target.closest('[data-action="gallery-copy"]');

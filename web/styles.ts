@@ -567,6 +567,15 @@ dialog[open] { animation: dialog-in 180ms var(--ease); }
   line-height: 1.55; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto;
 }
 .lightbox { width: min(980px, 94vw); }
+.btn.lightbox-close {
+  min-height: 36px; padding: 0 15px 0 12px; border-radius: 10px;
+  border-color: transparent; background: var(--text); color: var(--surface);
+  font-weight: 650; box-shadow: 0 2px 8px rgba(2, 6, 23, 0.24);
+}
+.btn.lightbox-close .icon { width: 17px; height: 17px; }
+.btn.lightbox-close:hover {
+  background: var(--danger); border-color: transparent; color: #fff;
+}
 .lightbox-body { display: flex; flex-direction: column; gap: 12px; padding: 14px; }
 .lightbox-stage { position: relative; display: grid; place-items: center; background: var(--surface-2); border-radius: var(--radius); min-height: 240px; }
 .lightbox-stage img { display: block; max-width: 100%; max-height: 64dvh; object-fit: contain; border-radius: var(--radius); }
@@ -582,7 +591,21 @@ dialog[open] { animation: dialog-in 180ms var(--ease); }
 .lightbox-nav:disabled { opacity: 0.35; cursor: not-allowed; }
 .lightbox-foot { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
 .lightbox-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 280px; }
-.lightbox-prompt { font-size: 13px; font-weight: 600; line-height: 1.5; word-break: break-word; }
+.lightbox-prompt-wrap {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0;
+  align-self: stretch; padding: 10px 13px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.lightbox-prompt { font-size: 13px; font-weight: 600; line-height: 1.5; word-break: break-word; max-width: 100%; }
+.lightbox-prompt.is-clamped {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 10;
+  line-clamp: 10; overflow: hidden;
+}
+.lightbox-prompt-toggle {
+  padding: 0; border: 0; background: none; color: var(--accent-text);
+  font-size: 12px; font-weight: 650; line-height: 1.4; cursor: pointer;
+}
+.lightbox-prompt-toggle:hover { text-decoration: underline; }
 .lightbox-meta { font-size: 11.5px; color: var(--faint); }
 .lightbox-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
