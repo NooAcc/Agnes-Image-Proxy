@@ -1,10 +1,10 @@
 import { assert, assertEquals } from "@std/assert";
-import { encodeBase64 } from "@std/encoding/base64";
+import { decodeBase64, encodeBase64 } from "@std/encoding/base64";
 import { ApiError } from "../../lib/errors.ts";
 import { createAccountStore, ensureSchema } from "../../lib/accounts.ts";
 import { createAuthStateStore, createSessionService } from "../../lib/auth.ts";
 import { createHandler, type HandlerOptions } from "../../lib/app.ts";
-import { createSettingsStore } from "../../lib/settings.ts";
+import { createSettingsStore, DEFAULT_SETTINGS } from "../../lib/settings.ts";
 import { createRequestLogStore } from "../../lib/logs.ts";
 import { createModelUsageStore } from "../../lib/model-usage.ts";
 import { createNodeSqliteExecutor } from "../../lib/testing/node-sqlite-executor.ts";
@@ -29,6 +29,44 @@ function pngB64(width: number, height: number): string {
 }
 
 const TINY_B64 = pngB64(1024, 1024);
+
+function pngDims(b64: string): { width: number; height: number } {
+  const bytes = decodeBase64(b64);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
+function edgeMetadataFetch(
+  urlDims: Record<string, { width: number; height: number; format?: string }> = {},
+): typeof fetch {
+  return ((_input, init) => {
+    const items = JSON.parse(String(init?.body ?? "[]")) as {
+      uuid: string;
+      url?: string;
+      base64?: string;
+    }[];
+    const results: Record<string, unknown> = {};
+    for (const item of items) {
+      const dims: { width: number; height: number; format?: string } | null = item.url
+        ? urlDims[item.url]
+        : item.base64
+        ? pngDims(item.base64)
+        : null;
+      results[item.uuid] = dims
+        ? {
+          success: true,
+          data: { ...dims, format: dims.format ?? "png", sourceContentType: "image/png" },
+        }
+        : { success: false, error: "no source" };
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify(results), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  }) as typeof fetch;
+}
 
 interface GatewayCall {
   baseUrl: string;
@@ -108,7 +146,19 @@ async function setup(
       }),
     );
 
-  return { sql, store, account, logs, modelUsage, archives, calls, call, handlerFn, session };
+  return {
+    sql,
+    store,
+    account,
+    logs,
+    modelUsage,
+    archives,
+    calls,
+    call,
+    handlerFn,
+    session,
+    settings,
+  };
 }
 
 type Call = (path: string, init?: RequestInit) => Promise<Response>;
@@ -211,9 +261,11 @@ Deno.test("stream is rejected with unsupported_parameter", async () => {
 });
 
 Deno.test("a generation request is translated, logged and archived", async () => {
-  const { sql, call, calls, logs, store, account, archives } = await setup(() =>
-    Promise.resolve({ created: 1, data: [{ b64_json: TINY_B64 }] })
+  const { sql, call, calls, logs, store, account, archives, settings } = await setup(
+    () => Promise.resolve({ created: 1, data: [{ b64_json: TINY_B64 }] }),
+    { fetchImpl: edgeMetadataFetch() },
   );
+  await settings.write({ ...DEFAULT_SETTINGS, imageServiceBaseUrl: "https://img.example" });
 
   const response = await postJson(call, "/v1/images/generations", {
     model: "agnes-image-2.5-flash",
@@ -232,7 +284,7 @@ Deno.test("a generation request is translated, logged and archived", async () =>
     prompt: "x",
     size: "1K",
     ratio: "1:1",
-    return_base64: true,
+    extra_body: { response_format: "url" },
   });
   assertEquals(calls[0].options, { timeoutMs: 300000, maxAttempts: 3 });
 
@@ -245,6 +297,7 @@ Deno.test("a generation request is translated, logged and archived", async () =>
   assertEquals(archives.length, 1);
   assertEquals(archives[0].prompt, "x");
   assertEquals(archives[0].model, "agnes-image-2.5-flash");
+  assertEquals(archives[0].sizes, [{ width: 1024, height: 1024 }]);
   sql.close();
 });
 
@@ -692,9 +745,11 @@ Deno.test("malformed JSON bodies are rejected", async () => {
 });
 
 Deno.test("response and log use the actual output size", async () => {
-  const { sql, logs, call } = await setup(() =>
-    Promise.resolve({ created: 1, data: [{ b64_json: pngB64(900, 1200) }] })
+  const { sql, logs, call, settings } = await setup(
+    () => Promise.resolve({ created: 1, data: [{ b64_json: pngB64(900, 1200) }] }),
+    { fetchImpl: edgeMetadataFetch() },
   );
+  await settings.write({ ...DEFAULT_SETTINGS, imageServiceBaseUrl: "https://img.example" });
   const reference = `data:image/png;base64,${pngB64(900, 1200)}`;
   const response = await postJson(call, "/v1/images/generations", {
     model: "agnes-image-2.5-flash",
@@ -710,23 +765,15 @@ Deno.test("response and log use the actual output size", async () => {
 });
 
 Deno.test("output_format follows the actual output bytes", async () => {
-  const bytes = new Uint8Array([
-    0xff,
-    0xd8,
-    0xff,
-    0xc0,
-    0x00,
-    0x11,
-    0x08,
-    0x00,
-    0x02,
-    0x00,
-    0x03,
-  ]);
-  const { sql, call } = await setup(
+  const { sql, call, settings } = await setup(
     () => Promise.resolve({ created: 1, data: [{ url: "https://out.example/a.jpg" }] }),
-    { fetchImpl: () => Promise.resolve(new Response(bytes as unknown as BodyInit)) },
+    {
+      fetchImpl: edgeMetadataFetch({
+        "https://out.example/a.jpg": { width: 2, height: 3, format: "jpeg" },
+      }),
+    },
   );
+  await settings.write({ ...DEFAULT_SETTINGS, imageServiceBaseUrl: "https://img.example" });
   const response = await postJson(call, "/v1/images/generations", {
     model: "m",
     prompt: "p",
@@ -739,10 +786,11 @@ Deno.test("output_format follows the actual output bytes", async () => {
 });
 
 Deno.test("URL output measurement failure falls back to the expected size", async () => {
-  const { sql, logs, call } = await setup(
+  const { sql, logs, call, settings } = await setup(
     () => Promise.resolve({ created: 1, data: [{ url: "https://out.example/a.png" }] }),
     { fetchImpl: () => Promise.reject(new Error("boom")) },
   );
+  await settings.write({ ...DEFAULT_SETTINGS, imageServiceBaseUrl: "https://img.example" });
   const reference = `data:image/png;base64,${pngB64(900, 1200)}`;
   const response = await postJson(call, "/v1/images/generations", {
     model: "agnes-image-2.5-flash",
@@ -761,12 +809,15 @@ Deno.test("URL output measurement failure falls back to the expected size", asyn
 
 Deno.test("partial success with mixed sizes joins unique actual sizes in the log", async () => {
   const outputs = [[900, 1200], [1024, 1024]] as const;
-  const { sql, logs, call } = await setup((_call, index) =>
-    Promise.resolve({
-      created: 1,
-      data: [{ b64_json: pngB64(outputs[index][0], outputs[index][1]) }],
-    })
+  const { sql, logs, call, settings } = await setup(
+    (_call, index) =>
+      Promise.resolve({
+        created: 1,
+        data: [{ b64_json: pngB64(outputs[index][0], outputs[index][1]) }],
+      }),
+    { fetchImpl: edgeMetadataFetch() },
   );
+  await settings.write({ ...DEFAULT_SETTINGS, imageServiceBaseUrl: "https://img.example" });
   const reference = `data:image/png;base64,${pngB64(900, 1200)}`;
   const response = await postJson(call, "/v1/images/generations", {
     model: "agnes-image-2.5-flash",

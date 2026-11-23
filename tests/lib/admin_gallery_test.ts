@@ -293,6 +293,29 @@ Deno.test("gallery enrich marks a short page complete", async () => {
   sql.close();
 });
 
+Deno.test("url rows do not consume the byte budget or get locally failed", async () => {
+  const received: EnrichInput[] = [];
+  const { sql, gallery, call } = await setup(() => ({
+    enabled: () => Promise.resolve(true),
+    enrich: (rows) => {
+      received.push(...rows);
+      return Promise.resolve({ processed: rows.length, succeeded: rows.length, failed: 0 });
+    },
+  }));
+  const byteRow = await gallery.record(row({ prompt: "bytes" }));
+  const urlRow = await gallery.record(
+    row({ prompt: "url", bytes: null, sourceUrl: "https://agnes.example/a.png" }),
+  );
+  await sql.execute("UPDATE gallery SET byte_size = ? WHERE id = ?", [1 * 1024 * 1024, byteRow]);
+  await sql.execute("UPDATE gallery SET byte_size = ? WHERE id = ?", [60 * 1024 * 1024, urlRow]);
+
+  const body = await (await call("/admin/api/gallery/enrich", { method: "POST" })).json();
+  assertEquals(received.map((item) => item.id).sort(), [byteRow, urlRow].sort());
+  assertEquals(body.processed, 2);
+  assertEquals(body.failed, 0);
+  sql.close();
+});
+
 Deno.test("gallery enrich logs image-info runs apart from client requests", async () => {
   const { sql, gallery, logs, call } = await setup((gallery) => ({
     enabled: () => Promise.resolve(true),

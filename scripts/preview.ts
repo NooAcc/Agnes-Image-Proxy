@@ -212,6 +212,14 @@ Deno.serve({ port }, async (request) => {
     const payload: Record<string, unknown> = {};
     for (const item of items) {
       const uuid = String(item.uuid ?? "");
+      const params = (item as { params?: Record<string, unknown> }).params ?? {};
+      if (params.format === "json") {
+        payload[uuid] = {
+          success: true,
+          data: { width: 1024, height: 1024, format: "png", sourceContentType: "image/png" },
+        };
+        continue;
+      }
       if (mockFailures.has(uuid)) {
         payload[uuid] = {
           success: true,

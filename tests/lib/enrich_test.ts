@@ -39,8 +39,15 @@ function recorder() {
   };
 }
 
-function row(id: number, bytes: Uint8Array = SOURCE): EnrichInput {
-  return { id, mime: "image/png", bytes };
+function row(id: number, overrides: Partial<EnrichInput> = {}): EnrichInput {
+  return {
+    id,
+    mime: "image/png",
+    url: null,
+    bytes: SOURCE,
+    sourceBytes: SOURCE.byteLength,
+    ...overrides,
+  };
 }
 
 Deno.test("enrich posts the documented batch shape and stores the result", async () => {
@@ -197,7 +204,7 @@ Deno.test("enrich does not store a thumbnail that is not smaller than the source
       ),
   });
 
-  await enricher.enrich([row(1, PNG)]);
+  await enricher.enrich([row(1, { bytes: PNG, sourceBytes: PNG.byteLength })]);
   assertEquals(writes[0].input.thumb, null);
   assertEquals(writes[0].input.tag, "safe");
   assertEquals(writes[0].input.status, "ok");
@@ -216,7 +223,9 @@ Deno.test("enrich marks oversized sources failed without calling the service", a
     },
   });
 
-  const report = await enricher.enrich([row(1, new Uint8Array(11))]);
+  const report = await enricher.enrich([
+    row(1, { bytes: new Uint8Array(11), sourceBytes: 11 }),
+  ]);
   assertEquals(calls, 0);
   assertEquals(report, { processed: 1, succeeded: 0, failed: 1 });
   assertEquals(writes[0].input.status, "failed");
@@ -248,6 +257,196 @@ Deno.test("enrich marks the chunk failed on network errors and non-2xx responses
   const report = await enricher.enrich([row(1)]);
   assertEquals(report, { processed: 1, succeeded: 0, failed: 1 });
   assertEquals(writes[0].input.error, "image service responded 500");
+});
+
+Deno.test("url rows are sent as url and do not count against the byte budget", async () => {
+  let body: unknown = null;
+  const { writes, gallery } = recorder();
+  const big = new Uint8Array(20 * 1024 * 1024);
+  const enricher = createEnricher({
+    settings: fakeSettings({ imageServiceBaseUrl: "https://img.example" }),
+    gallery,
+    fetchImpl: ((_input, init) => {
+      body = JSON.parse(String(init?.body));
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            "1": {
+              success: true,
+              data: { base64: encodeBase64(WEBP), contentType: "image/webp", nsfw: SCORES },
+            },
+            "2": {
+              success: true,
+              data: { base64: encodeBase64(WEBP), contentType: "image/webp", nsfw: SCORES },
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    }) as typeof fetch,
+  });
+
+  await enricher.enrich([
+    row(1, { url: "https://agnes.example/1.png", bytes: big, sourceBytes: big.byteLength }),
+    row(2, { url: "https://agnes.example/2.png", bytes: big, sourceBytes: big.byteLength }),
+  ]);
+
+  const items = body as { uuid: string; url?: string; base64?: string }[];
+  assertEquals(items.length, 2);
+  assertEquals(items.map((item) => item.uuid), ["1", "2"]);
+  assertEquals(items.every((item) => item.url && item.base64 === undefined), true);
+  assertEquals(writes[0].input.status, "ok");
+});
+
+Deno.test("a url-only row accepts the returned thumbnail", async () => {
+  const { writes, gallery } = recorder();
+  const enricher = createEnricher({
+    settings: fakeSettings({ imageServiceBaseUrl: "https://img.example" }),
+    gallery,
+    fetchImpl: (() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            "1": {
+              success: true,
+              data: { base64: encodeBase64(WEBP), contentType: "image/webp", nsfw: SCORES },
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      )) as typeof fetch,
+  });
+
+  await enricher.enrich([
+    row(1, { url: "https://agnes.example/1.png", bytes: null, sourceBytes: 0 }),
+  ]);
+  assertEquals(writes[0].input.thumb, WEBP);
+  assertEquals(writes[0].input.status, "ok");
+});
+
+Deno.test("retries a failed url item once with base64", async () => {
+  const bodies: unknown[] = [];
+  const { writes, gallery } = recorder();
+  const enricher = createEnricher({
+    settings: fakeSettings({ imageServiceBaseUrl: "https://img.example" }),
+    gallery,
+    fetchImpl: ((_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      bodies.push(body);
+      const urlItem = Array.isArray(body) && body.some((item) => item.url);
+      const payload: Record<string, unknown> = urlItem
+        ? { "1": { success: false, error: "url host is not allowed" } }
+        : {
+          "1": {
+            success: true,
+            data: { base64: encodeBase64(WEBP), contentType: "image/webp", nsfw: SCORES },
+          },
+        };
+      return Promise.resolve(
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    }) as typeof fetch,
+  });
+
+  const report = await enricher.enrich([
+    row(1, { url: "https://agnes.example/1.png", bytes: SOURCE, sourceBytes: SOURCE.byteLength }),
+  ]);
+
+  assertEquals(bodies.length, 2);
+  assertEquals((bodies[0] as { url?: string }[])[0].url, "https://agnes.example/1.png");
+  assertEquals(
+    (bodies[1] as { base64?: string }[])[0].base64 !== undefined,
+    true,
+  );
+  assertEquals(report, { processed: 1, succeeded: 1, failed: 0 });
+  assertEquals(writes[0].input.status, "ok");
+});
+
+Deno.test("does not retry url rows when the whole batch request fails", async () => {
+  let calls = 0;
+  const { writes, gallery } = recorder();
+  const enricher = createEnricher({
+    settings: fakeSettings({ imageServiceBaseUrl: "https://img.example" }),
+    gallery,
+    fetchImpl: (() => {
+      calls++;
+      return Promise.reject(new Error("network down"));
+    }) as typeof fetch,
+  });
+
+  const report = await enricher.enrich([
+    row(1, { url: "https://agnes.example/1.png", bytes: SOURCE, sourceBytes: SOURCE.byteLength }),
+  ]);
+
+  assertEquals(calls, 1);
+  assertEquals(report, { processed: 1, succeeded: 0, failed: 1 });
+  assertEquals(writes[0].input.error, "network down");
+});
+
+Deno.test("does not retry with base64 when the local copy exceeds the limit", async () => {
+  let calls = 0;
+  const { writes, gallery } = recorder();
+  const enricher = createEnricher({
+    settings: fakeSettings({ imageServiceBaseUrl: "https://img.example" }),
+    gallery,
+    maxSourceBytes: 10,
+    fetchImpl: (() => {
+      calls++;
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            "1": { success: false, error: "url failed" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    }) as typeof fetch,
+  });
+
+  const report = await enricher.enrich([
+    row(1, {
+      url: "https://agnes.example/1.png",
+      bytes: new Uint8Array(11),
+      sourceBytes: 11,
+    }),
+  ]);
+  assertEquals(calls, 1);
+  assertEquals(report, { processed: 1, succeeded: 0, failed: 1 });
+  assertEquals(writes[0].input.error, "url failed");
+});
+
+Deno.test("re-chunks the retry set by item and byte budgets", async () => {
+  let calls = 0;
+  const { gallery } = recorder();
+  const enricher = createEnricher({
+    settings: fakeSettings({ imageServiceBaseUrl: "https://img.example" }),
+    gallery,
+    fetchImpl: (() => {
+      calls++;
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            "1": { success: false, error: "url failed" },
+            "2": { success: false, error: "url failed" },
+            "3": { success: false, error: "url failed" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    }) as typeof fetch,
+  });
+
+  const big = new Uint8Array(20 * 1024 * 1024);
+  await enricher.enrich([
+    row(1, { url: "https://a/1.png", bytes: big, sourceBytes: big.byteLength }),
+    row(2, { url: "https://a/2.png", bytes: big, sourceBytes: big.byteLength }),
+    row(3, { url: "https://a/3.png", bytes: big, sourceBytes: big.byteLength }),
+  ]);
+  // 1 first pass + 3 retry chunks (20 MiB each; two would exceed 32 MiB).
+  assertEquals(calls, 4);
 });
 
 Deno.test("enrich counts a failed database write as failed without throwing", async () => {

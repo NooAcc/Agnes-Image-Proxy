@@ -59,6 +59,8 @@ Deno.test("settings form exposes every setting", () => {
   assert(!html.includes('name="imageParamMode" value="auto"'));
   assert(html.includes('name="imageParamMode" value="nested"'));
   assert(html.includes('name="imageParamMode" value="top_level"'));
+  assert(html.includes('name="defaultResponseFormat" value="b64_json" disabled'));
+  assert(html.includes('name="defaultResponseFormat" value="url" checked'));
   assert(html.includes('data-role="settings-status"'));
 });
 

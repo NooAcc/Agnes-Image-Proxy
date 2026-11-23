@@ -1,8 +1,9 @@
 import { assertEquals } from "@std/assert";
 import { encodeBase64 } from "@std/encoding/base64";
 import { createArchiver, isPublicHttpsUrl, sniffImageMime } from "../../lib/archive.ts";
-import type { GalleryInsert, GalleryStore } from "../../lib/gallery.ts";
+import type { EnrichInput, GalleryInsert, GalleryStore } from "../../lib/gallery.ts";
 import type { RequestLogInput, RequestLogStore } from "../../lib/logs.ts";
+import type { PixelSize } from "../../lib/size.ts";
 
 const PNG = new Uint8Array([
   0x89,
@@ -57,7 +58,10 @@ function fakeGallery() {
   return { store, rows, failFirst };
 }
 
-function request(images: { url: string | null; b64_json: string | null }[]) {
+function request(
+  images: { url: string | null; b64_json: string | null }[],
+  sizes: (PixelSize | null)[] = images.map(() => null),
+) {
   return {
     ts: "2026-11-20T10:00:00.000Z",
     endpoint: "generations",
@@ -69,6 +73,7 @@ function request(images: { url: string | null; b64_json: string | null }[]) {
     tier: "1K",
     ratio: "1:1",
     images: images.map((image) => ({ ...image, revised_prompt: null })),
+    sizes,
   };
 }
 
@@ -93,7 +98,9 @@ Deno.test("gallery stores the actual size of a b64 image", async () => {
   const gallery = fakeGallery();
   const archiver = createArchiver({ gallery: gallery.store });
   const bytes = pngWithSize(900, 1200);
-  await archiver.archive(request([{ url: null, b64_json: encodeBase64(bytes) }]));
+  await archiver.archive(
+    request([{ url: null, b64_json: encodeBase64(bytes) }], [{ width: 900, height: 1200 }]),
+  );
   assertEquals(gallery.rows[0].size, "900x1200");
 });
 
@@ -104,7 +111,12 @@ Deno.test("gallery stores the actual size of a downloaded URL image", async () =
     gallery: gallery.store,
     fetchImpl: () => Promise.resolve(pngResponse(bytes)),
   });
-  await archiver.archive(request([{ url: "https://out.example/a.png", b64_json: null }]));
+  await archiver.archive(
+    request([{ url: "https://out.example/a.png", b64_json: null }], [{
+      width: 1024,
+      height: 1024,
+    }]),
+  );
   assertEquals(gallery.rows[0].size, "1024x1024");
 });
 
@@ -114,7 +126,9 @@ Deno.test("gallery falls back to the request size when no bytes are available", 
     gallery: gallery.store,
     fetchImpl: () => Promise.reject(new Error("boom")),
   });
-  await archiver.archive(request([{ url: "https://out.example/a.png", b64_json: null }]));
+  await archiver.archive(
+    request([{ url: "https://out.example/a.png", b64_json: null }], [null]),
+  );
   assertEquals(gallery.rows[0].size, "1024x1024");
   assertEquals(gallery.rows[0].bytes, null);
 });
@@ -320,7 +334,7 @@ Deno.test("archive uses waitUntil when provided", async () => {
 
 Deno.test("archiver enriches archived image bytes", async () => {
   const { store } = fakeGallery();
-  const calls: { id: number; mime: string; bytes: Uint8Array }[][] = [];
+  const calls: EnrichInput[][] = [];
   const archiver = createArchiver({
     gallery: store,
     enricher: {
@@ -335,7 +349,75 @@ Deno.test("archiver enriches archived image bytes", async () => {
   assertEquals(calls.length, 1);
   assertEquals(calls[0][0].id, 1);
   assertEquals(calls[0][0].mime, "image/png");
+  assertEquals(calls[0][0].url, null);
   assertEquals(calls[0][0].bytes, PNG);
+  assertEquals(calls[0][0].sourceBytes, PNG.byteLength);
+});
+
+Deno.test("archive enriches persisted URL rows with the source url", async () => {
+  const received: EnrichInput[] = [];
+  const { store, rows } = fakeGallery();
+  const archiver = createArchiver({
+    gallery: store,
+    enricher: {
+      enabled: () => Promise.resolve(true),
+      enrich: (items) => {
+        received.push(...items);
+        return Promise.resolve({ processed: items.length, succeeded: items.length, failed: 0 });
+      },
+    },
+    fetchImpl: () => Promise.resolve(pngResponse()),
+  });
+  await archiver.archive(request([{ url: "https://out.example/a.png", b64_json: null }]));
+  assertEquals(rows[0].sourceUrl, "https://out.example/a.png");
+  assertEquals(received.length, 1);
+  assertEquals(received[0].url, "https://out.example/a.png");
+  assertEquals(received[0].bytes, PNG);
+  assertEquals(received[0].sourceBytes, PNG.byteLength);
+});
+
+Deno.test("an unarchived url row is still enriched by url", async () => {
+  const received: EnrichInput[] = [];
+  const { store, rows } = fakeGallery();
+  const archiver = createArchiver({
+    gallery: store,
+    enricher: {
+      enabled: () => Promise.resolve(true),
+      enrich: (items) => {
+        received.push(...items);
+        return Promise.resolve({ processed: items.length, succeeded: items.length, failed: 0 });
+      },
+    },
+    fetchImpl: () => Promise.reject(new Error("download failed")),
+  });
+  await archiver.archive(request([{ url: "https://out.example/a.png", b64_json: null }]));
+  assertEquals(rows[0].bytes, null);
+  assertEquals(rows[0].sourceUrl, "https://out.example/a.png");
+  assertEquals(received[0].url, "https://out.example/a.png");
+  assertEquals(received[0].bytes, null);
+  assertEquals(received[0].sourceBytes, 0);
+});
+
+Deno.test("a write failure still passes downloaded bytes as the fallback", async () => {
+  const received: EnrichInput[] = [];
+  const gallery = fakeGallery();
+  gallery.failFirst.enabled = true;
+  const archiver = createArchiver({
+    gallery: gallery.store,
+    enricher: {
+      enabled: () => Promise.resolve(true),
+      enrich: (items) => {
+        received.push(...items);
+        return Promise.resolve({ processed: items.length, succeeded: items.length, failed: 0 });
+      },
+    },
+    fetchImpl: () => Promise.resolve(pngResponse(PNG)),
+  });
+  await archiver.archive(request([{ url: "https://out.example/a.png", b64_json: null }]));
+  assertEquals(gallery.rows[0].bytes, null);
+  assertEquals(received[0].url, "https://out.example/a.png");
+  assertEquals(received[0].bytes, PNG);
+  assertEquals(received[0].sourceBytes, PNG.byteLength);
 });
 
 Deno.test("archiver skips enrichment for unarchived rows and enricher failures", async () => {

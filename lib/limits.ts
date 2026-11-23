@@ -30,6 +30,8 @@ export const GALLERY_PAGE_MAX = 100;
 export const IMAGE_SERVICE_MAX_ITEMS = 20;
 export const IMAGE_SERVICE_MAX_SOURCE_BYTES = 50 * 1024 * 1024;
 export const IMAGE_SERVICE_BATCH_SOURCE_BYTES = 32 * 1024 * 1024;
+/** Response-path metadata request timeout; a timeout is treated as measurement failure. */
+export const IMAGE_SERVICE_META_TIMEOUT_MS = 10_000;
 
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const SESSION_RENEW_BEFORE_MS = 7 * 24 * 60 * 60 * 1000;

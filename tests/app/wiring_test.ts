@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
-import { encodeBase64 } from "@std/encoding/base64";
+import { decodeBase64, encodeBase64 } from "@std/encoding/base64";
 import { buildHarness } from "../../scripts/harness.ts";
 import { DEFAULT_SETTINGS } from "../../lib/settings.ts";
 import { createNodeSqliteExecutor } from "../../lib/testing/node-sqlite-executor.ts";
@@ -28,6 +28,36 @@ function pngHeader(width: number, height: number): Uint8Array {
 
 const TINY_B64 = encodeBase64(pngHeader(1024, 1024));
 
+function edgeMetadataFetch(): typeof fetch {
+  return ((_input, init) => {
+    const items = JSON.parse(String(init?.body ?? "[]")) as { uuid: string; base64?: string }[];
+    const results: Record<string, unknown> = {};
+    for (const item of items) {
+      if (!item.base64) {
+        results[item.uuid] = { success: false, error: "no source" };
+        continue;
+      }
+      const bytes = decodeBase64(item.base64);
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      results[item.uuid] = {
+        success: true,
+        data: {
+          width: view.getUint32(16),
+          height: view.getUint32(20),
+          format: "png",
+          sourceContentType: "image/png",
+        },
+      };
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify(results), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  }) as typeof fetch;
+}
+
 function pngClient(): AgnesClient {
   return {
     generate: () =>
@@ -45,8 +75,10 @@ Deno.test("harness serves a generation end to end", async () => {
     sql,
     createClient: pngClient,
     archiver: { archive: () => Promise.resolve() },
+    fetchImpl: edgeMetadataFetch(),
   });
   await harness.store.create({ name: "main", apiKey: "upstream-key" });
+  await harness.settings.write({ ...DEFAULT_SETTINGS, imageServiceBaseUrl: "https://img.example" });
 
   const response = await harness.handler(
     new Request("https://proxy.test/v1/images/generations", {

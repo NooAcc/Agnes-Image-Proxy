@@ -24,7 +24,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   agnesBaseUrl: "https://apihub.agnes-ai.com/v1",
-  defaultResponseFormat: "b64_json",
+  defaultResponseFormat: "url",
   defaultSize: "1K",
   imageParamMode: "nested",
   probeModel: "agnes-image-2.5-flash",
@@ -101,8 +101,8 @@ export function validateSettings(input: unknown): AppSettings {
   }
 
   const defaultResponseFormat = pick("defaultResponseFormat");
-  if (defaultResponseFormat !== "b64_json" && defaultResponseFormat !== "url") {
-    throw invalid("defaultResponseFormat", "defaultResponseFormat must be b64_json or url");
+  if (defaultResponseFormat !== "url") {
+    throw invalid("defaultResponseFormat", "defaultResponseFormat must be url");
   }
 
   const defaultSize = pick("defaultSize");
@@ -157,6 +157,8 @@ export function createSettingsStore(sql: SqlExecutor): SettingsStore {
         if (!KEYS.includes(key as keyof AppSettings)) continue;
         stored[key] = JSON.parse(String(row.value));
       }
+      // The global default is fixed to url; discard any legacy stored value.
+      delete stored.defaultResponseFormat;
       return validateSettings({ ...DEFAULT_SETTINGS, ...stored });
     },
 

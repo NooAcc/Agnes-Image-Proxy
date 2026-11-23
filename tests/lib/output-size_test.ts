@@ -12,50 +12,101 @@ function pngHeader(width: number, height: number): Uint8Array {
   return bytes;
 }
 
-Deno.test("measures b64 output images", async () => {
-  const result = await measureOutputImages([
-    { url: null, b64_json: encodeBase64(pngHeader(900, 1200)), revised_prompt: null },
+function batchResponse(entries: Record<string, unknown>): Response {
+  return new Response(JSON.stringify(entries), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+Deno.test("measures URL images through image service metadata", async () => {
+  let body: unknown = null;
+  const result = await measureOutputImages(
+    [{ url: "https://out.example/a.png", b64_json: null, revised_prompt: null }],
+    {
+      imageServiceBaseUrl: "https://img.example",
+      fetchImpl: ((_input, init) => {
+        body = JSON.parse(String(init?.body));
+        return Promise.resolve(batchResponse({
+          "0": {
+            success: true,
+            data: { width: 864, height: 1152, format: "png", sourceContentType: "image/png" },
+          },
+        }));
+      }) as typeof fetch,
+    },
+  );
+  assertEquals(body, [
+    { uuid: "0", url: "https://out.example/a.png", params: { format: "json" } },
   ]);
-  assertEquals(result.sizes, [{ width: 900, height: 1200 }]);
-  assertEquals(result.first, { width: 900, height: 1200 });
+  assertEquals(result.sizes, [{ width: 864, height: 1152 }]);
+  assertEquals(result.formats, ["png"]);
   assertEquals(result.warnings, []);
 });
 
-Deno.test("measures b64 MIME", async () => {
-  const result = await measureOutputImages([
-    { url: null, b64_json: encodeBase64(pngHeader(10, 10)), revised_prompt: null },
-  ]);
-  assertEquals(result.mimes, ["image/png"]);
+Deno.test("measures base64 images and normalizes jpg to jpeg", async () => {
+  const result = await measureOutputImages(
+    [{ url: null, b64_json: encodeBase64(pngHeader(10, 20)), revised_prompt: null }],
+    {
+      imageServiceBaseUrl: "https://img.example",
+      fetchImpl: (() =>
+        Promise.resolve(batchResponse({
+          "0": { success: true, data: { width: 10, height: 20, format: "jpg" } },
+        }))) as typeof fetch,
+    },
+  );
+  assertEquals(result.sizes, [{ width: 10, height: 20 }]);
+  assertEquals(result.formats, ["jpeg"]);
 });
 
-Deno.test("measures URL output images through a guarded fetch", async () => {
-  const fetchImpl = () =>
-    Promise.resolve(new Response(pngHeader(864, 1152) as unknown as BodyInit));
+Deno.test("does nothing when the image service is not configured", async () => {
+  let calls = 0;
   const result = await measureOutputImages(
     [{ url: "https://out.example/a.png", b64_json: null, revised_prompt: null }],
-    fetchImpl as typeof fetch,
+    {
+      imageServiceBaseUrl: "",
+      fetchImpl: (() => {
+        calls++;
+        return Promise.reject(new Error("should not be called"));
+      }) as typeof fetch,
+    },
   );
-  assertEquals(result.sizes, [{ width: 864, height: 1152 }]);
-});
-
-Deno.test("measurement failure is non-fatal and warns", async () => {
-  const fetchImpl = () => Promise.reject(new Error("boom"));
-  const result = await measureOutputImages(
-    [{ url: "https://out.example/a.png", b64_json: null, revised_prompt: null }],
-    fetchImpl as typeof fetch,
-  );
+  assertEquals(calls, 0);
   assertEquals(result.sizes, [null]);
+  assertEquals(result.formats, [null]);
   assertEquals(result.first, null);
-  assertEquals(result.warnings.includes("size-measure-failed"), true);
+  assertEquals(result.warnings, []);
 });
 
-Deno.test("unexpected measurement errors are swallowed", async () => {
-  const fetchImpl = () => Promise.resolve(null) as unknown as Promise<Response>;
+Deno.test("measurement failures are non-fatal and warn once", async () => {
   const result = await measureOutputImages(
-    [{ url: "https://out.example/a.png", b64_json: null, revised_prompt: null }],
-    fetchImpl as unknown as typeof fetch,
+    [
+      { url: "https://out.example/a.png", b64_json: null, revised_prompt: null },
+      { url: "https://out.example/b.png", b64_json: null, revised_prompt: null },
+    ],
+    {
+      imageServiceBaseUrl: "https://img.example",
+      fetchImpl: (() => Promise.reject(new Error("boom"))) as typeof fetch,
+    },
   );
-  assertEquals(result.sizes, [null]);
-  assertEquals(result.first, null);
-  assertEquals(result.warnings.includes("size-measure-failed"), true);
+  assertEquals(result.sizes, [null, null]);
+  assertEquals(result.formats, [null, null]);
+  assertEquals(result.warnings, ["size-measure-failed"]);
+});
+
+Deno.test("chunks more than 20 images into multiple metadata requests", async () => {
+  let calls = 0;
+  const images = Array.from({ length: 21 }, (_, index) => ({
+    url: `https://out.example/${index}.png`,
+    b64_json: null,
+    revised_prompt: null,
+  }));
+  await measureOutputImages(images, {
+    imageServiceBaseUrl: "https://img.example",
+    fetchImpl: (() => {
+      calls++;
+      return Promise.resolve(batchResponse({}));
+    }) as typeof fetch,
+  });
+  assertEquals(calls, 2);
 });

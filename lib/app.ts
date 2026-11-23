@@ -248,10 +248,13 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       const gateway = options.pool.gateway(settings.agnesBaseUrl, hooks, gatewayOptions);
       const result = await gateway.generate(agnesPayload(parsed, preferredMode));
       const normalized = normalizeAgnesResponse(result.body, parsed);
-      const measured = await measureOutputImages(normalized.images, options.fetchImpl);
+      const measured = await measureOutputImages(normalized.images, {
+        imageServiceBaseUrl: settings.imageServiceBaseUrl,
+        fetchImpl: options.fetchImpl,
+      });
       if (measured.first) normalized.body.size = formatPixel(measured.first);
-      const mime = measured.mimes[0] ?? null;
-      if (mime) normalized.body.output_format = mime.split("/")[1];
+      const format = measured.formats[0];
+      if (format) normalized.body.output_format = format;
       else delete normalized.body.output_format;
       normalized.warnings.push(...measured.warnings);
       return {
@@ -300,6 +303,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
             tier: parsed.size.tier,
             ratio: parsed.size.derivedRatio,
             images: outcome.result.normalized.images,
+            sizes: outcome.result.actualSizes,
           });
         } catch (error) {
           console.error("archive failed:", error);

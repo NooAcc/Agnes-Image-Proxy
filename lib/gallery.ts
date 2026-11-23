@@ -33,12 +33,15 @@ export interface PendingEnrichmentRow {
   id: number;
   mime: string;
   byteSize: number;
+  sourceUrl: string | null;
 }
 
 export interface EnrichInput {
   id: number;
   mime: string;
-  bytes: Uint8Array;
+  url: string | null;
+  bytes: Uint8Array | null;
+  sourceBytes: number;
 }
 
 export interface GalleryInsert {
@@ -248,15 +251,15 @@ export function createGalleryStore(sql: SqlExecutor): GalleryStore {
     async pendingEnrichment(before, limit) {
       const result = before === null
         ? await sql.execute(
-          `SELECT id, mime, byte_size FROM gallery
-           WHERE archived = 1 AND bytes IS NOT NULL
+          `SELECT id, mime, byte_size, source_url FROM gallery
+           WHERE (source_url IS NOT NULL OR bytes IS NOT NULL)
              AND (enrich_status IS NULL OR enrich_status = 'failed')
            ORDER BY id DESC LIMIT ?`,
           [limit],
         )
         : await sql.execute(
-          `SELECT id, mime, byte_size FROM gallery
-           WHERE archived = 1 AND bytes IS NOT NULL
+          `SELECT id, mime, byte_size, source_url FROM gallery
+           WHERE (source_url IS NOT NULL OR bytes IS NOT NULL)
              AND (enrich_status IS NULL OR enrich_status = 'failed')
              AND id < ?
            ORDER BY id DESC LIMIT ?`,
@@ -266,6 +269,7 @@ export function createGalleryStore(sql: SqlExecutor): GalleryStore {
         id: Number(row.id),
         mime: String(row.mime),
         byteSize: Number(row.byte_size),
+        sourceUrl: row.source_url === null ? null : String(row.source_url),
       }));
     },
 
@@ -273,14 +277,21 @@ export function createGalleryStore(sql: SqlExecutor): GalleryStore {
       if (ids.length === 0) return [];
       const placeholders = ids.map(() => "?").join(", ");
       const result = await sql.execute(
-        `SELECT id, mime, bytes FROM gallery WHERE id IN (${placeholders})`,
+        `SELECT id, mime, source_url, bytes, byte_size FROM gallery WHERE id IN (${placeholders})`,
         ids,
       );
       const inputs: EnrichInput[] = [];
       for (const row of result.rows) {
+        const url = row.source_url === null ? null : String(row.source_url);
         const bytes = bytesFromRow(row.bytes);
-        if (bytes === null) continue;
-        inputs.push({ id: Number(row.id), mime: String(row.mime), bytes });
+        if (url === null && bytes === null) continue;
+        inputs.push({
+          id: Number(row.id),
+          mime: String(row.mime),
+          url,
+          bytes,
+          sourceBytes: Number(row.byte_size),
+        });
       }
       return inputs;
     },
@@ -288,7 +299,7 @@ export function createGalleryStore(sql: SqlExecutor): GalleryStore {
     async countPendingEnrichment() {
       const result = await sql.execute(
         `SELECT COUNT(*) AS c FROM gallery
-         WHERE archived = 1 AND bytes IS NOT NULL AND enrich_status IS NULL`,
+         WHERE (source_url IS NOT NULL OR bytes IS NOT NULL) AND enrich_status IS NULL`,
       );
       return Number(result.rows[0]?.c ?? 0);
     },

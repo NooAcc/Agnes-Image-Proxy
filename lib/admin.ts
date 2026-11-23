@@ -515,7 +515,7 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
     let budget = 0;
     const eligibleIds: number[] = [];
     for (const row of rows) {
-      if (row.byteSize > IMAGE_SERVICE_MAX_SOURCE_BYTES) {
+      if (row.sourceUrl === null && row.byteSize > IMAGE_SERVICE_MAX_SOURCE_BYTES) {
         oversized++;
         attemptedCount++;
         try {
@@ -534,13 +534,14 @@ export function createAdminApi(options: AdminApiOptions): AdminApi {
         continue;
       }
       if (
+        row.sourceUrl === null &&
         eligibleIds.length > 0 &&
         budget + row.byteSize > IMAGE_SERVICE_BATCH_SOURCE_BYTES
       ) {
         break;
       }
       eligibleIds.push(row.id);
-      budget += row.byteSize;
+      if (row.sourceUrl === null) budget += row.byteSize;
       attemptedCount++;
     }
 

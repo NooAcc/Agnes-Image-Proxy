@@ -8,8 +8,8 @@
   Key。
 - 控制台 `/admin`
   提供总览、图片、账号、日志、设置五个板块；深色/浅色主题首次跟随系统，右上角可随时切换。
-- 图库卡片默认加载 Edge-Images 生成的缩略图；归档时自动取得
-  nsfw-detection-2-mini 五分类并落为 tag，可按分类筛选、手动补齐历史图片。
+- 图库卡片默认加载 Edge-Images 生成的缩略图；归档时自动取得 nsfw-detection-2-mini 五分类并落为
+  tag，可按分类筛选、手动补齐历史图片。
 
 模型名原样透传，**不做名称映射**——`gpt-image-1` 不会变成 `agnes-image-2.5-flash`，请直接使用 Agnes
 的模型名（见下文模型目录）。
@@ -81,7 +81,7 @@ PORT=8000 deno task start
 Python：
 
 ```python
-import base64
+import urllib.request
 from openai import OpenAI
 
 client = OpenAI(base_url="https://your-proxy.example/v1", api_key="PROXY_API_KEY")
@@ -91,8 +91,8 @@ result = client.images.generate(
     prompt="一只坐在窗台上的橘猫，午后阳光",
     size="1024x1024",
 )
-with open("output.png", "wb") as f:
-    f.write(base64.b64decode(result.data[0].b64_json))
+with urllib.request.urlopen(result.data[0].url) as response, open("output.png", "wb") as f:
+    f.write(response.read())
 
 with open("reference.png", "rb") as image:
     edited = client.images.edit(
@@ -116,7 +116,8 @@ const result = await client.images.generate({
   prompt: "a red apple on a white table",
   size: "1024x1024",
 });
-await fs.writeFile("output.png", Buffer.from(result.data[0].b64_json, "base64"));
+const output = await fetch(result.data[0].url);
+await fs.writeFile("output.png", Buffer.from(await output.arrayBuffer()));
 
 const image = await fs.readFile("reference.png");
 const edited = await client.images.edit({
@@ -127,7 +128,9 @@ const edited = await client.images.edit({
 });
 ```
 
-默认返回 `b64_json`；显式请求 `response_format: "url"` 时返回 Agnes 的临时 URL。
+默认返回 `url`（Agnes 的临时 URL）。客户端显式传 `response_format: "b64_json"` 或
+`return_base64: true` 时仍返回 `b64_json`。控制台设置里的默认响应格式恒为 `url`， `b64_json`
+选项灰色禁用；旧设置不做迁移。
 
 ## 环境变量
 
@@ -170,10 +173,12 @@ const edited = await client.images.edit({
 - 显式给了 `size` 的请求完全不读取、不下载参考图。
 - Agnes 会把精确 `WIDTHxHEIGHT` 归一化到自己的档位 / 比例表，因此**不能保证输出正好等于参考图
   分辨率**；实测 `900x1200` 得到 `864x1152`。
-- 响应体 `size`、请求日志 `size_actual`、图片时间线 `size` 都记录**实际输出尺寸**：响应取第一张
-  成功图；日志按出现顺序去重后用逗号连接；相册取归档字节。测量失败时响应退回预期原生尺寸并在
-  `X-Agnes-Warnings` 标记 `size-measure-failed`，日志尺寸记 `null`。
-- 响应体 `output_format` 取第一张成功图字节嗅探出的 `png`/`jpeg`/`webp`；测不到时省略该字段。
+- 响应体 `size`、请求日志 `size_actual`、图片时间线 `size` 都记录**实际输出尺寸**：响应前同步调用
+  Edge-Images 的 `format=json` 元数据接口；响应取第一张成功图，日志按出现顺序去重后用逗号连接，
+  相册行直接复用同一次测量结果。图片服务未配置时不测量，响应使用预期原生尺寸且不告警；测量失败时
+  退回预期尺寸并在 `X-Agnes-Warnings` 标记 `size-measure-failed`，日志尺寸记 `null`。
+- 响应体 `output_format` 取元数据返回的 `png`/`jpeg`/`webp`（`jpg` 归一为
+  `jpeg`）；测不到时省略该字段。
 - `n` 只要求是正整数，**没有 1–10 的上限**，代理按 `n` 并发扇出。上游实测要求
   `n = 1`，因此扇出是必需的。
 - **部分成功也返回**：成功数 ≥1 时 HTTP 200，`data` 只含成功图，并带响应头：
@@ -193,8 +198,8 @@ const edited = await client.images.edit({
 
 - 每个图片请求生成 `X-Request-Id`（鉴权失败也带，但不写库）；`/v1/models` 不生成。
 - `request_log` 记录 `category`、`stage`（`parse` / `dispatch` / `complete`）、`error_code`、
-  `size_request`/`size_actual`、逐 Key `attempts`（每个子请求的账号、状态、耗时、错误）。
-  `category` 为 `request`（客户端图片请求）或 `enrich`（缩略图 / NSFW 图片信息任务）；
+  `size_request`/`size_actual`、逐 Key `attempts`（每个子请求的账号、状态、耗时、错误）。 `category`
+  为 `request`（客户端图片请求）或 `enrich`（缩略图 / NSFW 图片信息任务）；
   控制台日志页可按类型筛选。解析失败也会落库；未鉴权的 401 不落库，防止匿名请求刷掉历史日志。
 - 用量指标为 `requests / successes / partials / failures / images`，满足
   `requests = successes + failures`，部分成功同时计入 `successes` 与 `partials`。
@@ -239,15 +244,17 @@ const edited = await client.images.edit({
 - 上游给 `b64_json` 时直接解码为字节存 `BLOB`；上游给 URL 时在响应发出后下载（仅
   `https`、拒绝私网/回环与指向私网的重定向、上限 64 MiB / 60 秒）再入库。只有嗅探为 png/jpeg/webp
   的字节才会保存；其他内容记录 `archived=0`、`mime=application/octet-stream`。
-- 归档行的 `size` 取归档字节的实际宽高；下载失败（`archived=0`）时保留预期原生尺寸与 `source_url`。
+- 归档行的 `size` 取响应路径的 Edge-Images 元数据测量值；测量拿不到时退回预期原生尺寸。
 - 下载或写库失败不影响客户端响应：gallery 行保留 `source_url` 且
-  `archived=0`，控制台显示占位卡与原始链接。
+  `archived=0`，控制台显示占位卡与原始链接；只要行写库成功，富化仍会用 `source_url` 进行
+  （下载成功但写字节失败时，用内存中的下载字节作为 base64 兜底）。
 - 时间线按 `id DESC` 分页（默认 24 张），按 UTC
   日期分组；单张删除与清空全部由用户在控制台决定，**没有自动保留上限**。BLOB 存在 Turso
   中，请留意数据库体积与费用。
-- 归档后（在 `waitUntil` 内）调用图片服务生成缩略图与
-  nsfw-detection-2-mini 五分类；卡片优先加载缩略图，失败回退
-  原图，查看大图与下载始终用原图。分类标签为普通 / 绘画 / 性感 / 色情 / 动漫色情，未富化显示未分类。
+- 归档后（在 `waitUntil` 内）把 `{ uuid, url }` 发给图片服务生成缩略图与 nsfw-detection-2-mini
+  五分类，不再上传本地 BLOB；URL 单项失败且有本地副本时自动改用 base64
+  重试一次。卡片优先加载缩略图，失败回退 原图，查看大图与下载始终用原图。分类标签为普通 / 绘画 /
+  性感 / 色情 / 动漫色情，未富化显示未分类。
 - 缩略图只在比原图更小且能嗅探为图片时保存；返回的「缩略图」不小于原图时不保存缩略图，但仍保存 tag
   与 NSFW 数据。删除与清空图片会随行删除缩略图与 NSFW 数据。
 
@@ -266,32 +273,43 @@ const edited = await client.images.edit({
 
 调用契约：`POST {imageServiceBaseUrl}/api/batch`，请求体是**顶层 JSON 数组**。
 
-- 每项 `{ uuid, base64, contentType, params }`；`uuid = String(gallery.id)`，
-  `params = { width: height: thumbnailWidth, crop: "none", size: "down", format: "webp", quality: thumbnailQuality, nsfw: 1 }`。
+- 富化项优先 `{ uuid, url, params }`，`uuid = String(gallery.id)`，由 Edge-Images 自行下载原图。 URL
+  项失败且本行有本地副本时，代理在同一批处理里改用 `{ uuid, base64, contentType, params }`
+  重试一次（历史补齐常见于 Agnes 临时 URL 过期）。没有 URL 的行直接传 base64。
+- `params = { width: height: thumbnailWidth, crop: "none", size: "down", format: "webp", quality: thumbnailQuality, nsfw: 1 }`。
 - 响应按 uuid 映射；`data.base64` 是缩略图，`data.nsfw` 是原图的 nsfw-detection-2-mini 五分类
   （`drawing/hentai/safe/porn/sexy/isNsfw`）。分数最大者成为 `tag`，并列时按
   `safe, drawing, sexy, porn, hentai` 顺序取靠前者。
-- 每批 ≤20 项且源字节累计 ≤32 MiB（发送前自动分块）；单张 >50 MiB 不发起 HTTP，直接记为失败
-  `source exceeds 50 MiB`。
+- 每批 ≤20 项；只有 base64 项计入源字节累计 ≤32 MiB（URL 项不计体积）。单张 base64 >50 MiB 不发起
+  HTTP，直接记为失败 `source exceeds 50 MiB`；URL 项不做本地体积判断。
 - 不要求鉴权头；服务不可达、超时或分类器不可用时该批行记为 `failed`，归档与客户端响应不受影响。
+- **部署要求**：Edge-Images 的 `IMAGE_URL_ALLOWLIST` 必须包含 Agnes 输出图所在域名，否则元数据与 URL
+  富化都会按 item 失败（代理会退回预期尺寸，富化则用本地 base64 兜底）。
+
+尺寸测量复用同一入口：输出图在响应前以 `params = { format: "json" }` 调一次 `/api/batch`，读取
+`data.width/height/format`（`format` 可能为 `jpg`/`jpeg`/`png`/`webp`，`jpg` 归一为 `jpeg`）， 超时
+10 秒；失败不影响客户端响应。
 
 历史图片在控制台点击「补齐历史图片」手动处理：一次点击从新到旧走一遍待处理行，失败行不在本遍重试，
-下次点击再试。归档后的自动富化与手动补齐都会写一条 `category = enrich` 的日志
-（`archive/enrich` / `gallery/enrich`），在日志页与常规图片请求分开筛选；空跑的补齐不记日志。
+下次点击再试。URL 行不占 32 MiB 预算，也不做 50 MiB 本地判超；URL 过期时由上面的 base64 兜底处理。
+归档后的自动富化与手动补齐都会写一条 `category = enrich` 的日志 （`archive/enrich` /
+`gallery/enrich`），在日志页与常规图片请求分开筛选；空跑的补齐不记日志。
 
 ## 已知取舍
 
 - 请求体上限 32 MiB；单张输入图 20 MiB；最多 16 张。
-- 参考图 URL 读头与输出 URL 测量各额外增加一次小请求（通常几百毫秒）；测量失败只降级并告警，
-  不会让请求失败。
-- 参考图读头允许 `http`/`https`，输出 URL 只允许 `https`；两者共用 10 秒超时、1 MiB 字节上限、 最多
-  2 次重定向。与归档下载一样，不额外实现 DNS rebinding 防护，这是已知边界。
+- 参考图 URL 读头额外增加一次小请求（通常几百毫秒）；输出图尺寸改由 Edge-Images 元数据接口测量，
+  失败只降级并告警，不会让请求失败。
+- 参考图读头允许 `http`/`https`，输出 URL 只允许 `https`；参考图读头共用 10 秒超时、1 MiB 字节上限、
+  最多 2 次重定向。与归档下载一样，不额外实现 DNS rebinding 防护，这是已知边界。
 - 代理不设输出体积预算、不按档位限制 `n`：极端组合（`4K × n=10 × Base64`）可能触及 isolate
   的内存上限，这是明确接受的取舍；上游限流错误原样返回（429）。
 - 不实现 `mask` 局部重绘、不流式、不转码、不缩放；只存输出图，不提供图片编辑。
 - 不伪造 `usage`；`revised_prompt` 固定为 `null`；上游未使用字段返回的空字符串一律归一化为 `null`。
-- 图片服务是外部依赖：未配置时缩略图 / NSFW / 补齐全部关闭；配置后 Turso 会因缩略图与 NSFW 数据
-  增加体积。>50 MiB 的原图无法富化（直接记为失败），历史补齐是手动操作，不做启动自动补齐。
+- 图片服务是外部依赖：未配置时缩略图 / NSFW / 补齐全部关闭，响应尺寸退回预期值；配置后 Turso 会因
+  缩略图与 NSFW 数据增加体积。只有「没有 URL 且本地副本 >50 MiB」的原图无法富化（直接记为失败），
+  历史补齐是手动操作，不做启动自动补齐。URL 归档与 Edge-Images 富化会各下载一次原图 （Edge-Images
+  自身缓存源图）。
 
 ## 上游实测结论（2026-11-21）
 

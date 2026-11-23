@@ -20,7 +20,7 @@ Deno.test("settings default to the documented values", async () => {
   const { sql, store } = await freshStore();
   assertEquals(await store.read(), DEFAULT_SETTINGS);
   assertEquals(DEFAULT_SETTINGS.agnesBaseUrl, "https://apihub.agnes-ai.com/v1");
-  assertEquals(DEFAULT_SETTINGS.defaultResponseFormat, "b64_json");
+  assertEquals(DEFAULT_SETTINGS.defaultResponseFormat, "url");
   assertEquals(DEFAULT_SETTINGS.defaultSize, "1K");
   assertEquals("defaultRatio" in DEFAULT_SETTINGS, false);
   assertEquals(DEFAULT_SETTINGS.imageParamMode, "nested");
@@ -29,6 +29,30 @@ Deno.test("settings default to the documented values", async () => {
   assertEquals(DEFAULT_SETTINGS.requestTimeoutMs, 300000);
   assertEquals(DEFAULT_SETTINGS.autoRefreshIntervalMs, 5000);
   assertEquals(DEFAULT_SETTINGS.maxAttempts, 3);
+  sql.close();
+});
+
+Deno.test("defaultResponseFormat is fixed to url", async () => {
+  const { sql, store } = await freshStore();
+  assertEquals(DEFAULT_SETTINGS.defaultResponseFormat, "url");
+  assertEquals((await store.read()).defaultResponseFormat, "url");
+  assertThrows(() => validateSettings({ defaultResponseFormat: "b64_json" }), ApiError);
+  sql.close();
+});
+
+Deno.test("a stored b64_json setting is normalized to url without a write", async () => {
+  const { sql, store } = await freshStore();
+  await sql.execute(
+    "INSERT INTO settings (key, value, updated_at) VALUES ('defaultResponseFormat', '\"b64_json\"', 'x')",
+  );
+  assertEquals((await store.read()).defaultResponseFormat, "url");
+  assertEquals(
+    String(
+      (await sql.execute("SELECT value FROM settings WHERE key = 'defaultResponseFormat'"))
+        .rows[0].value,
+    ),
+    '"b64_json"',
+  );
   sql.close();
 });
 

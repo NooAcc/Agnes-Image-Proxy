@@ -1,6 +1,11 @@
 import { decodeBase64, encodeBase64 } from "@std/encoding/base64";
 import type { EnrichInput, EnrichmentWrite, GalleryStore, NsfwScores } from "./gallery.ts";
-import { sniffImageMime } from "./image-mime.ts";
+import { isAllowedImageMime, sniffImageMime } from "./image-mime.ts";
+import {
+  type ImageServiceBatchResult,
+  type ImageServiceItem,
+  postImageServiceBatch,
+} from "./image-service.ts";
 import {
   IMAGE_SERVICE_BATCH_SOURCE_BYTES,
   IMAGE_SERVICE_MAX_ITEMS,
@@ -35,10 +40,6 @@ const ERROR_MAX_LENGTH = 200;
 
 function truncateError(message: string): string {
   return message.length > ERROR_MAX_LENGTH ? message.slice(0, ERROR_MAX_LENGTH) : message;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function emptyReport(): EnrichReport {
@@ -79,6 +80,43 @@ export function chunkByBudget<T extends { bytes: Uint8Array }>(
   return chunks;
 }
 
+function chunkByCost<T>(
+  rows: T[],
+  maxItems: number,
+  maxBytes: number,
+  cost: (row: T) => number,
+): T[][] {
+  const chunks: T[][] = [];
+  let chunk: T[] = [];
+  let sum = 0;
+  for (const row of rows) {
+    const size = cost(row);
+    if (chunk.length > 0 && (chunk.length >= maxItems || sum + size > maxBytes)) {
+      chunks.push(chunk);
+      chunk = [];
+      sum = 0;
+    }
+    chunk.push(row);
+    sum += size;
+  }
+  if (chunk.length > 0) chunks.push(chunk);
+  return chunks;
+}
+
+/** URL rows cost nothing; only inline base64 counts against the byte budget. */
+export function chunkEnrichInputs(
+  rows: EnrichInput[],
+  maxItems: number,
+  maxBytes: number,
+): EnrichInput[][] {
+  return chunkByCost(
+    rows,
+    maxItems,
+    maxBytes,
+    (row) => row.url !== null ? 0 : row.bytes?.byteLength ?? 0,
+  );
+}
+
 function isNsfwScores(value: unknown): value is NsfwScores {
   if (typeof value !== "object" || value === null) return false;
   const record = value as Record<string, unknown>;
@@ -89,19 +127,84 @@ function isNsfwScores(value: unknown): value is NsfwScores {
   return typeof record.isNsfw === "boolean";
 }
 
-interface BatchItem {
-  uuid: string;
-  base64: string;
-  contentType: string;
-  params: {
-    width: number;
-    height: number;
-    crop: "none";
-    size: "down";
-    format: "webp";
-    quality: number;
-    nsfw: 1;
+function itemFor(row: EnrichInput, params: Record<string, unknown>): ImageServiceItem {
+  if (row.url !== null) return { uuid: String(row.id), url: row.url, params };
+  return {
+    uuid: String(row.id),
+    base64: encodeBase64(row.bytes as Uint8Array),
+    contentType: row.mime,
+    params,
   };
+}
+
+interface EnrichOk {
+  status: "ok";
+  scores: NsfwScores;
+  thumb: Uint8Array | null;
+  thumbMime: string | null;
+}
+
+interface EnrichFailure {
+  status: "failed";
+  error: string;
+  /** Only an item-level URL failure may be retried as base64. */
+  retryable: boolean;
+}
+
+type EnrichOutcome = EnrichOk | EnrichFailure;
+
+function outcomeFor(row: EnrichInput, batch: ImageServiceBatchResult): EnrichOutcome {
+  if (!batch.ok) {
+    return {
+      status: "failed",
+      error: batch.error ?? "image service request failed",
+      retryable: false,
+    };
+  }
+
+  const entry = batch.results[String(row.id)];
+  if (typeof entry !== "object" || entry === null) {
+    return { status: "failed", error: "image service returned no result", retryable: false };
+  }
+  const item = entry as { success?: unknown; error?: unknown; data?: unknown };
+  if (item.success !== true) {
+    return {
+      status: "failed",
+      error: typeof item.error === "string" && item.error !== ""
+        ? item.error
+        : "image service item failed",
+      retryable: true,
+    };
+  }
+
+  const data = item.data;
+  if (typeof data !== "object" || data === null) {
+    return { status: "failed", error: "nsfw: prediction unavailable", retryable: false };
+  }
+  const result = data as { base64?: unknown; contentType?: unknown; nsfw?: unknown };
+  if (!isNsfwScores(result.nsfw)) {
+    return { status: "failed", error: "nsfw: prediction unavailable", retryable: false };
+  }
+
+  let thumb: Uint8Array | null = null;
+  let thumbMime: string | null = null;
+  if (typeof result.base64 === "string" && result.base64 !== "") {
+    try {
+      const decoded = decodeBase64(result.base64);
+      const declared = typeof result.contentType === "string" &&
+          isAllowedImageMime(result.contentType)
+        ? result.contentType
+        : sniffImageMime(decoded);
+      if (declared !== null && (row.sourceBytes === 0 || decoded.byteLength < row.sourceBytes)) {
+        thumb = decoded;
+        thumbMime = declared;
+      }
+    } catch {
+      // Keep the tag without a thumbnail when decoding fails.
+    }
+  }
+
+  return { status: "ok", scores: result.nsfw, thumb, thumbMime };
 }
 
 export function createEnricher(options: EnricherOptions): Enricher {
@@ -165,118 +268,96 @@ export function createEnricher(options: EnricherOptions): Enricher {
       if (baseUrl === "") return report;
 
       const at = now().toISOString();
+      const params = {
+        width: settings.thumbnailWidth,
+        height: settings.thumbnailWidth,
+        crop: "none",
+        size: "down",
+        format: "webp",
+        quality: settings.thumbnailQuality,
+        nsfw: 1,
+      };
+      const outcomes = new Map<number, EnrichOutcome>();
       const eligible: EnrichInput[] = [];
       for (const row of rows) {
-        if (row.bytes.byteLength > maxSourceBytes) {
+        if (row.url === null && (row.bytes === null || row.bytes.byteLength > maxSourceBytes)) {
           report.processed++;
           report.failed++;
-          await writeFailed(row.id, at, "source exceeds 50 MiB");
+          await writeFailed(
+            row.id,
+            at,
+            row.bytes === null ? "no image source" : "source exceeds 50 MiB",
+          );
           continue;
         }
         eligible.push(row);
       }
 
-      const chunks = chunkByBudget(
-        eligible,
-        IMAGE_SERVICE_MAX_ITEMS,
-        IMAGE_SERVICE_BATCH_SOURCE_BYTES,
-      );
+      const request = async (chunk: EnrichInput[], items: ImageServiceItem[]): Promise<void> => {
+        const batch = await postImageServiceBatch(items, {
+          baseUrl,
+          timeoutMs: settings.enrichTimeoutMs,
+          fetchImpl,
+        });
+        for (const row of chunk) outcomes.set(row.id, outcomeFor(row, batch));
+      };
 
-      for (const chunk of chunks) {
+      for (
+        const chunk of chunkEnrichInputs(
+          eligible,
+          IMAGE_SERVICE_MAX_ITEMS,
+          IMAGE_SERVICE_BATCH_SOURCE_BYTES,
+        )
+      ) {
         report.processed += chunk.length;
-        const items: BatchItem[] = chunk.map((row) => ({
-          uuid: String(row.id),
-          base64: encodeBase64(row.bytes),
-          contentType: row.mime,
-          params: {
-            width: settings.thumbnailWidth,
-            height: settings.thumbnailWidth,
-            crop: "none",
-            size: "down",
-            format: "webp",
-            quality: settings.thumbnailQuality,
-            nsfw: 1,
-          },
-        }));
+        await request(chunk, chunk.map((row) => itemFor(row, params)));
+      }
 
-        let payload: Record<string, unknown> | null = null;
-        let batchError = "";
-        try {
-          const response = await fetchImpl(`${baseUrl}/api/batch`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(items),
-            signal: AbortSignal.timeout(settings.enrichTimeoutMs),
-          });
-          if (!response.ok) {
-            batchError = `image service responded ${response.status}`;
-          } else {
-            const parsed: unknown = await response.json();
-            if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-              payload = parsed as Record<string, unknown>;
-            } else {
-              batchError = "image service returned an invalid response";
-            }
-          }
-        } catch (error) {
-          batchError = errorMessage(error);
-        }
+      // A failed URL item retries once as base64 when a local copy is available.
+      const retryRows = eligible.filter(
+        (row): row is EnrichInput & { bytes: Uint8Array } => {
+          const outcome = outcomes.get(row.id);
+          return outcome?.status === "failed" &&
+            outcome.retryable &&
+            row.url !== null &&
+            row.bytes !== null &&
+            row.bytes.byteLength <= maxSourceBytes;
+        },
+      );
+      for (
+        const chunk of chunkByBudget(
+          retryRows,
+          IMAGE_SERVICE_MAX_ITEMS,
+          IMAGE_SERVICE_BATCH_SOURCE_BYTES,
+        )
+      ) {
+        await request(
+          chunk,
+          chunk.map((row) => ({
+            uuid: String(row.id),
+            base64: encodeBase64(row.bytes),
+            contentType: row.mime,
+            params,
+          })),
+        );
+      }
 
-        for (const row of chunk) {
-          if (payload === null) {
-            report.failed++;
-            await writeFailed(row.id, at, batchError);
-            continue;
-          }
-
-          const entry = payload[String(row.id)];
-          if (typeof entry !== "object" || entry === null) {
-            report.failed++;
-            await writeFailed(row.id, at, "image service returned no result");
-            continue;
-          }
-          const item = entry as { success?: unknown; error?: unknown; data?: unknown };
-
-          if (item.success !== true) {
-            const message = typeof item.error === "string" && item.error !== ""
-              ? item.error
-              : "image service item failed";
-            report.failed++;
-            await writeFailed(row.id, at, message);
-            continue;
-          }
-
-          const data = item.data;
-          if (typeof data !== "object" || data === null) {
-            report.failed++;
-            await writeFailed(row.id, at, "nsfw: prediction unavailable");
-            continue;
-          }
-          const result = data as { base64?: unknown; nsfw?: unknown };
-          if (!isNsfwScores(result.nsfw)) {
-            report.failed++;
-            await writeFailed(row.id, at, "nsfw: prediction unavailable");
-            continue;
-          }
-
-          let thumb: Uint8Array | null = null;
-          let thumbMime: string | null = null;
-          if (typeof result.base64 === "string" && result.base64 !== "") {
-            try {
-              const decoded = decodeBase64(result.base64);
-              const mime = sniffImageMime(decoded);
-              if (mime !== null && decoded.byteLength < row.bytes.byteLength) {
-                thumb = decoded;
-                thumbMime = mime;
-              }
-            } catch {
-              // Keep the tag without a thumbnail when decoding fails.
-            }
-          }
-
-          const wrote = await writeSucceeded(row.id, at, result.nsfw, thumb, thumbMime);
+      for (const row of eligible) {
+        const outcome = outcomes.get(row.id);
+        if (!outcome) continue;
+        if (outcome.status === "ok") {
+          const wrote = await writeSucceeded(
+            row.id,
+            at,
+            outcome.scores,
+            outcome.thumb,
+            outcome.thumbMime,
+          );
           if (wrote) report.succeeded++;
           else report.failed++;
+        } else {
+          report.failed++;
+          await writeFailed(row.id, at, outcome.error);
         }
       }
 

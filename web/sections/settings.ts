@@ -40,9 +40,10 @@ export const SETTINGS_HTML = `
         <div class="field">
           <span class="field-label" id="defaultResponseFormat-label">默认响应格式</span>
           <div class="segmented" role="radiogroup" aria-labelledby="defaultResponseFormat-label">
-            <label><input type="radio" name="defaultResponseFormat" value="b64_json"><span>b64_json</span></label>
-            <label><input type="radio" name="defaultResponseFormat" value="url"><span>url</span></label>
+            <label><input type="radio" name="defaultResponseFormat" value="b64_json" disabled><span>b64_json（不可用）</span></label>
+            <label><input type="radio" name="defaultResponseFormat" value="url" checked><span>url</span></label>
           </div>
+          <span class="hint">全局默认固定为 url；客户端仍可在请求里显式传 b64_json。</span>
         </div>
         <div class="field">
           <span class="field-label" id="defaultSize-label">默认档位</span>

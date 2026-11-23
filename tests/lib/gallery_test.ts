@@ -172,19 +172,24 @@ Deno.test("gallery pending enrichment pages by id cursor and counts only never-p
   const failed = await gallery.record(insert());
   const ok = await gallery.record(insert());
   const fresh = await gallery.record(insert());
+  const urlOnly = await gallery.record(
+    insert({ bytes: null, sourceUrl: "https://example.com/a.png" }),
+  );
   await gallery.setEnrichment(failed, { ...enrichment(null), status: "failed", error: "boom" });
   await gallery.setEnrichment(ok, enrichment("safe"));
-  await gallery.record(insert({ bytes: null, sourceUrl: "https://example.com/a.png" }));
 
   assertEquals(
     (await gallery.pendingEnrichment(null, 10)).map((row) => row.id),
-    [fresh, failed],
+    [urlOnly, fresh, failed],
   );
-  assertEquals((await gallery.pendingEnrichment(fresh, 10)).map((row) => row.id), [failed]);
-  assertEquals(await gallery.countPendingEnrichment(), 1);
+  assertEquals(await gallery.countPendingEnrichment(), 2);
 
-  const inputs = await gallery.readForEnrichment([fresh, failed]);
-  assertEquals(inputs.map((row) => row.id).sort(), [failed, fresh].sort());
-  assertEquals(inputs[0].bytes.byteLength, 4);
+  const inputs = await gallery.readForEnrichment([fresh, failed, urlOnly]);
+  const byId = new Map(inputs.map((row) => [row.id, row]));
+  assertEquals(byId.get(urlOnly)?.url, "https://example.com/a.png");
+  assertEquals(byId.get(urlOnly)?.bytes, null);
+  assertEquals(byId.get(urlOnly)?.sourceBytes, 0);
+  assertEquals(byId.get(fresh)?.bytes?.byteLength, 4);
+  assertEquals(byId.get(fresh)?.sourceBytes, 4);
   sql.close();
 });

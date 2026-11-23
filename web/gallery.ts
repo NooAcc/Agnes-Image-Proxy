@@ -10,9 +10,7 @@ export const GALLERY_HTML = `
     </div>
     <div class="toolbar">
       <button class="btn primary is-unavailable" data-action="enrich-gallery" type="button"
-        title="请先在设置里填写 Edge-Images 基础地址" disabled>${
-  icon("bolt")
-}补齐历史图片</button>
+        title="请先在设置里填写 Edge-Images 基础地址" disabled>${icon("bolt")}补齐历史图片</button>
       <button class="btn" data-action="refresh-gallery" type="button">${
   icon("refresh")
 }刷新</button>

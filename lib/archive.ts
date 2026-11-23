@@ -1,13 +1,12 @@
 import { decodeBase64 } from "@std/encoding/base64";
 import type { Enricher } from "./enrich.ts";
 import type { EnrichInput, GalleryInsert, GalleryStore } from "./gallery.ts";
-import { readImageDimensions } from "./image-dimensions.ts";
 import { sniffImageMime } from "./image-mime.ts";
 import { ARCHIVE_TIMEOUT_MS, MAX_ARCHIVE_BYTES } from "./limits.ts";
 import { recordEnrichmentLog, type RequestLogStore } from "./logs.ts";
 import type { NormalizedImage } from "./protocol.ts";
 import { isPublicHttpsUrl } from "./remote-image.ts";
-import { formatPixel } from "./size.ts";
+import { formatPixel, type PixelSize } from "./size.ts";
 
 export { isPublicHttpsUrl } from "./remote-image.ts";
 export { sniffImageMime } from "./image-mime.ts";
@@ -23,6 +22,7 @@ export interface ArchiveRequest {
   tier: string | null;
   ratio: string | null;
   images: NormalizedImage[];
+  sizes: (PixelSize | null)[];
 }
 
 export interface Archiver {
@@ -153,12 +153,9 @@ export function createArchiver(options: ArchiverOptions): Archiver {
 
   const run = async (request: ArchiveRequest): Promise<void> => {
     const enrichable: EnrichInput[] = [];
-    const sizeFromBytes = (bytes: Uint8Array | null): string | null => {
-      const dims = bytes ? readImageDimensions(bytes) : null;
-      return dims ? formatPixel(dims) : request.size;
-    };
 
-    for (const image of request.images) {
+    for (const [index, image] of request.images.entries()) {
+      const measured = request.sizes[index] ?? null;
       const base = {
         ts: request.ts,
         endpoint: request.endpoint,
@@ -186,13 +183,22 @@ export function createArchiver(options: ArchiverOptions): Archiver {
         }
         const persisted = await persist({
           ...base,
-          size: sizeFromBytes(bytes),
+          size: measured ? formatPixel(measured) : request.size,
           mime,
           bytes,
           sourceUrl: null,
         });
-        if (persisted?.bytes) {
-          enrichable.push({ id: persisted.id, mime, bytes: persisted.bytes });
+        if (persisted) {
+          const enrichBytes = persisted.bytes ?? bytes;
+          if (image.url !== null || enrichBytes !== null) {
+            enrichable.push({
+              id: persisted.id,
+              mime,
+              url: image.url,
+              bytes: enrichBytes,
+              sourceBytes: enrichBytes?.byteLength ?? 0,
+            });
+          }
         }
         continue;
       }
@@ -202,13 +208,22 @@ export function createArchiver(options: ArchiverOptions): Archiver {
         const mime = downloaded?.mime ?? "application/octet-stream";
         const persisted = await persist({
           ...base,
-          size: sizeFromBytes(downloaded?.bytes ?? null),
+          size: measured ? formatPixel(measured) : request.size,
           mime,
           bytes: downloaded?.bytes ?? null,
           sourceUrl: image.url,
         });
-        if (persisted?.bytes) {
-          enrichable.push({ id: persisted.id, mime, bytes: persisted.bytes });
+        if (persisted) {
+          const enrichBytes = persisted.bytes ?? downloaded?.bytes ?? null;
+          if (image.url !== null || enrichBytes !== null) {
+            enrichable.push({
+              id: persisted.id,
+              mime,
+              url: image.url,
+              bytes: enrichBytes,
+              sourceBytes: enrichBytes?.byteLength ?? 0,
+            });
+          }
         }
       }
     }
