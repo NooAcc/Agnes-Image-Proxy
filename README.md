@@ -62,6 +62,35 @@ distroless 非 root 运行镜像（仅含二进制与 CA）。Compose 只启动 
 `8000`，`restart: unless-stopped`、`stop_grace_period: 120s`、只读根文件系统、健康检查
 调用二进制自带的 `healthcheck`。没有数据卷，也不需要 SQLite sidecar。
 
+### GHCR 镜像与自动构建
+
+GitHub Actions 工作流 [`docker-publish.yml`](.github/workflows/docker-publish.yml)
+使用仓库根目录的 Dockerfile 构建 `linux/amd64` 镜像，并发布到
+`ghcr.io/nooacc/agnes-image-proxy`：
+
+- 推送到 `main`：发布 `latest` 和 `sha-<短提交 SHA>`。
+- 推送 `v*` 标签：发布原始标签、`sha-<短提交 SHA>`；符合语义版本的标签还会发布
+  不带 `v` 的版本号（例如 `v1.2.3` 同时发布 `1.2.3`），不覆盖 `latest`。
+- 向 `main` 提交 PR：仅验证镜像构建，不登录 GHCR、不推送镜像。
+- 在 Actions 页面手动运行：选择 `main` 或 `v*` 标签时发布；其他分支只构建。
+
+发布使用 GitHub 自动提供的 `GITHUB_TOKEN`（`contents: read`、`packages: write`），
+无需额外添加 PAT 或仓库 Secret。构建使用 GitHub Actions 缓存，第三方 Actions
+均固定到具体提交 SHA。
+
+首次发布后，请在 GitHub 包设置中确认镜像包的可见性；**公开仓库不会自动使新建的
+GHCR 包公开**。若需匿名拉取，将包可见性设为 Public，然后运行：
+
+```bash
+docker pull ghcr.io/nooacc/agnes-image-proxy:latest
+docker run -d --name agnes-proxy --restart unless-stopped \
+  --env-file .env -p 8000:8000 --read-only \
+  --security-opt no-new-privileges:true --cap-drop ALL --stop-timeout 120 \
+  ghcr.io/nooacc/agnes-image-proxy:latest
+```
+
+原有 `compose.yaml` 仍用于本地构建，不会自动拉取 GHCR 镜像。
+
 ## 配置
 
 | 变量 | 必填 | 默认 | 说明 |
