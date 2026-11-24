@@ -1,0 +1,24 @@
+// Wire contracts shared with the Go admin API. Runtime validation lives in
+// ./schemas; this module keeps the historical import path stable.
+export type {
+  AccountHealth,
+  AccountPatch,
+  AccountStatus,
+  AccountSummary,
+  Attempt,
+  BackfillStatus,
+  DailyUsage,
+  GalleryItem,
+  ImportAccountsResult,
+  LogCategory,
+  ModelUsage,
+  NsfwScores,
+  NsfwTag,
+  Overview,
+  Page,
+  ProbeResult,
+  RequestLog,
+  Session,
+  Settings,
+  UsageTotals,
+} from "./schemas";

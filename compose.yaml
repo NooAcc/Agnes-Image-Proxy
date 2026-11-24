@@ -1,0 +1,26 @@
+services:
+  agnes-proxy:
+    build: .
+    image: agnes-image-proxy:local
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      PORT: "8000"
+    stop_grace_period: 120s
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "/agnes-proxy", "healthcheck", "--url", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    # Optional host-level limits; compose does not use swarm `deploy` blocks.
+    # mem_limit: 1g
+    # cpus: 2.0

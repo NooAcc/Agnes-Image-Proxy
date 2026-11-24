@@ -1,0 +1,90 @@
+/* Primitive palette. Components must consume semantic tokens, never these. */
+:root {
+  --primitive-neutral-0: #ffffff;
+  --primitive-neutral-50: #f8fafc;
+  --primitive-neutral-100: #f1f5f9;
+  --primitive-neutral-200: #e2e8f0;
+  --primitive-neutral-300: #cbd5e1;
+  --primitive-neutral-400: #94a3b8;
+  --primitive-neutral-500: #64748b;
+  --primitive-neutral-600: #475569;
+  --primitive-neutral-700: #334155;
+  --primitive-neutral-800: #1e293b;
+  --primitive-neutral-900: #0f172a;
+  --primitive-neutral-950: #020617;
+
+  --primitive-blue-700: #1d4ed8;
+  --primitive-blue-600: #2563eb;
+  --primitive-blue-500: #3b82f6;
+  --primitive-blue-400: #60a5fa;
+
+  --primitive-green-700: #15803d;
+  --primitive-green-500: #22c55e;
+  --primitive-green-400: #4ade80;
+
+  --primitive-amber-700: #b45309;
+  --primitive-amber-400: #fbbf24;
+
+  --primitive-red-700: #b91c1c;
+  --primitive-red-600: #dc2626;
+  --primitive-red-400: #f87171;
+
+  --semantic-background: var(--primitive-neutral-50);
+  --semantic-surface: var(--primitive-neutral-0);
+  --semantic-surface-muted: var(--primitive-neutral-100);
+  --semantic-foreground: var(--primitive-neutral-900);
+  --semantic-muted-foreground: var(--primitive-neutral-600);
+  --semantic-border: var(--primitive-neutral-300);
+  --semantic-control: var(--primitive-neutral-500);
+  --semantic-primary: var(--primitive-blue-600);
+  --semantic-primary-foreground: var(--primitive-neutral-0);
+  --semantic-primary-hover: var(--primitive-blue-700);
+  --semantic-success: var(--primitive-green-700);
+  --semantic-warning: var(--primitive-amber-700);
+  --semantic-danger: var(--primitive-red-700);
+  --semantic-danger-foreground: var(--primitive-neutral-0);
+  --semantic-focus: var(--primitive-blue-700);
+  --semantic-overlay: rgb(2 6 23 / 0.55);
+
+  --component-radius: 0.5rem;
+  --component-target: 2.75rem;
+}
+
+.dark {
+  --semantic-background: var(--primitive-neutral-950);
+  --semantic-surface: var(--primitive-neutral-900);
+  --semantic-surface-muted: var(--primitive-neutral-800);
+  --semantic-foreground: var(--primitive-neutral-100);
+  --semantic-muted-foreground: var(--primitive-neutral-400);
+  --semantic-border: var(--primitive-neutral-700);
+  --semantic-control: var(--primitive-neutral-400);
+  --semantic-primary: var(--primitive-blue-600);
+  --semantic-primary-foreground: var(--primitive-neutral-0);
+  --semantic-primary-hover: var(--primitive-blue-500);
+  --semantic-success: var(--primitive-green-400);
+  --semantic-warning: var(--primitive-amber-400);
+  --semantic-danger: var(--primitive-red-400);
+  --semantic-danger-foreground: var(--primitive-neutral-950);
+  --semantic-focus: var(--primitive-blue-400);
+  --semantic-overlay: rgb(0 0 0 / 0.7);
+}
+
+@theme inline {
+  --color-background: var(--semantic-background);
+  --color-surface: var(--semantic-surface);
+  --color-surface-muted: var(--semantic-surface-muted);
+  --color-foreground: var(--semantic-foreground);
+  --color-muted-foreground: var(--semantic-muted-foreground);
+  --color-border: var(--semantic-border);
+  --color-control: var(--semantic-control);
+  --color-primary: var(--semantic-primary);
+  --color-primary-foreground: var(--semantic-primary-foreground);
+  --color-primary-hover: var(--semantic-primary-hover);
+  --color-success: var(--semantic-success);
+  --color-warning: var(--semantic-warning);
+  --color-danger: var(--semantic-danger);
+  --color-danger-foreground: var(--semantic-danger-foreground);
+  --color-focus: var(--semantic-focus);
+  --color-overlay: var(--semantic-overlay);
+  --radius-component: var(--component-radius);
+}

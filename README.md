@@ -1,371 +1,217 @@
-# Agnes Image Reverse
+# Agnes Image Proxy（Go + React）
 
-把 **Agnes 图像 API** 包装成 **OpenAI Images API** 的兼容层，部署在 Deno Deploy 上，并自带多 Key
-账号池、请求日志、用量统计与图片时间线。
+把 Agnes 图像 API 包装成 OpenAI Images API 兼容层。服务使用 Go 1.26 单体运行，
+管理控制台使用 React/TypeScript/Vite/Tailwind/shadcn/TanStack Query，构建产物通过
+`go:embed` 打进同一个二进制；生产运行不需要 Node、Deno 或前端构建工具。
 
-- 客户端只需要改 `base_url` 与 `api_key`，官方 `openai` SDK（Python / Node）即可调用两个端点。
-- 代理把多个 Agnes API Key 聚合成一个池子轮询使用；任意 Key 失效、限流或超时，请求自动落到下一个可用
-  Key。
-- 控制台 `/admin`
-  提供总览、图片、账号、日志、设置五个板块；深色/浅色主题首次跟随系统，右上角可随时切换。
-- 图库卡片默认加载 Edge-Images 生成的缩略图；归档时自动取得 nsfw-detection-2-mini 五分类并落为
-  tag，可按分类筛选、手动补齐历史图片。
-
-模型名原样透传，**不做名称映射**——`gpt-image-1` 不会变成 `agnes-image-2.5-flash`，请直接使用 Agnes
-的模型名（见下文模型目录）。
-
-## 端点
-
-| 方法 | 路径                                  | 用途                                                           |
-| ---- | ------------------------------------- | -------------------------------------------------------------- |
-| POST | `/v1/images/generations`              | 文生图；也接受 JSON 里的 `image` / `images` 参考图             |
-| POST | `/v1/images/edits`、`/v1/images/edit` | 图生图 / 多图合成；支持 `multipart/form-data` 与 JSON 两种形状 |
-| GET  | `/v1/models`                          | 静态目录中的 Agnes 图像模型                                    |
-| GET  | `/health`、`/health?deep=1`           | 存活探针；deep 会检查数据库                                    |
-| GET  | `/`                                   | 跳转 `/admin`                                                  |
-
-数据面只接受 `Authorization: Bearer <PROXY_API_KEY>`，永不接受 Cookie。管理面接受会话 Cookie
-或同一个 Bearer。
-
-### 模型目录
-
-| 模型                    | 尺寸模式                  |
-| ----------------------- | ------------------------- |
-| `agnes-image-2.5-flash` | `1K–4K` + `ratio`（tier） |
-| `agnes-image-2.1-flash` | `1K–4K` + `ratio`（tier） |
-
-目录外的模型名仍会原样转发，尺寸按 tier 处理；上游拒绝时原样返回上游错误。
+- 上游账号池：原子领取、失败冷却、成功 CAS 回写、逐账号尝试记录。
+- 图片归档：原图与缩略图存数据库 BLOB，URL 在响应后受控下载；失败保留源链接。
+- 元数据富化：可选 Edge-Images `/api/batch` 服务，自动测量尺寸、生成缩略图并做五类 NSFW 分类；支持手动补齐。
+- 控制台：总览、图库、账号、日志、设置五个页面，中文界面、深浅主题、键盘可访问。
+- 单库：远程 Turso（libSQL）；数据库 schema 固定版本，不迁移旧库。
 
 ## 快速开始
 
-### 1. 准备 Turso
+### 离线预览（不消耗真实额度）
 
 ```bash
-turso db create agnes-image
-turso db show agnes-image --url        # libsql://… 或 https://…
-turso db tokens create agnes-image     # TURSO_AUTH_TOKEN
+npm --prefix frontend ci
+go run ./cmd/agnes-proxy preview --port 8001
 ```
 
-首次请求会自动建表，没有迁移脚本。
+打开 `http://127.0.0.1:8001/admin`，管理密钥固定为 `preview`。预览使用临时 SQLite
+数据库和本机模拟的 Agnes/Edge-Images 服务，含示例账号、日志、图库与补齐任务，不读取
+生产环境变量、不连接 Turso、也不访问真实上游。退出后临时数据库删除。
 
-### 2. 本地运行
+### 本地开发
+
+先构建一次前端，Go 才能嵌入 `internal/webassets/dist/`（没有空白占位回退）：
 
 ```bash
-deno task preview
-# 打开 http://localhost:8001/preview-shot 自动登录
-# 或 http://localhost:8001/admin 使用密钥 preview 登录
+npm --prefix frontend ci
+npm --prefix frontend run build
+go run ./cmd/agnes-proxy preview --port 8000
 ```
 
-`deno task preview` 使用内存 SQLite 与示例数据，不会消耗真实额度。
-
-生产运行：
+Vite 开发服务器（`npm --prefix frontend run dev`，端口 5173）会把 `/admin/api`、`/v1`
+与 `/health` 代理到 `http://127.0.0.1:8000`，因此可以在另一个终端用上面的 preview
+作为后端。生产模式需要真实环境变量：
 
 ```bash
-PROXY_API_KEY=... \
-TURSO_DATABASE_URL=libsql://... \
-TURSO_AUTH_TOKEN=... \
-PORT=8000 deno task start
+PROXY_API_KEY=... TURSO_DATABASE_URL=libsql://... TURSO_AUTH_TOKEN=... \
+  go run ./cmd/agnes-proxy serve
 ```
 
-### 3. 部署到 Deno Deploy
+不传子命令等价于 `serve`。
 
-推到 GitHub → 在 Deno Deploy 新建项目，入口选 `main.ts` → 配置
-`PROXY_API_KEY`、`TURSO_DATABASE_URL`、`TURSO_AUTH_TOKEN` → 打开 `/admin` 登录并添加 Key。
-
-> **注意**：Deno Deploy 计划于约 **2027 年 4
-> 月**关闭。本项目接受这个期限，不在本期做迁移；代码只使用 Web 标准 API，`Deno.serve` / `Deno.env`
-> 集中在 `main.ts`，将来迁移的改动面很小。
-
-### 4. 客户端示例
-
-Python：
-
-```python
-import urllib.request
-from openai import OpenAI
-
-client = OpenAI(base_url="https://your-proxy.example/v1", api_key="PROXY_API_KEY")
-
-result = client.images.generate(
-    model="agnes-image-2.5-flash",
-    prompt="一只坐在窗台上的橘猫，午后阳光",
-    size="1024x1024",
-)
-with urllib.request.urlopen(result.data[0].url) as response, open("output.png", "wb") as f:
-    f.write(response.read())
-
-with open("reference.png", "rb") as image:
-    edited = client.images.edit(
-        model="agnes-image-2.5-flash",
-        image=image,
-        prompt="把背景换成海边",
-        size="1024x1024",
-    )
-```
-
-Node：
-
-```js
-import fs from "node:fs/promises";
-import OpenAI from "openai";
-
-const client = new OpenAI({ baseURL: "https://your-proxy.example/v1", apiKey: "PROXY_API_KEY" });
-
-const result = await client.images.generate({
-  model: "agnes-image-2.5-flash",
-  prompt: "a red apple on a white table",
-  size: "1024x1024",
-});
-const output = await fetch(result.data[0].url);
-await fs.writeFile("output.png", Buffer.from(await output.arrayBuffer()));
-
-const image = await fs.readFile("reference.png");
-const edited = await client.images.edit({
-  model: "agnes-image-2.5-flash",
-  image,
-  prompt: "turn the apple blue",
-  size: "1024x1024",
-});
-```
-
-默认返回 `url`（Agnes 的临时 URL）。客户端显式传 `response_format: "b64_json"` 或
-`return_base64: true` 时仍返回 `b64_json`。控制台设置里的默认响应格式恒为 `url`， `b64_json`
-选项灰色禁用；旧设置不做迁移。
-
-## 环境变量
-
-| 变量                   | 必需 | 说明                                   |
-| ---------------------- | ---- | -------------------------------------- |
-| `PROXY_API_KEY`        | 是   | 客户端 Bearer 令牌，也是控制台登录密码 |
-| `TURSO_DATABASE_URL`   | 是   | `libsql://…` 或 `https://…`            |
-| `TURSO_AUTH_TOKEN`     | 是   | Turso 令牌                             |
-| `PORT`                 | 否   | 本地端口，默认 8000；Deno Deploy 忽略  |
-| `CORS_ALLOWED_ORIGINS` | 否   | 逗号分隔的跨域白名单，默认关闭         |
-| `RESET_SCHEMA`         | 否   | 只有 `deno task reset-db` 需要设为 `1` |
-
-缺少前三个变量时进程拒绝启动。
-
-## 账号池语义
-
-- 池中的每个 Key 应来自**独立的 Agnes 账号**。Agnes 的规则是“同类型 Key
-  共享限流池”，**同一账号下再加 Key
-  不会叠加额度**；控制台批量导入时会提示这一点，但代理不替用户去重。
-- 每次请求最多尝试 3 个 Key（可在设置里调整）。失败分类：
-  - `401/403` → 该 Key 冷却 15 分钟；
-  - `429` → 冷却 `Retry-After`，没有时 60 秒；
-  - `5xx / 超时 / 传输错误` → 60 秒起指数退避，最长 15 分钟；
-  - `400 / 404` → 直接返回，不换 Key（换也没用）；
-  - 成功 → 清零失败计数。
-- 所有 Key 都失败时按 `429 > 504 > 502 > 503` 选择最终状态码；存在 429 时取封顶后冷却最短的
-  那个，`Retry-After` 同样封顶 900 秒。`n > 1` 时同一优先级会跨子请求再应用一次。
-- 成功写回使用 `fail_count` CAS：一个请求的成功不会清掉并发失败请求刚写入的冷却。
-- 上游超时默认 300 秒，可在设置里调整为 60–360 秒；超时映射为 504。
-
-## 尺寸与 n
-
-- 客户端可传 Agnes 档位（`1K`–`4K`）、任意 `WxH`，或省略 `size` / 传 `auto`。显式档位与显式 `WxH`
-  由代理按面积与比例的对数距离折成最近的档位 + 比例；客户端没有显式给 `ratio` 时 payload 里不再出现
-  `ratio`，由 Agnes 使用默认 1:1。`X-Agnes-Resolved-Size` 暴露本次请求表达式： `2K 16:9`、`900x1200`
-  或 `2K`。
-- `size` 未传、为空或大小写不敏感等于 `auto`，且带参考图时，代理读取**第一张参考图的真实分辨率**，
-  以 `WIDTHxHEIGHT` 作为上游 `size`。参考图来源：multipart 上传、`data:` URI、http(s) URL
-  （由代理受控读取图片头）。第一张读不到直接返回 400，不再静默退回 `1K + 1:1`。
-- 显式给了 `size` 的请求完全不读取、不下载参考图。
-- Agnes 会把精确 `WIDTHxHEIGHT` 归一化到自己的档位 / 比例表，因此**不能保证输出正好等于参考图
-  分辨率**；实测 `900x1200` 得到 `864x1152`。
-- 响应体 `size`、请求日志 `size_actual`、图片时间线 `size` 都记录**实际输出尺寸**：响应前同步调用
-  Edge-Images 的 `format=json` 元数据接口；响应取第一张成功图，日志按出现顺序去重后用逗号连接，
-  相册行直接复用同一次测量结果。图片服务未配置时不测量，响应使用预期原生尺寸且不告警；测量失败时
-  退回预期尺寸并在 `X-Agnes-Warnings` 标记 `size-measure-failed`，日志尺寸记 `null`。
-- 响应体 `output_format` 取元数据返回的 `png`/`jpeg`/`webp`（`jpg` 归一为
-  `jpeg`）；测不到时省略该字段。
-- `n` 只要求是正整数，**没有 1–10 的上限**，代理按 `n` 并发扇出。上游实测要求
-  `n = 1`，因此扇出是必需的。
-- **部分成功也返回**：成功数 ≥1 时 HTTP 200，`data` 只含成功图，并带响应头：
-
-  ```
-  X-Agnes-Requested: 5
-  X-Agnes-Succeeded: 3
-  X-Agnes-Failed: 2
-  X-Agnes-Failure-Statuses: 429,400
-  X-Agnes-Warnings: partial-success
-  ```
-
-  成功数为 0 时按上面的失败优先级选择最终错误信封与状态码。日志与用量严格一致：`requested` /
-  `images`（成功数）/ `failed` / `ok = failed === 0`。
-
-## 可观测性
-
-- 每个图片请求生成 `X-Request-Id`（鉴权失败也带，但不写库）；`/v1/models` 不生成。
-- `request_log` 记录 `category`、`stage`（`parse` / `dispatch` / `complete`）、`error_code`、
-  `size_request`/`size_actual`、逐 Key `attempts`（每个子请求的账号、状态、耗时、错误）。 `category`
-  为 `request`（客户端图片请求）或 `enrich`（缩略图 / NSFW 图片信息任务）；
-  控制台日志页可按类型筛选。解析失败也会落库；未鉴权的 401 不落库，防止匿名请求刷掉历史日志。
-- 用量指标为 `requests / successes / partials / failures / images`，满足
-  `requests = successes + failures`，部分成功同时计入 `successes` 与 `partials`。
-- 账号计数字段是 `upstreamRequests` / `upstreamImages`，语义是**成功的上游子请求数与返回图片数**，
-  不是客户端请求数；控制台标签为“上游调用 / 图片”。
-
-## 管理面与会话
-
-- 所有 `/admin/api/*` 响应（含 401 与错误）都是 `Cache-Control: no-store`。
-- 相册内容端点额外带 `default-src 'none'; sandbox`、`Content-Disposition: inline` 与 `nosniff`；
-  只回放 `image/png`、`image/jpeg`、`image/webp`，其他 MIME 返回 404。
-- 会话默认 30 天；Cookie 认证的 `/admin/api/*` 在剩余不足 7 天时滑动续期，续期 Cookie 的 `Max-Age`
-  等于新 token 的实际剩余时间，总寿命不超过签发后 90 天。`/admin` HTML 与 Bearer 请求不续期。
-- `POST /admin/api/session/revoke` 递增会话 epoch，立即作废全部已签发 Cookie；
-  `DELETE /admin/api/session` 只清当前浏览器 Cookie，不撤销已泄露的 token。
-- 登录失败限速为 isolate 级 best-effort：60 秒窗口内第 11 次失败返回 429 + `Retry-After: 60`，
-  成功登录清零；不按 `x-forwarded-for` 分桶（该头可伪造），多 isolate 不共享计数。
-
-## 数据库与 schema
-
-- schema 版本为 `4`。版本不匹配或非空旧库缺少版本时进程拒绝启动，不会自动改表。
-- v4 为不兼容变更（`request_log` 新增 `category` 列），**不提供迁移 SQL**；旧库请用
-  `RESET_SCHEMA=1 deno task reset-db` 重建。该命令会**删除账号、请求日志、用量、相册与设置**。
-- 数据库请求 15 秒超时，超时/连接失败映射为 503 `database_timeout` / `database_unavailable`；
-  `/health?deep=1` 失败只返回通用 `database unavailable`，不回显原始错误。
-
-## 兼容字段
-
-以下字段不生效，但不会报错；名字会出现在 `X-Agnes-Warnings` 里：
-`quality`、`background`、`output_format`、`output_compression`、`moderation`、`style`、`input_fidelity`、`user`、`safety_identifier`，以及未知的顶层字段。
-
-明确返回 400 的情况：`stream: true`、`partial_images`、`mask`、`file_id`、非 `image/png|jpeg|webp`
-的上传、非 http(s)/data URI 的参考图 URL。
-
-`image_param_mode`（设置项）控制参考图放在 `extra_body.image`（`nested`，默认）还是顶层
-`image`（`top_level`）。上游实测两种位置都接受，只有特殊上游才需要管理员显式选择 `top_level`；
-代理不会因为 400 自动改用另一种位置重发。`response_format` 始终放在 `extra_body` 内。
-
-## 图片时间线与存储
-
-- 每个成功生成并返回给客户端的输出图归档一行；参考输入图不入库。
-- 上游给 `b64_json` 时直接解码为字节存 `BLOB`；上游给 URL 时在响应发出后下载（仅
-  `https`、拒绝私网/回环与指向私网的重定向、上限 64 MiB / 60 秒）再入库。只有嗅探为 png/jpeg/webp
-  的字节才会保存；其他内容记录 `archived=0`、`mime=application/octet-stream`。
-- 归档行的 `size` 取响应路径的 Edge-Images 元数据测量值；测量拿不到时退回预期原生尺寸。
-- 下载或写库失败不影响客户端响应：gallery 行保留 `source_url` 且
-  `archived=0`，控制台显示占位卡与原始链接；只要行写库成功，富化仍会用 `source_url` 进行
-  （下载成功但写字节失败时，用内存中的下载字节作为 base64 兜底）。
-- 时间线按 `id DESC` 分页（默认 24 张），按 UTC
-  日期分组；单张删除与清空全部由用户在控制台决定，**没有自动保留上限**。BLOB 存在 Turso
-  中，请留意数据库体积与费用。
-- 归档后（在 `waitUntil` 内）把 `{ uuid, url }` 发给图片服务生成缩略图与 nsfw-detection-2-mini
-  五分类，不再上传本地 BLOB；URL 单项失败且有本地副本时自动改用 base64
-  重试一次。卡片优先加载缩略图，失败回退 原图，查看大图与下载始终用原图。分类标签为普通 / 绘画 /
-  性感 / 色情 / 动漫色情，未富化显示未分类。
-- 缩略图只在比原图更小且能嗅探为图片时保存；返回的「缩略图」不小于原图时不保存缩略图，但仍保存 tag
-  与 NSFW 数据。删除与清空图片会随行删除缩略图与 NSFW 数据。
-
-## 图片服务接入（缩略图与 NSFW）
-
-缩略图与 NSFW 分类由外部 **Edge-Images** 服务生成，基址在控制台「设置 →
-图片服务」填写；**留空即关闭** （归档与图库照常工作，卡片回退原图，补齐接口返回
-`image_service_disabled`）。
-
-| 字段                  | 默认  | 说明                                                                         |
-| --------------------- | ----- | ---------------------------------------------------------------------------- |
-| `imageServiceBaseUrl` | `""`  | 空=关闭；非空必须 https（localhost/127.0.0.1/[::1] 可用 http），去掉尾部 `/` |
-| `thumbnailWidth`      | 640   | 整数 128–2048                                                                |
-| `thumbnailQuality`    | 75    | 整数 40–100                                                                  |
-| `enrichTimeoutMs`     | 60000 | 整数 5000–60000，与 Edge-Images 服务端超时一致                               |
-
-调用契约：`POST {imageServiceBaseUrl}/api/batch`，请求体是**顶层 JSON 数组**。
-
-- 富化项优先 `{ uuid, url, params }`，`uuid = String(gallery.id)`，由 Edge-Images 自行下载原图。 URL
-  项失败且本行有本地副本时，代理在同一批处理里改用 `{ uuid, base64, contentType, params }`
-  重试一次（历史补齐常见于 Agnes 临时 URL 过期）。没有 URL 的行直接传 base64。
-- `params = { width: height: thumbnailWidth, crop: "none", size: "down", format: "webp", quality: thumbnailQuality, nsfw: 1 }`。
-- 响应按 uuid 映射；`data.base64` 是缩略图，`data.nsfw` 是原图的 nsfw-detection-2-mini 五分类
-  （`drawing/hentai/safe/porn/sexy/isNsfw`）。分数最大者成为 `tag`，并列时按
-  `safe, drawing, sexy, porn, hentai` 顺序取靠前者。
-- 每批 ≤20 项；只有 base64 项计入源字节累计 ≤32 MiB（URL 项不计体积）。单张 base64 >50 MiB 不发起
-  HTTP，直接记为失败 `source exceeds 50 MiB`；URL 项不做本地体积判断。
-- 不要求鉴权头；服务不可达、超时或分类器不可用时该批行记为 `failed`，归档与客户端响应不受影响。
-- **部署要求**：Edge-Images 的 `IMAGE_URL_ALLOWLIST` 必须包含 Agnes 输出图所在域名，否则元数据与 URL
-  富化都会按 item 失败（代理会退回预期尺寸，富化则用本地 base64 兜底）。
-
-尺寸测量复用同一入口：输出图在响应前以 `params = { format: "json" }` 调一次 `/api/batch`，读取
-`data.width/height/format`（`format` 可能为 `jpg`/`jpeg`/`png`/`webp`，`jpg` 归一为 `jpeg`）， 超时
-10 秒；失败不影响客户端响应。
-
-历史图片在控制台点击「补齐历史图片」手动处理：一次点击从新到旧走一遍待处理行，失败行不在本遍重试，
-下次点击再试。URL 行不占 32 MiB 预算，也不做 50 MiB 本地判超；URL 过期时由上面的 base64 兜底处理。
-归档后的自动富化与手动补齐都会写一条 `category = enrich` 的日志 （`archive/enrich` /
-`gallery/enrich`），在日志页与常规图片请求分开筛选；空跑的补齐不记日志。
-
-## 已知取舍
-
-- 请求体上限 32 MiB；单张输入图 20 MiB；最多 16 张。
-- 参考图 URL 读头额外增加一次小请求（通常几百毫秒）；输出图尺寸改由 Edge-Images 元数据接口测量，
-  失败只降级并告警，不会让请求失败。
-- 参考图读头允许 `http`/`https`，输出 URL 只允许 `https`；参考图读头共用 10 秒超时、1 MiB 字节上限、
-  最多 2 次重定向。与归档下载一样，不额外实现 DNS rebinding 防护，这是已知边界。
-- 代理不设输出体积预算、不按档位限制 `n`：极端组合（`4K × n=10 × Base64`）可能触及 isolate
-  的内存上限，这是明确接受的取舍；上游限流错误原样返回（429）。
-- 不实现 `mask` 局部重绘、不流式、不转码、不缩放；只存输出图，不提供图片编辑。
-- 不伪造 `usage`；`revised_prompt` 固定为 `null`；上游未使用字段返回的空字符串一律归一化为 `null`。
-- 图片服务是外部依赖：未配置时缩略图 / NSFW / 补齐全部关闭，响应尺寸退回预期值；配置后 Turso 会因
-  缩略图与 NSFW 数据增加体积。只有「没有 URL 且本地副本 >50 MiB」的原图无法富化（直接记为失败），
-  历史补齐是手动操作，不做启动自动补齐。URL 归档与 Edge-Images 富化会各下载一次原图 （Edge-Images
-  自身缓存源图）。
-
-## 上游实测结论（2026-11-21）
-
-| 请求                                 | 结果                                      |
-| ------------------------------------ | ----------------------------------------- |
-| `size: "auto"`                       | HTTP 400：`size has invalid value "auto"` |
-| `size: "900x1200"`                   | HTTP 200；输出图实际为 `864x1152`         |
-| `size: "900x1200"` + `ratio: "16:9"` | 输出仍为 `864x1152`，`ratio` 不生效       |
-| `size: "2K"`，不传 `ratio`           | 输出 `2048x2048`，Agnes 默认 1:1          |
-
-结论：`auto` 不能透传，必须由代理换算；精确 `WIDTHxHEIGHT` 会被 Agnes 归一化；`ratio` 只在档位
-模式下有意义。
-
-## 上游实测结论（2026-11-20）
-
-1. `extra_body.image` 与顶层 `image`、`extra_body.response_format` 与顶层 `response_format`
-   都被接受；文档里“顶层会报错”没有复现。默认仍按文档使用嵌套，管理员可在设置中显式选择
-   `top_level`。
-2. 文生图 `return_base64: true` 返回 `b64_json`；图生图 `extra_body.response_format: "b64_json"`
-   也返回 `b64_json`。
-3. 上游 `n` 必须为 1，否则 400 `n must be 1`。
-4. 未使用字段返回空字符串，必须归一化为 `null`。
-5. 输出 URL 主机是 `platform-outputs.agnes-ai.space`，代码不写死主机，只做通用校验。
-
-## 开发
+### Docker Compose
 
 ```bash
-deno task fmt          # 格式化
-deno task fmt:check    # 校验格式
-deno task lint         # 静态检查
-deno task check        # 类型检查（main/lib/web/scripts/tests）
-deno task test         # 离线测试套件（node:sqlite）
-deno task preview      # 示例数据 + 内存库，端口 8001
-deno task smoke        # 真实 Agnes 端到端（需要 SMOKE_AGNES_API_KEY）
-RESET_SCHEMA=1 deno task reset-db  # 删除并重建数据库（破坏性）
+cp .env.example .env      # 填入三个必填值
+docker compose up -d --build
 ```
 
-`smoke` 会真实产生一张文生图与一张图生图请求，消耗账号额度：
+镜像为多阶段构建：Node 24 构建前端 → Go 1.26 以 `CGO_ENABLED=0` 编译 Linux 二进制 →
+distroless 非 root 运行镜像（仅含二进制与 CA）。Compose 只启动 `agnes-proxy`，映射
+`8000`，`restart: unless-stopped`、`stop_grace_period: 120s`、只读根文件系统、健康检查
+调用二进制自带的 `healthcheck`。没有数据卷，也不需要 SQLite sidecar。
+
+## 配置
+
+| 变量 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `PROXY_API_KEY` | 是 | — | 同时作为数据面 Bearer 密钥与管理页登录密钥；只做恒定时间比较，不持久化明文以外的地方。 |
+| `TURSO_DATABASE_URL` | 是 | — | `libsql://` 或 `https://`，不得带路径/查询/凭据。 |
+| `TURSO_AUTH_TOKEN` | 是 | — | Turso token。 |
+| `PORT` | 否 | `8000` | HTTP 监听端口。 |
+| `CORS_ALLOWED_ORIGINS` | 否 | 空 | 逗号分隔的完整 origin，用于数据面 CORS。 |
+| `TRUSTED_PROXY_CIDRS` | 否 | 空 | 可信反代网段。为空时完全忽略 `X-Forwarded-*`；仅可信来源的单值 `X-Forwarded-Proto/Host` 可用于推导 Cookie Secure 与同源判断。 |
+| `MAX_IN_FLIGHT` | 否 | `8` | 上游全局在途请求上限。 |
+| `ARCHIVE_WORKERS` | 否 | `4` | 归档 worker 数量。 |
+| `ARCHIVE_CAPACITY` | 否 | `32` | 请求级后台任务容量，必须 ≥ workers；满时新请求等待容量。 |
+| `SHUTDOWN_TIMEOUT_SECONDS` | 否 | `120` | SIGTERM/SIGINT 优雅退出预算。 |
+
+`PROXY_API_KEY` 轮换会让旧管理会话失效。密钥不会出现在日志、管理列表或错误响应中。
+
+## 数据库
+
+Turso 需要一个**空的**新库。首次启动自动建表并写入 schema 标识；如果库非空、版本不符
+或来自旧 Deno 实现，服务会拒绝启动，不会自动迁移、改表或读取旧数据。
+
+重建（破坏性，删除本应用的全部表并重新建空 schema）：
 
 ```bash
-SMOKE_AGNES_API_KEY=agk_... deno task smoke
+go run ./cmd/agnes-proxy reset-db --confirm     # 先提供三个必填环境变量
+# 或
+docker compose run --rm agnes-proxy reset-db --confirm
 ```
 
-`test-key.txt` 之类的凭据文件不要提交。如果上游对某个 Key 返回账号级限制（例如“unusual
-activity”），`smoke` 会以 503 失败并把上游原文带回；换一个可用 Key 即可。
+不带 `--confirm` 会在打开数据库连接之前失败。`deep` 健康检查只执行 `SELECT 1`。
 
-测试必须完全离线；只有 `deno task smoke` 允许真实 Agnes 流量。测试期用 `node:sqlite` 跑同一套
-SQL，生产用 `@libsql/client/web`。
+## API
 
-### 安全
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/v1/images/generations` | JSON 文生图，也支持 JSON 内参考图。 |
+| POST | `/v1/images/edits` | JSON 或 multipart 图生图/多图合成；不保留单数 `/edit` 别名。 |
+| GET | `/v1/models` | 静态模型目录；目录外模型仍原样转发。 |
+| GET | `/health`、`/health?deep=1` | 存活 / 数据库就绪。 |
+| GET | `/` | 302 到 `/admin`。 |
 
-- 控制台 CSP
-  `default-src 'none'`，只允许同源连接与内联样式/脚本；`img-src 'self' data:`；`X-Frame-Options: DENY`、`nosniff`、`no-referrer`、`Cache-Control: no-store`。
-- 只有 `auto` 需要参考图尺寸时，代理才会请求客户端提供的参考图 URL，并且只读取图片头： 允许
-  `http`/`https` 与公网主机；拒绝私网/回环/链路本地/带凭据的地址；每次重定向重新校验； 10 秒超时、1
-  MiB 上限、最多 2 次重定向。输出 URL 读头只允许 `https`。
-- 归档下载只接受 Agnes 响应里给出的输出 URL，并校验 `https`、私网/回环地址、重定向与体积上限。
-- 与归档下载一样，URL 读头不额外实现 DNS rebinding 防护。
-- 密钥比较不泄漏长度与前缀；轮换 `PROXY_API_KEY` 会作废全部会话。
+数据面只接受 `Authorization: Bearer <PROXY_API_KEY>`，Cookie 永远不能调用图片 API。
+管理 API 位于 `/admin/api/*`，接受会话 Cookie 或同一个 Bearer；文档见
+[`docs/api/admin.openapi.yaml`](docs/api/admin.openapi.yaml)。管理面响应 `no-store`，
+Cookie 变更请求校验 Origin，登录失败限速。
+
+请求规则摘要：
+
+- 默认返回 `url`；`response_format=b64_json` 或 `return_base64=true` 请求 base64。
+- 支持 `1K`–`4K`、精确 `WxH`、`ratio` 与有参考图时的自动尺寸；显式尺寸不读取参考图。
+- 参考图最多 16 张、单张 20 MiB、请求体 32 MiB；`mask`、`stream`、`partial_images`、`file_id` 不支持。
+- 客户端 `n` 为正整数，上游始终按 `n=1` 逐子请求执行；并发上限是资源限制，不是协议 `n` 上限。
+- 每个子请求最多尝试设置中的不同账号；部分成功返回 200 与成功图片；全失败按
+  `429 > 504 > 502 > 503` 聚合，429 的 `Retry-After` 取较短值并封顶 900 秒。
+- 响应头 `X-Agnes-Requested`、`X-Agnes-Succeeded`、`X-Agnes-Failed`、
+  `X-Agnes-Resolved-Size`、`X-Agnes-Warnings`、`X-Agnes-Failure-Statuses`。
+- 未认证请求不写日志；解析失败会记录 request/parse 日志。
+
+## 外部图片服务（Edge-Images）契约
+
+设置页的“图片服务地址”为空即关闭测量、缩略图与 NSFW 富化。配置后代理只调用
+`POST {base}/api/batch`，请求体是顶层数组，每批最多 20 项：
+
+```json
+[
+  {
+    "uuid": "0",
+    "url": "https://source.example/image.png",
+    "params": { "format": "json" }
+  }
+]
+```
+
+富化时 `params` 为 `{ "width": 640, "height": 640, "crop": "none", "size": "down",
+"format": "webp", "quality": 75, "nsfw": 1 }`；没有可用 URL 时发送 `base64` 与
+`contentType`。响应是按 `uuid` 索引的对象：
+
+```json
+{
+  "0": {
+    "success": true,
+    "data": {
+      "width": 1024,
+      "height": 1024,
+      "format": "png",
+      "sourceContentType": "image/png",
+      "base64": "<缩略图>",
+      "nsfw": {
+        "drawing": 0.01, "hentai": 0.01, "safe": 0.95,
+        "porn": 0.01, "sexy": 0.02, "isNsfw": false
+      }
+    }
+  }
+}
+```
+
+- 测量读取 `width/height/format`；富化读取 `nsfw` 五分类与 `isNsfw`，最高分生成 tag，
+  并列按 safe/drawing/sexy/porn/hentai 顺序；`base64` 是可选的缩略图。
+- URL 失败且本地有原图时只重试一次 base64。内联源每批预算 32 MiB，单张超过 50 MiB
+  不发送；缩略图必须能被识别为 PNG/JPEG/WebP，且小于已知原图体积才保存。
+- Edge-Images 必须在其侧允许访问两类域名：代理归档下载的**生成图片源域名**，以及
+  富化时发送的**图库源 URL 域名**（包括你允许客户端传入的参考图托管域名）。代理本身
+  不会替 Edge 做这项 allowlist 配置。
+
+## 资源、并发与退出边界
+
+- 每个有成功图片的客户端请求在发起上游调用前预留一份请求级归档容量；全部失败释放。
+  容量、worker 与上游并发均为进程级资源限制。
+- 归档队列限制任务数，不限制输出字节数。批量请求体、单图 base64、响应图片仍可能占用
+  大量内存；服务不宣称队列使内存严格有界。
+- SIGTERM/SIGINT：停止接收新请求与新容量预留 → 等待在途请求提交归档 → 排空已接受
+  归档任务（默认 120 秒）→ 关闭数据库。预算耗尽会取消生命周期 context 并在服务日志
+  记录未完成任务数；进程被强杀或容器崩溃仍可能丢失内存中的未归档任务，本期不提供持久化
+  任务队列。Docker 的 `stop_grace_period` 与预算一致。
+
+## 管理控制台
+
+`/admin/login` 输入 `PROXY_API_KEY` 登录。会话 Cookie 30 天有效，剩余不足 7 天时管理
+API 会自动续期，总寿命不超过 90 天；设置页可撤销全部会话。深链接、刷新与前进/后退
+均可用，筛选条件保存在 URL。
+
+- 总览：UTC 日期范围、请求/成功/部分成功/失败/图片统计、两张单系列折线与逐日数据表、模型用量、账号健康。
+- 图库：按 UTC 日期分组、24 项游标分页、tag 筛选、懒加载缩略图、原图弹窗/下载/删除/清空、补齐状态。
+- 账号：脱敏 Key、启用/停用、探测、冷却重置、导入（同名 Key 不叠加额度）、删除。
+- 日志：request/enrich 分类、逐账号尝试详情、清空确认。
+- 设置：上游与尺寸、超时/重试、图片服务参数、撤销全部会话。
+
+## 测试与验收
+
+```bash
+gofmt -l internal cmd
+go vet ./...
+go test ./...                 # 离线；不访问真实 Turso/Agnes
+go test -race ./...           # 工具链支持时
+
+npm --prefix frontend ci
+npm --prefix frontend run typecheck
+npm --prefix frontend run lint
+npm --prefix frontend run test -- --run
+npm --prefix frontend run build
+npm --prefix frontend run test:e2e
+```
+
+E2E 会构建前端与 Go 二进制并启动 `preview --port 8123`，使用系统 Chrome
+（Playwright `channel: "chrome"`）执行登录、五页面、CRUD、模拟生成/编辑、下载、
+补齐轮询、会话撤销与 axe 扫描；如本机没有 Chrome，请安装 Chrome 或按需调整
+`frontend/playwright.config.ts`。截图输出在 `frontend/test-results/screenshots/`。
+
+Linux 无 CGO 编译检查：
+
+```bash
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o .build/agnes-proxy ./cmd/agnes-proxy
+```
+
+## 非目标
+
+不迁移旧数据库、不兼容旧内部路由/DTO、不在生产运行 Deno/Node、不做模型名映射、
+不支持 mask/流式输出、不做本地图片转码/缩放、不提供自动图库清理或分布式任务服务。

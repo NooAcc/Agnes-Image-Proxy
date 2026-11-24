@@ -1,0 +1,526 @@
+openapi: 3.1.0
+info:
+  title: Agnes Image Proxy Admin API
+  version: 1.0.0
+  description: |
+    Management console contract. Errors always use the OpenAI envelope
+    `{ "error": { message, type, param, code } }`. Cookie-authenticated
+    mutations require an Origin header equal to the external origin. The
+    same API key is also accepted as `Authorization: Bearer`.
+servers:
+  - url: /
+security:
+  - bearer: []
+  - session: []
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+    session:
+      type: apiKey
+      in: cookie
+      name: agnes_session
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message: { type: string }
+            type: { type: string }
+            param: { type: [string, "null"] }
+            code: { type: [string, "null"] }
+      required: [error]
+    Session:
+      type: object
+      properties:
+        authenticated: { type: boolean }
+      required: [authenticated]
+    AccountSummary:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        apiKeyMasked: { type: string }
+        enabled: { type: boolean }
+        status: { type: string, enum: [healthy, cooling, disabled] }
+        cooldownUntil: { type: [string, "null"], format: date-time }
+        failCount: { type: integer }
+        lastUsedAt: { type: [string, "null"], format: date-time }
+        upstreamRequests: { type: integer }
+        upstreamImages: { type: integer }
+        createdAt: { type: string, format: date-time }
+      required: [id, name, apiKeyMasked, enabled, status, failCount]
+    AccountList:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/AccountSummary" }
+      required: [items]
+    AccountCreate:
+      type: object
+      properties:
+        name: { type: string }
+        apiKey: { type: string }
+      required: [name, apiKey]
+      additionalProperties: false
+    AccountPatch:
+      type: object
+      properties:
+        name: { type: string }
+        apiKey: { type: string }
+        enabled: { type: boolean }
+      additionalProperties: false
+    ImportResponse:
+      type: object
+      properties:
+        imported: { type: integer }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              message: { type: string }
+            required: [index, message]
+      required: [imported, errors]
+    ProbeResult:
+      type: object
+      properties:
+        id: { type: integer }
+        ok: { type: boolean }
+        status: { type: integer }
+        message: { type: string }
+      required: [id, ok, status, message]
+    ProbeList:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ProbeResult" }
+      required: [items]
+    Settings:
+      type: object
+      additionalProperties: false
+      properties:
+        agnesBaseUrl: { type: string }
+        defaultSize: { type: string, enum: [1K, 2K, 3K, 4K] }
+        imageParamMode: { type: string, enum: [nested, top_level] }
+        probeModel: { type: string }
+        probeConcurrency: { type: integer, minimum: 1, maximum: 10 }
+        requestTimeoutMs: { type: integer, minimum: 60000, maximum: 360000 }
+        autoRefreshIntervalMs: { type: integer, minimum: 2000, maximum: 60000 }
+        maxAttempts: { type: integer, minimum: 1, maximum: 10 }
+        imageServiceBaseUrl: { type: string }
+        thumbnailWidth: { type: integer, minimum: 128, maximum: 2048 }
+        thumbnailQuality: { type: integer, minimum: 40, maximum: 100 }
+        enrichTimeoutMs: { type: integer, minimum: 5000, maximum: 60000 }
+      required:
+        [agnesBaseUrl, defaultSize, imageParamMode, probeModel, probeConcurrency,
+         requestTimeoutMs, autoRefreshIntervalMs, maxAttempts, imageServiceBaseUrl,
+         thumbnailWidth, thumbnailQuality, enrichTimeoutMs]
+    Attempt:
+      type: object
+      properties:
+        index: { type: integer }
+        accountId: { type: integer }
+        accountName: { type: string }
+        status: { type: integer }
+        code: { type: string }
+        durationMs: { type: integer }
+        message: { type: string }
+      required: [index, accountId, accountName, status, code, durationMs, message]
+    RequestLog:
+      type: object
+      properties:
+        id: { type: integer }
+        requestId: { type: string }
+        ts: { type: string, format: date-time }
+        category: { type: string, enum: [request, enrich] }
+        stage: { type: string }
+        endpoint: { type: string }
+        path: { type: string }
+        model: { type: string }
+        status: { type: integer }
+        ok: { type: boolean }
+        requested: { type: integer }
+        images: { type: integer }
+        failed: { type: integer }
+        durationMs: { type: integer }
+        sizeRequest: { type: [string, "null"] }
+        sizeActual: { type: [string, "null"] }
+        attempts:
+          type: array
+          items: { $ref: "#/components/schemas/Attempt" }
+      required:
+        [id, requestId, ts, category, stage, endpoint, path, model, status, ok,
+         requested, images, failed, durationMs, attempts]
+    LogPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/RequestLog" }
+        nextBefore: { type: [integer, "null"] }
+      required: [items, nextBefore]
+    UsageTotals:
+      type: object
+      properties:
+        requests: { type: integer }
+        successes: { type: integer }
+        partials: { type: integer }
+        failures: { type: integer }
+        images: { type: integer }
+      required: [requests, successes, partials, failures, images]
+    Overview:
+      type: object
+      properties:
+        startDay: { type: string, format: date }
+        endDay: { type: string, format: date }
+        totals: { $ref: "#/components/schemas/UsageTotals" }
+        days:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/UsageTotals"
+              - type: object
+                properties:
+                  day: { type: string, format: date }
+                required: [day]
+        models:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/UsageTotals"
+              - type: object
+                properties:
+                  model: { type: string }
+                required: [model]
+        accounts:
+          type: object
+          properties:
+            total: { type: integer }
+            healthy: { type: integer }
+            cooling: { type: integer }
+            disabled: { type: integer }
+          required: [total, healthy, cooling, disabled]
+      required: [startDay, endDay, totals, days, models, accounts]
+    NSFWScores:
+      type: object
+      properties:
+        drawing: { type: number }
+        hentai: { type: number }
+        safe: { type: number }
+        porn: { type: number }
+        sexy: { type: number }
+        isNsfw: { type: boolean }
+      required: [drawing, hentai, safe, porn, sexy, isNsfw]
+    GalleryItem:
+      type: object
+      properties:
+        id: { type: integer }
+        createdAt: { type: string, format: date-time }
+        requestId: { type: string }
+        model: { type: string }
+        prompt: { type: string }
+        size: { type: string }
+        accountName: { type: string }
+        nsfwTag: { type: string }
+        nsfwScores:
+          oneOf:
+            - $ref: "#/components/schemas/NSFWScores"
+            - type: "null"
+        enrichStatus: { type: string, enum: [pending, success, failed] }
+        archived: { type: boolean }
+        sourceUrl: { type: [string, "null"] }
+      required:
+        [id, createdAt, requestId, model, prompt, size, accountName, nsfwTag,
+         enrichStatus, archived]
+    GalleryPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/GalleryItem" }
+        nextBefore: { type: [integer, "null"] }
+      required: [items, nextBefore]
+    BackfillStatus:
+      type: object
+      properties:
+        running: { type: boolean }
+        startedAt: { type: [string, "null"], format: date-time }
+        finishedAt: { type: [string, "null"], format: date-time }
+        processed: { type: integer }
+        succeeded: { type: integer }
+        failed: { type: integer }
+        error: { type: [string, "null"] }
+      required: [running, processed, succeeded, failed]
+  responses:
+    Error:
+      description: OpenAI error envelope
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NoContent:
+      description: No content
+paths:
+  /admin/api/session:
+    post:
+      summary: Log in with the proxy key
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                apiKey: { type: string }
+              required: [apiKey]
+      responses:
+        "200":
+          description: Authenticated; sets the session cookie
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429":
+          description: Too many failed attempts (Retry-After 60)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      summary: Read the current session (never returns the token)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Log out this browser (clears the cookie only)
+      responses:
+        "204": { $ref: "#/components/responses/NoContent" }
+  /admin/api/session/revoke:
+    post:
+      summary: Revoke every session (bumps the persisted epoch)
+      responses:
+        "204": { $ref: "#/components/responses/NoContent" }
+        "403": { $ref: "#/components/responses/Error" }
+  /admin/api/accounts:
+    get:
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountList" }
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccountCreate" }
+      responses:
+        "201":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountSummary" }
+        "400": { $ref: "#/components/responses/Error" }
+  /admin/api/accounts/import:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                accounts:
+                  type: array
+                  maxItems: 1000
+                  items: { $ref: "#/components/schemas/AccountCreate" }
+              required: [accounts]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+  /admin/api/accounts/test:
+    post:
+      description: Probe every account through the models endpoint
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProbeList" }
+  /admin/api/accounts/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    patch:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccountPatch" }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountSummary" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      responses:
+        "204": { $ref: "#/components/responses/NoContent" }
+        "404": { $ref: "#/components/responses/Error" }
+  /admin/api/accounts/{id}/test:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    post:
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProbeResult" }
+        "404": { $ref: "#/components/responses/Error" }
+  /admin/api/accounts/{id}/reset:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    post:
+      responses:
+        "204": { $ref: "#/components/responses/NoContent" }
+        "404": { $ref: "#/components/responses/Error" }
+  /admin/api/settings:
+    get:
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Settings" }
+    put:
+      description: Replaces the complete settings object; unknown fields are rejected
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Settings" }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Settings" }
+        "400": { $ref: "#/components/responses/Error" }
+  /admin/api/logs:
+    get:
+      parameters:
+        - { name: before, in: query, schema: { type: integer } }
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: category, in: query, schema: { type: string, enum: [request, enrich] } }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogPage" }
+        "400": { $ref: "#/components/responses/Error" }
+    delete:
+      responses:
+        "204": { $ref: "#/components/responses/NoContent" }
+  /admin/api/overview:
+    get:
+      parameters:
+        - { name: start, in: query, schema: { type: string, format: date } }
+        - { name: end, in: query, schema: { type: string, format: date } }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Overview" }
+        "400": { $ref: "#/components/responses/Error" }
+  /admin/api/gallery:
+    get:
+      parameters:
+        - { name: before, in: query, schema: { type: integer } }
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: tag, in: query, schema: { type: string } }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GalleryPage" }
+        "400": { $ref: "#/components/responses/Error" }
+    delete:
+      responses:
+        "204": { $ref: "#/components/responses/NoContent" }
+  /admin/api/gallery/enrich:
+    get:
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackfillStatus" }
+    post:
+      responses:
+        "202":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackfillStatus" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /admin/api/gallery/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    delete:
+      responses:
+        "204": { $ref: "#/components/responses/NoContent" }
+        "404": { $ref: "#/components/responses/Error" }
+  /admin/api/gallery/{id}/content:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+      - { name: download, in: query, schema: { type: string, enum: ["1"] } }
+    get:
+      description: Original PNG/JPEG/WebP bytes or 404
+      responses:
+        "200":
+          description: Image bytes (nosniff, sandbox CSP)
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        "404": { $ref: "#/components/responses/Error" }
+  /admin/api/gallery/{id}/thumbnail:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    get:
+      description: Stored thumbnail or 404; the original is never substituted
+      responses:
+        "200":
+          description: Thumbnail bytes (nosniff, sandbox CSP)
+          content:
+            image/webp: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+        "404": { $ref: "#/components/responses/Error" }
