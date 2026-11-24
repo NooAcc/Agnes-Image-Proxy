@@ -61,6 +61,8 @@ export const settingsSchema = z.object({
   thumbnailWidth: z.number().int().min(128).max(2_048),
   thumbnailQuality: z.number().int().min(40).max(100),
   enrichTimeoutMs: z.number().int().min(5_000).max(60_000),
+  imageUrlTtlHours: z.number().int().min(1).max(720),
+  imagePublicBaseUrl: z.string(),
 });
 
 export const attemptSchema = z.object({
@@ -93,6 +95,14 @@ export const requestLogSchema = z.object({
   sizeRequest: z.string().nullable(),
   sizeActual: z.string().nullable(),
   attempts: z.array(attemptSchema),
+  partial: z.boolean(),
+  deliveryFailures: z.array(z.object({
+    subrequestIndex: z.number().int(),
+    imageIndex: z.number().int(),
+    stage: z.enum(["download", "persist"]),
+    status: z.number().int(),
+    code: z.string(),
+  })),
 });
 
 export function pageSchema<Item extends z.ZodTypeAny>(item: Item) {

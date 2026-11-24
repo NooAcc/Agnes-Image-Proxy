@@ -11,39 +11,26 @@ import (
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/service"
 )
 
-func TestHugeCancelledRequestArchivesExecutedSuccessPromptly(t *testing.T) {
+func TestHugeCancelledRequestStopsPromptly(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	env := newImageEnv(t, func(ctx context.Context, index int64) (agnes.Generation, error) {
-		if index == 0 {
-			cancel()
-			return generationFor(index), nil
-		}
-		<-ctx.Done()
-		return agnes.Generation{}, ctx.Err()
+		cancel()
+		return generationFor(index), nil
 	})
 	env.request.N = 1_000_000_000_000
-	done := make(chan *service.ImageResult, 1)
-	go func() {
-		result, _ := env.images.Generate(ctx, env.request, env.settings, "huge-cancel")
-		done <- result
-	}()
+	done := make(chan error, 1)
+	go func() { _, err := env.images.Generate(ctx, env.request, env.settings, "huge-cancel"); done <- err }()
 	select {
-	case result := <-done:
-		if result == nil || len(result.Response.Data) != 1 {
-			t.Fatalf("lost successful output: %+v", result)
-		}
-		if err := result.CommitArchive(); err != nil {
-			t.Fatal(err)
-		}
-		if len(env.archiver.wait(t).Images) != 1 {
-			t.Fatal("success not archived")
-		}
-		if err := env.tasks.Drain(context.Background()); err != nil {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
 			t.Fatal(err)
 		}
 	case <-time.After(250 * time.Millisecond):
-		t.Fatal("cancellation trapped successful output in requested-range scan")
+		t.Fatal("requested-range scan blocked cancellation")
+	}
+	_ = env.tasks.Drain(context.Background())
+	if env.tasks.Pending() != 0 {
+		t.Fatal("capacity leak")
 	}
 }
 

@@ -48,7 +48,7 @@ func (f *fakeRequestLogs) snapshot() []domain.RequestLog {
 
 type fakeArchiver struct {
 	mu   sync.Mutex
-	jobs []service.ArchiveJob
+	jobs []service.EnrichmentJob
 	done chan struct{}
 }
 
@@ -56,7 +56,7 @@ func newFakeArchiver() *fakeArchiver {
 	return &fakeArchiver{done: make(chan struct{}, 16)}
 }
 
-func (f *fakeArchiver) Run(_ context.Context, job service.ArchiveJob) error {
+func (f *fakeArchiver) Run(_ context.Context, job service.EnrichmentJob) error {
 	f.mu.Lock()
 	f.jobs = append(f.jobs, job)
 	f.mu.Unlock()
@@ -64,7 +64,7 @@ func (f *fakeArchiver) Run(_ context.Context, job service.ArchiveJob) error {
 	return nil
 }
 
-func (f *fakeArchiver) wait(t *testing.T) service.ArchiveJob {
+func (f *fakeArchiver) wait(t *testing.T) service.EnrichmentJob {
 	t.Helper()
 	select {
 	case <-f.done:
@@ -124,9 +124,12 @@ func newImageEnv(t *testing.T, subrequest func(context.Context, int64) (agnes.Ge
 		settings: domain.DefaultSettings(),
 	}
 	env.images = service.NewImages(service.ImageOptions{
-		Tasks:       tasks,
-		Edge:        env.measurer,
-		Archiver:    env.archiver,
+		Tasks:      tasks,
+		Edge:       env.measurer,
+		Enrichment: env.archiver,
+		Delivery: deliveryRunnerFunc(func(ctx context.Context, in service.DeliveryInput) (service.DeliveredImage, error) {
+			return deliveredFor(in), nil
+		}),
 		Logs:        env.logs,
 		Subrequest:  subrequest,
 		Workers:     4,
@@ -191,12 +194,12 @@ func TestGenerationPartialSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	if len(result.Response.Data) != 3 || result.Response.Created == 0 || result.Response.Size != "864x1152" {
-		t.Fatalf("response = %+v", result.Response)
+	if len(result.Images) != 3 || result.Created == 0 || result.Size != "864x1152" {
+		t.Fatalf("response = %+v", result)
 	}
 	for i, want := range []int64{0, 2, 4} {
-		item := result.Response.Data[i]
-		if item.URL == nil || *item.URL != "https://img.example/"+itoa(want)+".png" || item.RevisedPrompt != nil {
+		item := result.Images[i]
+		if item.SourceURL != "https://img.example/"+itoa(want)+".png" {
 			t.Fatalf("data[%d] = %+v (order not preserved)", i, item)
 		}
 	}
@@ -220,7 +223,7 @@ func TestGenerationPartialSuccess(t *testing.T) {
 		t.Fatalf("logs = %+v", logs)
 	}
 	log := logs[0]
-	if log.RequestID != "req-1" || log.Category != "request" || log.Stage != "complete" || log.Status != 200 || log.OK ||
+	if log.RequestID != "req-1" || log.Category != "request" || log.Stage != "complete" || log.Status != 200 || !log.OK ||
 		log.Requested != 5 || log.Images != 3 || log.Failed != 2 || log.Model != "model" || log.Endpoint != "generations" {
 		t.Fatalf("log = %+v", log)
 	}
@@ -231,23 +234,17 @@ func TestGenerationPartialSuccess(t *testing.T) {
 		t.Fatalf("log attempts = %d", len(log.Attempts))
 	}
 
-	if err := result.CommitArchive(); err != nil {
+	if err := result.CommitEnrichment(); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	job := env.archiver.wait(t)
-	if len(job.Images) != 3 || job.ExpectedSize != "1K 1:1" || job.RequestID != "req-1" || job.Model != "model" {
-		t.Fatalf("job = %+v", job)
+	if len(job.IDs) != 3 || job.RequestID != "req-1" || job.Model != "model" {
+		t.Fatalf("job: %+v", job)
 	}
-	for i, image := range job.Images {
-		if image.Measurement.Size == nil || image.Measurement.Size.Width != 864 ||
-			image.AccountName != "account-"+itoa([]int64{0, 2, 4}[i]) {
-			t.Fatalf("job image %d = %+v", i, image)
-		}
-	}
-	if err := result.CommitArchive(); !errors.Is(err, service.ErrReservationUsed) {
+	if err := result.CommitEnrichment(); !errors.Is(err, service.ErrReservationUsed) {
 		t.Fatalf("second commit = %v", err)
 	}
-	result.CancelArchive()
+	result.CancelEnrichment()
 }
 
 func TestGenerationAllFailuresAggregate(t *testing.T) {
@@ -304,10 +301,10 @@ func TestGenerationMeasuresOnceAndSnapshotsSize(t *testing.T) {
 	if len(logs) != 1 || logs[0].SizeActual == nil || *logs[0].SizeActual != "864x1152" {
 		t.Fatalf("log = %+v", logs)
 	}
-	if result.Response.Size != "864x1152" || result.Headers.Get("X-Agnes-Failed") != "0" {
-		t.Fatalf("response = %+v headers=%v", result.Response, result.Headers)
+	if result.Size != "864x1152" || result.Headers.Get("X-Agnes-Failed") != "0" {
+		t.Fatalf("response = %+v headers=%v", result, result.Headers)
 	}
-	result.CancelArchive()
+	result.CancelEnrichment()
 }
 
 func TestGenerationCancellationStopsDispatch(t *testing.T) {
@@ -366,12 +363,12 @@ func TestGenerationGlobalInFlightBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	first.CancelArchive()
+	first.CancelEnrichment()
 	second, err := env.images.Generate(context.Background(), env.request, env.settings, "req-6")
 	if err != nil {
 		t.Fatalf("generate 2: %v", err)
 	}
-	second.CancelArchive()
+	second.CancelEnrichment()
 	if peak.Load() > 4 {
 		t.Fatalf("peak in-flight = %d (max 4)", peak.Load())
 	}
@@ -401,9 +398,9 @@ func TestGenerationPayloadOrderingStable(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 	var order []int64
-	for _, item := range result.Response.Data {
+	for _, item := range result.Images {
 		for index := int64(0); index < 4; index++ {
-			if *item.URL == "https://img.example/"+itoa(index)+".png" {
+			if item.SourceURL == "https://img.example/"+itoa(index)+".png" {
 				order = append(order, index)
 			}
 		}
@@ -411,5 +408,5 @@ func TestGenerationPayloadOrderingStable(t *testing.T) {
 	if !sort.SliceIsSorted(order, func(i, j int) bool { return order[i] < order[j] }) || len(order) != 4 {
 		t.Fatalf("response order = %v", order)
 	}
-	result.CancelArchive()
+	result.CancelEnrichment()
 }

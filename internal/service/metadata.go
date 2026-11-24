@@ -30,8 +30,6 @@ func (e *Edge) Measure(ctx context.Context, outputs []domain.OutputImage, settin
 			item := batchItem{UUID: uuid, Params: map[string]any{"format": "json"}}
 			if output.URL != nil && *output.URL != "" {
 				item.URL = *output.URL
-			} else if output.Base64 != nil && *output.Base64 != "" {
-				item.Base64 = *output.Base64
 			}
 			items = append(items, item)
 		}

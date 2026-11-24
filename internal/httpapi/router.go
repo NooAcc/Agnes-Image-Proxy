@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/apierror"
+	"github.com/NooAcc/Agnes-Image-Proxy/internal/auth"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/domain"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/images"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/service"
@@ -23,17 +24,19 @@ var defaultModels = []string{"agnes-image-2.5-flash", "agnes-image-2.1-flash"}
 // Options wires the HTTP boundary. The administration routes are enabled when
 // Store and Auth are both set.
 type Options struct {
-	Auth      *Auth
-	Images    *service.Images
-	Store     AdminStore
-	Backfill  *service.Backfill
-	Probe     *service.Probe
-	Settings  func(context.Context) (domain.Settings, error)
-	Reference images.ReferenceReader
-	Logs      service.RequestLogStore
-	Assets    http.Handler
-	DeepCheck func(context.Context) error
-	Models    []string
+	Auth         *Auth
+	ImageLinks   *auth.ImageLinks
+	PublicImages PublicImageStore
+	Images       *service.Images
+	Store        AdminStore
+	Backfill     *service.Backfill
+	Probe        *service.Probe
+	Settings     func(context.Context) (domain.Settings, error)
+	Reference    images.ReferenceReader
+	Logs         service.RequestLogStore
+	Assets       http.Handler
+	DeepCheck    func(context.Context) error
+	Models       []string
 }
 
 type router struct {
@@ -77,6 +80,8 @@ func (r *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusFound)
 	case path == "/health":
 		r.handleHealth(w, req)
+	case strings.HasPrefix(path, "/v1/images/content/"):
+		r.servePublicImage(w, req)
 	case path == "/v1/models":
 		r.handleModels(w, req)
 	case path == "/v1/images/generations" || path == "/v1/images/edits":
@@ -168,20 +173,44 @@ func (r *router) handleImageRequest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	origin, err := r.options.Auth.ImageOrigin(req, settings)
+	if err != nil {
+		apierror.Write(w, err)
+		return
+	}
+	reference := NewLocalReferences(origin, r.options.ImageLinks, r.options.PublicImages, r.options.Reference)
 	req.Body = http.MaxBytesReader(w, req.Body, maxDataBodyBytes)
-	parsed, parseErr := images.Parse(ctx, req, settings, r.options.Reference)
+	parsed, parseErr := images.Parse(ctx, req, settings, reference)
 	if parseErr != nil {
 		r.recordParseFailure(ctx, req, requestID, parseErr)
 		apierror.Write(w, parseErr)
 		return
 	}
 
+	if r.options.ImageLinks == nil {
+		apierror.Write(w, apierror.Coded(503, "image delivery is unavailable", "server_error", "service_unavailable"))
+		return
+	}
 	result, err := r.options.Images.Generate(ctx, parsed, settings, requestID)
 	if err != nil {
 		apierror.Write(w, err)
 		return
 	}
 
+	defer result.CommitEnrichment()
+	response := ImageResponse{Created: result.Created, Size: result.Size, Data: make([]ImageResponseItem, len(result.Images))}
+	for i, image := range result.Images {
+		if parsed.ResponseFormat == "b64_json" {
+			response.Data[i].B64JSON = image.Base64
+		} else {
+			link, err := r.options.ImageLinks.Issue(origin, image.Stored.PublicID, time.Duration(settings.ImageURLTTLHours)*time.Hour)
+			if err != nil {
+				apierror.Write(w, apierror.Coded(503, "image delivery is unavailable", "server_error", "service_unavailable"))
+				return
+			}
+			response.Data[i].URL = &link
+		}
+	}
 	for name, values := range result.Headers {
 		for _, value := range values {
 			w.Header().Add(name, value)
@@ -189,11 +218,7 @@ func (r *router) handleImageRequest(w http.ResponseWriter, req *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(result.Response)
-
-	// Hand off archive capacity even when the response write failed; the
-	// successful images must not be dropped because the client went away.
-	_ = result.CommitArchive()
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // recordParseFailure logs a rejected request. It never uses the client

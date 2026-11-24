@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -21,11 +24,49 @@ var galleryTags = map[string]bool{
 	"safe": true, "drawing": true, "sexy": true, "porn": true, "hentai": true, "unclassified": true,
 }
 
-// InsertGallery stores one generated image row. Unknown image types are never
-// persisted as blobs.
+// SaveGeneratedImage persists a valid original atomically by its execution output key.
+func (s *Store) SaveGeneratedImage(ctx context.Context, insert domain.GalleryInsert) (domain.StoredImage, error) {
+	if len(insert.Image) == 0 || insert.ImageMIME == nil || !validStoredMIME(*insert.ImageMIME) {
+		return domain.StoredImage{}, apierror.Invalid("image", "a supported non-empty original image is required", "invalid_value")
+	}
+	stored, _, err := s.insertGallery(ctx, insert)
+	return stored, err
+}
+
+// SaveDeliveryImage returns the authoritative original only for base64 delivery.
+// A newly inserted output reuses the download; a deduplicated output reads its saved BLOB.
+func (s *Store) SaveDeliveryImage(ctx context.Context, insert domain.GalleryInsert, includeOriginal bool) (domain.StoredImage, []byte, error) {
+	if len(insert.Image) == 0 || insert.ImageMIME == nil || !validStoredMIME(*insert.ImageMIME) {
+		return domain.StoredImage{}, nil, apierror.Invalid("image", "a supported non-empty original image is required", "invalid_value")
+	}
+	stored, reused, err := s.insertGallery(ctx, insert)
+	if err != nil || !includeOriginal {
+		return stored, nil, err
+	}
+	if !reused {
+		return stored, insert.Image, nil
+	}
+	data, _, err := s.PublicImageContent(ctx, stored.PublicID)
+	return stored, data, err
+}
+
+// InsertGallery shares the idempotent insertion boundary for seeds and ordinary rows.
 func (s *Store) InsertGallery(ctx context.Context, insert domain.GalleryInsert) (int64, error) {
+	stored, _, err := s.insertGallery(ctx, insert)
+	return stored.ID, err
+}
+
+func (s *Store) insertGallery(ctx context.Context, insert domain.GalleryInsert) (domain.StoredImage, bool, error) {
 	ctx, cancel := s.operation(ctx)
 	defer cancel()
+	if strings.TrimSpace(insert.OutputKey) == "" {
+		return domain.StoredImage{}, false, apierror.Invalid("outputKey", "outputKey is required", "invalid_value")
+	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return domain.StoredImage{}, false, err
+	}
+	publicID := hex.EncodeToString(random[:])
 	imageMIME := ""
 	if insert.ImageMIME != nil {
 		imageMIME = normalizeStoredMIME(*insert.ImageMIME)
@@ -63,21 +104,29 @@ func (s *Store) InsertGallery(ctx context.Context, insert domain.GalleryInsert) 
 		sizeActual = *insert.SizeActual
 	}
 
-	var id int64
+	var stored domain.StoredImage
+	var mime sql.NullString
+	var byteCount sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO gallery (created_at, request_id, model, prompt, size_request, size_actual,
+		`INSERT INTO gallery (public_id, output_key, created_at, request_id, model, prompt, size_request, size_actual,
 			account_id, account_name, source_url, source_mime, source_bytes,
 			image, image_mime, image_bytes, archived, enrich_status)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-		 RETURNING id`,
-		formatTime(s.now()), insert.RequestID, insert.Model, insert.Prompt, insert.SizeRequest,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+		 ON CONFLICT(output_key) DO NOTHING
+		 RETURNING id, public_id, image_mime, image_bytes`,
+		publicID, insert.OutputKey, formatTime(s.now()), insert.RequestID, insert.Model, insert.Prompt, insert.SizeRequest,
 		sizeActual, accountID, insert.AccountName, nullString(insert.SourceURL), sourceMime, sourceBytes,
 		imageArg, mimeArg, bytesArg, boolToInt(image != nil),
-	).Scan(&id)
-	if err != nil {
-		return 0, classifyDBError(err)
+	).Scan(&stored.ID, &stored.PublicID, &mime, &byteCount)
+	reused := err == sql.ErrNoRows
+	if reused {
+		err = s.db.QueryRowContext(ctx, `SELECT id, public_id, image_mime, image_bytes FROM gallery WHERE output_key = ?`, insert.OutputKey).Scan(&stored.ID, &stored.PublicID, &mime, &byteCount)
 	}
-	return id, nil
+	if err != nil {
+		return domain.StoredImage{}, false, classifyDBError(err)
+	}
+	stored.MIME, stored.Bytes = mime.String, byteCount.Int64
+	return stored, reused, nil
 }
 
 // ListGallery returns gallery summaries newest-first with tag filtering.
@@ -303,9 +352,8 @@ func (s *Store) GalleryEnrichState(ctx context.Context, id int64) (string, domai
 		sourceBytes sql.NullInt64
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT enrich_status, source_url, image_mime, image_bytes, source_bytes,
-			CASE WHEN image_bytes <= 52428800 THEN image ELSE NULL END FROM gallery WHERE id = ?`,
-		id).Scan(&status, &sourceURL, &mime, &bytes, &sourceBytes, &source.Data)
+		`SELECT enrich_status, source_url, image_mime, image_bytes, source_bytes FROM gallery WHERE id = ?`,
+		id).Scan(&status, &sourceURL, &mime, &bytes, &sourceBytes)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return "", domain.GallerySource{}, false, nil
@@ -325,7 +373,6 @@ func (s *Store) GalleryEnrichState(ctx context.Context, id int64) (string, domai
 	if sourceBytes.Valid {
 		source.SourceBytes = sourceBytes.Int64
 	}
-	source.HasImage = bytes.Valid && bytes.Int64 > 0 && mime.Valid && validStoredMIME(mime.String)
 	return status, source, true, nil
 }
 
@@ -352,8 +399,32 @@ func scanGallerySource(row rowScanner) (domain.GallerySource, error) {
 	if sourceBytes.Valid {
 		source.SourceBytes = sourceBytes.Int64
 	}
-	source.HasImage = bytes.Valid && bytes.Int64 > 0 && mime.Valid && validStoredMIME(mime.String)
 	return source, nil
+}
+
+// SetImageMeasurement backfills best-effort URL measurements without clearing originals.
+func (s *Store) SetImageMeasurement(ctx context.Context, id int64, measurement domain.Measurement) error {
+	ctx, cancel := s.operation(ctx)
+	defer cancel()
+	var clauses []string
+	var args []any
+	if measurement.Size != nil {
+		clauses = append(clauses, "size_actual = ?")
+		args = append(args, fmt.Sprintf("%dx%d", measurement.Size.Width, measurement.Size.Height))
+	}
+	if measurement.Format != nil {
+		mime := normalizeStoredMIME("image/" + *measurement.Format)
+		if validStoredMIME(mime) {
+			clauses = append(clauses, "source_mime = ?")
+			args = append(args, mime)
+		}
+	}
+	if len(clauses) == 0 {
+		return nil
+	}
+	args = append(args, id)
+	_, err := s.db.ExecContext(ctx, "UPDATE gallery SET "+strings.Join(clauses, ", ")+" WHERE id = ?", args...)
+	return classifyDBError(err)
 }
 
 // SetEnrichment updates thumbnail, tag and status. Missing rows are a no-op.

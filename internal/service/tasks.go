@@ -34,7 +34,8 @@ type Tasks struct {
 	admissionClosed bool
 	jobsClosed      bool
 
-	wg sync.WaitGroup
+	wg      sync.WaitGroup
+	pending sync.WaitGroup
 }
 
 // NewTasks starts the configured workers.
@@ -91,6 +92,9 @@ func (t *Tasks) Reserve(ctx context.Context) (*Reservation, error) {
 
 	t.mu.Lock()
 	closed = t.admissionClosed
+	if !closed {
+		t.pending.Add(1)
+	}
 	t.mu.Unlock()
 	if closed {
 		<-t.sem
@@ -118,15 +122,16 @@ func (t *Tasks) StopAdmission() {
 
 // Drain closes the queue and waits for workers, bounded by ctx.
 func (t *Tasks) Drain(ctx context.Context) error {
-	t.mu.Lock()
-	if !t.jobsClosed {
-		t.jobsClosed = true
-		close(t.jobs)
-	}
-	t.mu.Unlock()
-
+	t.StopAdmission()
 	done := make(chan struct{})
 	go func() {
+		t.pending.Wait()
+		t.mu.Lock()
+		if !t.jobsClosed {
+			t.jobsClosed = true
+			close(t.jobs)
+		}
+		t.mu.Unlock()
 		t.wg.Wait()
 		close(done)
 	}()
@@ -140,6 +145,7 @@ func (t *Tasks) Drain(ctx context.Context) error {
 
 func (t *Tasks) releaseToken() {
 	<-t.sem
+	t.pending.Done()
 }
 
 // Reservation is a single client request's capacity slot. It may be released

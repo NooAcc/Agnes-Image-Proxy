@@ -290,6 +290,7 @@ func TestGalleryInsertListContent(t *testing.T) {
 	blob := []byte{0x00, 0xff, 0x10, 0x00, 0x7f}
 	id, err := s.InsertGallery(ctx, domain.GalleryInsert{
 		RequestID:   "req-1",
+		OutputKey:   "req-1:0:0",
 		Model:       "m",
 		Prompt:      "p",
 		SizeRequest: "1K",
@@ -333,6 +334,7 @@ func TestGalleryRejectsUnknownMimeBytes(t *testing.T) {
 	ctx := context.Background()
 	id, err := s.InsertGallery(ctx, domain.GalleryInsert{
 		SourceURL: ptr("https://img.example/a.gif"),
+		OutputKey: "unknown:0:0",
 		Image:     []byte("GIF89a"),
 		ImageMIME: ptr("image/gif"),
 	})
@@ -356,6 +358,7 @@ func TestGalleryCursorTagAndDelete(t *testing.T) {
 	for i, tag := range tags {
 		id, err := s.InsertGallery(ctx, domain.GalleryInsert{
 			RequestID: "req",
+			OutputKey: fmt.Sprintf("req:%d:0", i),
 			Model:     "m",
 			Prompt:    "p",
 			Image:     []byte{0x89, 'P', 'N', 'G'},
@@ -428,6 +431,7 @@ func TestGallerySizeUsesActual(t *testing.T) {
 	ctx := context.Background()
 	actual := "864x1152"
 	if _, err := s.InsertGallery(ctx, domain.GalleryInsert{
+		OutputKey:   "size:0:0",
 		SizeRequest: "1K", SizeActual: &actual, Image: []byte{0x89, 'P', 'N', 'G'}, ImageMIME: ptr("image/png"),
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
@@ -445,6 +449,7 @@ func TestGallerySourcesAndPendingEnrichment(t *testing.T) {
 	var ids []int64
 	for i := 0; i < 4; i++ {
 		id, err := s.InsertGallery(ctx, domain.GalleryInsert{
+			OutputKey:   fmt.Sprintf("sources:%d:0", i),
 			SourceURL:   ptr("https://img.example/" + string(rune('a'+i)) + ".png"),
 			SourceMIME:  &mime,
 			SourceBytes: ptr(int64(100 + i)),
@@ -467,7 +472,7 @@ func TestGallerySourcesAndPendingEnrichment(t *testing.T) {
 	if sources[0].ID != ids[0] || sources[1].ID != ids[2] {
 		t.Fatalf("source order = %+v", sources)
 	}
-	if sources[0].Bytes != 5 || sources[0].SourceBytes != 100 || !sources[0].HasImage {
+	if sources[0].Bytes != 5 || sources[0].SourceBytes != 100 || sources[0].Bytes <= 0 {
 		t.Fatalf("source = %+v", sources[0])
 	}
 
@@ -490,6 +495,7 @@ func TestGalleryEnrichState(t *testing.T) {
 	ctx := context.Background()
 	mime := "image/png"
 	id, err := s.InsertGallery(ctx, domain.GalleryInsert{
+		OutputKey:   "enrich:0:0",
 		SourceURL:   ptr("https://img.example/a.png"),
 		SourceMIME:  &mime,
 		SourceBytes: ptr(int64(100)),
@@ -507,7 +513,7 @@ func TestGalleryEnrichState(t *testing.T) {
 	if status != "pending" || source.ID != id || source.SourceURL == nil || *source.SourceURL != "https://img.example/a.png" {
 		t.Fatalf("status=%q source=%+v", status, source)
 	}
-	if source.Bytes != 4 || source.SourceBytes != 100 || !source.HasImage {
+	if source.Bytes != 4 || source.SourceBytes != 100 || source.Bytes <= 0 {
 		t.Fatalf("source = %+v", source)
 	}
 
@@ -529,7 +535,8 @@ func TestSetEnrichmentThumbAndScores(t *testing.T) {
 	s, _ := newSchemaStore(t)
 	ctx := context.Background()
 	id, err := s.InsertGallery(ctx, domain.GalleryInsert{
-		Image: []byte{0x89, 'P', 'N', 'G'}, ImageMIME: ptr("image/png"),
+		OutputKey: "thumbnail:0:0",
+		Image:     []byte{0x89, 'P', 'N', 'G'}, ImageMIME: ptr("image/png"),
 	})
 	if err != nil {
 		t.Fatalf("insert: %v", err)

@@ -14,7 +14,7 @@ import (
 
 const (
 	metaApplication = "agnes-go"
-	metaVersion     = "1"
+	metaVersion     = "2"
 )
 
 // appTables lists the tables this application owns. Reset only ever touches
@@ -40,11 +40,11 @@ var requiredColumns = map[string][]string{
 	"request_logs": {
 		"id", "request_id", "ts", "category", "stage", "endpoint", "path", "model",
 		"status", "ok", "requested", "images", "failed", "duration_ms",
-		"size_request", "size_actual", "attempts",
+		"size_request", "size_actual", "attempts", "partial", "delivery_failures",
 	},
 	"model_usage_daily": {"day", "model", "requests", "successes", "partials", "failures", "images"},
 	"gallery": {
-		"id", "created_at", "request_id", "model", "prompt", "size_request", "size_actual",
+		"id", "public_id", "output_key", "created_at", "request_id", "model", "prompt", "size_request", "size_actual",
 		"account_id", "account_name", "source_url", "source_mime", "source_bytes",
 		"image", "image_mime", "image_bytes", "archived", "thumb", "thumb_mime",
 		"thumb_bytes", "nsfw_tag", "nsfw_scores", "enrich_status", "enrich_error", "enriched_at",
@@ -97,7 +97,9 @@ var schemaStatements = []string{
 		duration_ms INTEGER NOT NULL DEFAULT 0,
 		size_request TEXT,
 		size_actual TEXT,
-		attempts TEXT NOT NULL DEFAULT '[]'
+		attempts TEXT NOT NULL DEFAULT '[]',
+		partial INTEGER NOT NULL,
+		delivery_failures TEXT NOT NULL
 	)`,
 	`CREATE INDEX idx_request_logs_category ON request_logs (category, id)`,
 	`CREATE INDEX idx_request_logs_ts ON request_logs (ts)`,
@@ -114,6 +116,8 @@ var schemaStatements = []string{
 	`CREATE INDEX idx_model_usage_day ON model_usage_daily (day)`,
 	`CREATE TABLE gallery (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		public_id TEXT NOT NULL UNIQUE,
+		output_key TEXT NOT NULL UNIQUE,
 		created_at TEXT NOT NULL,
 		request_id TEXT NOT NULL DEFAULT '',
 		model TEXT NOT NULL DEFAULT '',

@@ -87,11 +87,11 @@ func TestPayloadBase64Generation(t *testing.T) {
 	req := requestWithSize(t, "1K", "")
 	req.ResponseFormat = "b64_json"
 	body, _ := images.Payload(req, "nested")
-	if body["return_base64"] != true {
-		t.Fatalf("return_base64 = %v", body["return_base64"])
+	if _, present := body["return_base64"]; present {
+		t.Fatal("upstream alias emitted")
 	}
-	if _, ok := body["extra_body"]; ok {
-		t.Fatalf("unexpected extra_body: %v", body["extra_body"])
+	if body["extra_body"].(map[string]any)["response_format"] != "url" {
+		t.Fatal("upstream must request URL")
 	}
 }
 
@@ -135,7 +135,7 @@ func TestPayloadRejectsUnknownMode(t *testing.T) {
 }
 
 func TestNormalize(t *testing.T) {
-	raw := json.RawMessage(`{"created":1,"data":[{"url":"https://x.example/a.png","revised_prompt":"ignored"},{"url":"","b64_json":"aGk="}]}`)
+	raw := json.RawMessage(`{"created":1,"data":[{"url":"https://x.example/a.png","revised_prompt":"ignored"},{"url":"https://x.example/b.png","b64_json":"aGk="}]}`)
 	out, err := images.Normalize(raw)
 	if err != nil {
 		t.Fatalf("normalize: %v", err)
@@ -143,10 +143,10 @@ func TestNormalize(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("items = %d", len(out))
 	}
-	if out[0].URL == nil || *out[0].URL != "https://x.example/a.png" || out[0].Base64 != nil {
+	if out[0].URL == nil || *out[0].URL != "https://x.example/a.png" {
 		t.Fatalf("item 0 = %+v", out[0])
 	}
-	if out[1].Base64 == nil || *out[1].Base64 != "aGk=" || out[1].URL != nil {
+	if out[1].URL == nil || *out[1].URL != "https://x.example/b.png" {
 		t.Fatalf("item 1 = %+v", out[1])
 	}
 }

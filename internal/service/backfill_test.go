@@ -74,10 +74,10 @@ func (f *fakeBackfillStore) GalleryContent(_ context.Context, id int64, _ bool) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	row, ok := f.rows[id]
-	if !ok || len(row.source.Data) == 0 {
+	if !ok || row.source.Bytes == 0 {
 		return nil, "", apierror.Coded(404, "image content not found", "invalid_request_error", "not_found")
 	}
-	return row.source.Data, "image/png", nil
+	return []byte("png"), "image/png", nil
 }
 
 func (f *fakeBackfillStore) SetEnrichment(_ context.Context, id int64, write domain.EnrichmentWrite) error {
@@ -122,7 +122,7 @@ func enabledSettings() domain.Settings {
 func rowSource(id int64) domain.GallerySource {
 	url := "https://img.example/" + string(rune('a'+id)) + ".png"
 	return domain.GallerySource{
-		ID: id, SourceURL: &url, MIME: "image/png", Bytes: 4, HasImage: true, Data: []byte("png"),
+		ID: id, SourceURL: &url, MIME: "image/png", Bytes: 4,
 	}
 }
 

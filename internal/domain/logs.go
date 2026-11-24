@@ -1,5 +1,14 @@
 package domain
 
+// DeliveryFailure records a downstream stage failure, not an account attempt.
+type DeliveryFailure struct {
+	SubrequestIndex int64  `json:"subrequestIndex"`
+	ImageIndex      int    `json:"imageIndex"`
+	Stage           string `json:"stage"`
+	Status          int    `json:"status"`
+	Code            string `json:"code"`
+}
+
 // Attempt records one upstream account attempt inside a sub-request.
 type Attempt struct {
 	Index       int    `json:"index"`

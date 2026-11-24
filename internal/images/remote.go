@@ -3,6 +3,7 @@ package images
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -121,46 +122,60 @@ func (r *Remote) Dimensions(ctx context.Context, source string) (domain.PixelSiz
 	return ImageDimensions(data)
 }
 
-// Download fetches an output image for archiving. Only HTTPS is allowed and
-// only png/jpeg/webp bytes are returned.
+// DownloadError classifies retry policy without exposing a source URL to clients.
+type DownloadError struct {
+	Status    int
+	Retryable bool
+	Err       error
+}
+
+func (e *DownloadError) Error() string { return "image download failed" }
+func (e *DownloadError) Unwrap() error { return e.Err }
+func downloadError(err error, status int, retryable bool) error {
+	return &DownloadError{Status: status, Retryable: retryable, Err: err}
+}
+func networkDownloadError(err error) error {
+	var classified *DownloadError
+	if errors.As(err, &classified) {
+		return classified
+	}
+	var network net.Error
+	return downloadError(err, 0, errors.As(err, &network) && (network.Timeout() || network.Temporary()))
+}
+
+// Download fetches an output original under the existing SSRF and size boundaries.
 func (r *Remote) Download(ctx context.Context, source string) ([]byte, string, error) {
 	parsed, err := url.Parse(source)
-	if err != nil || parsed.Host == "" {
-		return nil, "", fmt.Errorf("unsupported image URL")
+	if err != nil || parsed.Host == "" || parsed.Scheme != "https" {
+		return nil, "", downloadError(fmt.Errorf("unsupported image URL"), 0, false)
 	}
-	if parsed.Scheme != "https" {
-		return nil, "", fmt.Errorf("output images must be fetched over https")
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
 	if err := r.validateURL(ctx, parsed, false); err != nil {
-		return nil, "", err
+		return nil, "", networkDownloadError(err)
 	}
-
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return nil, "", err
+		return nil, "", downloadError(err, 0, false)
 	}
 	response, err := r.do(request, false)
 	if err != nil {
-		return nil, "", err
+		return nil, "", networkDownloadError(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return nil, "", fmt.Errorf("image download returned status %d", response.StatusCode)
+		return nil, "", downloadError(fmt.Errorf("image download returned status %d", response.StatusCode), response.StatusCode, response.StatusCode == 429 || response.StatusCode >= 500)
 	}
-
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxDownloadBytes+1))
 	if err != nil {
-		return nil, "", err
+		return nil, "", networkDownloadError(err)
 	}
 	if len(data) > maxDownloadBytes {
-		return nil, "", fmt.Errorf("image download exceeds %d bytes", maxDownloadBytes)
+		return nil, "", downloadError(fmt.Errorf("image download exceeds limit"), 0, false)
 	}
 	mime := SniffImage(data)
 	if mime == "" {
-		return nil, "", fmt.Errorf("downloaded content is not png, jpeg or webp")
+		return nil, "", downloadError(fmt.Errorf("downloaded content is not png, jpeg or webp"), 0, false)
 	}
 	return data, mime, nil
 }
@@ -189,7 +204,7 @@ func (r *Remote) validateURL(ctx context.Context, parsed *url.URL, allowHTTP boo
 	}
 	addresses, err := r.resolver.LookupIPAddr(ctx, parsed.Hostname())
 	if err != nil {
-		return fmt.Errorf("image host could not be resolved")
+		return fmt.Errorf("image host could not be resolved: %w", err)
 	}
 	for _, address := range addresses {
 		if isPublicIP(address.IP) {
@@ -206,7 +221,7 @@ func (r *Remote) secureDial(ctx context.Context, network, address string, dialer
 	}
 	addresses, err := r.resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return nil, fmt.Errorf("image host could not be resolved")
+		return nil, fmt.Errorf("image host could not be resolved: %w", err)
 	}
 	var lastErr error
 	for _, candidate := range addresses {

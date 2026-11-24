@@ -23,6 +23,8 @@ const FIELD_LABELS: Record<string, string> = {
   thumbnailWidth: "缩略图宽度",
   thumbnailQuality: "缩略图质量",
   enrichTimeoutMs: "富化超时",
+  imageUrlTtlHours: "图片链接有效期（小时）",
+  imagePublicBaseUrl: "图片公网基础地址",
 };
 
 type NumberKey =
@@ -32,7 +34,8 @@ type NumberKey =
   | "maxAttempts"
   | "thumbnailWidth"
   | "thumbnailQuality"
-  | "enrichTimeoutMs";
+  | "enrichTimeoutMs"
+  | "imageUrlTtlHours";
 
 function ErrorSummary({ error }: { error: unknown }) {
   const issues = fieldErrors(error);
@@ -179,6 +182,20 @@ function SettingsForm({ initial }: { initial: Settings }) {
 
       <fieldset className="grid gap-4">
         <legend className="text-base font-semibold">图片服务（可选）</legend>
+        <Field>
+          <FieldLabel htmlFor="settings-imageUrlTtlHours">图片链接有效期（小时）</FieldLabel>
+          <Input {...control("imageUrlTtlHours")} type="number" min={1} max={720} step={1}
+            value={draft.imageUrlTtlHours} onChange={(event) => setNumber("imageUrlTtlHours", event.target.value)} />
+          <FieldDescription>仅影响新签发的链接；到期不删除原图，管理员仍可读取。</FieldDescription>
+          {errorFor("imageUrlTtlHours")}
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="settings-imagePublicBaseUrl">图片公网基础地址</FieldLabel>
+          <Input {...control("imagePublicBaseUrl")} value={draft.imagePublicBaseUrl}
+            onChange={(event) => setDraft({ ...draft, imagePublicBaseUrl: event.target.value })} placeholder="https://images.example.com" />
+          <FieldDescription>留空按当前可信 origin 推导；仅接受 origin，不含路径、查询或凭据。</FieldDescription>
+          {errorFor("imagePublicBaseUrl")}
+        </Field>
         <Field>
           <FieldLabel htmlFor="settings-imageServiceBaseUrl">图片服务地址</FieldLabel>
           <Input

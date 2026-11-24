@@ -50,7 +50,7 @@ test("模拟生成后可下载原图，删除取消不删除", async ({ page }) 
   // Headless Chrome does not always surface an <a download> as a Playwright
   // download event, so verify the link contract and the attachment response.
   const downloadLink = dialog.getByRole("link", { name: "下载原图" });
-  await expect(downloadLink).toHaveAttribute("download", `agnes-${target.id}.png`);
+  await expect(downloadLink).not.toHaveAttribute("download", /.+/);
   const href = await downloadLink.getAttribute("href");
   expect(href).toBeTruthy();
   const downloaded = await page.request.get(href ?? "");
@@ -69,6 +69,24 @@ test("模拟生成后可下载原图，删除取消不删除", async ({ page }) 
   await expect(page.getByRole("button", { name: `查看图片 #${target.id}` })).toHaveCount(0);
   // The second generated item survives, so the gallery is not emptied.
   expect((await listGallery(page)).some((item) => item.id === items[1].id)).toBe(true);
+});
+
+test("JPEG 与 WebP 下载使用服务器实际后缀", async ({ page }) => {
+  await login(page);
+  await generateImages(page, "e2e download MIME matrix", 3);
+  const items = await waitForPrompt(page, "e2e download MIME matrix", 3);
+  for (const extension of ["jpeg", "webp"]) {
+    const target = items.find((item) => (item.sourceUrl ?? "").includes(`/mock/${extension}/`));
+    expect(target).toBeTruthy();
+    await page.goto("/admin/gallery");
+    await page.getByRole("button", { name: `查看图片 #${target!.id}` }).click();
+    const event = page.waitForEvent("download");
+    await page.getByRole("dialog").getByRole("link", { name: "下载原图" }).click();
+    const download = await event;
+    expect(download.suggestedFilename()).toMatch(extension === "jpeg" ? /\.jpg$/ : /\.webp$/);
+    expect(await download.failure()).toBeNull();
+    await page.keyboard.press("Escape");
+  }
 });
 
 test("快速切换原图不残留上一张", async ({ page }) => {

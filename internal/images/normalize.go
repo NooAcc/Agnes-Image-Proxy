@@ -2,6 +2,8 @@ package images
 
 import (
 	"encoding/json"
+	"net/url"
+	"strings"
 
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/apierror"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/domain"
@@ -49,18 +51,13 @@ func Payload(req domain.ImageRequest, mode string) (map[string]any, error) {
 		extra[key] = value
 	}
 
-	switch {
-	case len(req.Images) > 0:
+	extra["response_format"] = "url"
+	if len(req.Images) > 0 {
 		if mode == "top_level" {
 			body["image"] = req.Images
 		} else {
 			extra["image"] = req.Images
 		}
-		extra["response_format"] = req.ResponseFormat
-	case req.ResponseFormat == "b64_json":
-		body["return_base64"] = true
-	default:
-		extra["response_format"] = "url"
 	}
 
 	if len(extra) > 0 {
@@ -74,8 +71,7 @@ func Payload(req domain.ImageRequest, mode string) (map[string]any, error) {
 func Normalize(raw json.RawMessage) ([]domain.OutputImage, error) {
 	var payload struct {
 		Data []struct {
-			URL    *string `json:"url"`
-			Base64 *string `json:"b64_json"`
+			URL *string `json:"url"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil || len(payload.Data) == 0 {
@@ -84,20 +80,21 @@ func Normalize(raw json.RawMessage) ([]domain.OutputImage, error) {
 
 	out := make([]domain.OutputImage, 0, len(payload.Data))
 	for _, item := range payload.Data {
-		image := domain.OutputImage{URL: cleanOptional(item.URL), Base64: cleanOptional(item.Base64)}
-		if image.URL == nil && image.Base64 == nil {
+		if item.URL == nil || strings.TrimSpace(*item.URL) == "" {
 			return nil, missingImages()
 		}
-		out = append(out, image)
+		value := *item.URL
+		u, err := url.Parse(value)
+		if err != nil || u.Host == "" || u.User != nil || u.Opaque != "" || strings.TrimSpace(value) != value {
+			return nil, missingImages()
+		}
+		loopback := u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"
+		if u.Scheme != "https" && !(u.Scheme == "http" && loopback) {
+			return nil, missingImages()
+		}
+		out = append(out, domain.OutputImage{URL: &value})
 	}
 	return out, nil
-}
-
-func cleanOptional(value *string) *string {
-	if value == nil || *value == "" {
-		return nil
-	}
-	return value
 }
 
 func missingImages() error {

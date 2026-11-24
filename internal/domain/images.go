@@ -33,21 +33,11 @@ type ImageRequest struct {
 
 // OutputImage is one image returned by the upstream provider.
 type OutputImage struct {
-	URL    *string `json:"url,omitempty"`
-	Base64 *string `json:"b64_json,omitempty"`
+	URL *string `json:"url,omitempty"`
 }
 
 // Measurement is the measured pixel size and format of an output image.
 type Measurement struct {
 	Size   *PixelSize `json:"size"`
 	Format *string    `json:"format"`
-}
-
-// GeneratedImage couples an output image with its measurement and account
-// snapshot.
-type GeneratedImage struct {
-	Image       OutputImage
-	Measurement Measurement
-	AccountID   int64
-	AccountName string
 }

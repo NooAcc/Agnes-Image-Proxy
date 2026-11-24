@@ -46,7 +46,11 @@ func parseMultipart(ctx context.Context, r *http.Request, endpoint string, defau
 		case name == "file_id":
 			return domain.ImageRequest{}, invalidParam("file_id", "file_id is not supported", "unsupported_parameter")
 		case name == "image" || name == "image[]" || name == "images":
-			data, tooLarge, err := readLimitedPart(part, MaxInputImageBytes)
+			limit := int64(MaxInputImageBytes)
+			if filename == "" {
+				limit = int64(base64.StdEncoding.EncodedLen(MaxInputImageBytes) + 64)
+			}
+			data, tooLarge, err := readLimitedPart(part, limit)
 			if err != nil {
 				if errors.Is(err, errRequestTooLarge) {
 					return domain.ImageRequest{}, requestTooLarge()
@@ -61,14 +65,7 @@ func parseMultipart(ctx context.Context, r *http.Request, endpoint string, defau
 				if value == "" {
 					continue
 				}
-				normalized, err := validateImageReference(value)
-				if err != nil {
-					return domain.ImageRequest{}, err
-				}
-				if _, _, byteLength, ok := parseDataURI(normalized); ok && byteLength > MaxInputImageBytes {
-					return domain.ImageRequest{}, invalidParam("image", "input image is too large", "image_too_large")
-				}
-				images = append(images, normalized)
+				images = append(images, value)
 			} else {
 				sniffed := SniffImage(data)
 				if sniffed == "" {
@@ -130,7 +127,9 @@ func multipartField(name, value string) (json.RawMessage, bool, error) {
 			return nil, false, invalidParam("n", "n must be a positive integer", "invalid_value")
 		}
 		return json.RawMessage(trimmed), true, nil
-	case "return_base64", "stream":
+	case "return_base64":
+		return nil, false, invalidParam(name, "return_base64 is not supported; use response_format", "unsupported_parameter")
+	case "stream":
 		var parsed bool
 		switch strings.ToLower(strings.TrimSpace(value)) {
 		case "true", "1":

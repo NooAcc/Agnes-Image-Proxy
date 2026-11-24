@@ -33,7 +33,7 @@ const (
 type Options struct {
 	// Context is the lifetime of background work. It defaults to
 	// context.Background and is canceled by Shutdown; it must not be the
-	// signal context, or admitted archives would be canceled before draining.
+	// signal context, or admitted enrichment would be canceled before draining.
 	Context            context.Context
 	Store              *store.Store
 	Assets             fs.FS
@@ -113,7 +113,7 @@ func NewRuntime(options Options) (*Runtime, error) {
 	}
 	locks := service.NewGalleryLocks()
 	pool := agnes.NewPool(options.Store, agnes.NewClient(options.HTTPClient), now)
-	edge := service.NewEdge(options.HTTPClient).WithEnrichmentWriter(options.Store)
+	edge := service.NewEdge(options.HTTPClient).WithEnrichmentWriter(options.Store).WithOriginalReader(options.Store)
 	tasks := service.NewTasks(service.TaskOptions{
 		Workers:  archiveWorkers,
 		Capacity: archiveCapacity,
@@ -122,24 +122,20 @@ func NewRuntime(options Options) (*Runtime, error) {
 			logf("panic in background task: %v", recovered)
 		},
 	})
-	archiver := service.NewArchiver(service.ArchiverOptions{
-		Store:      options.Store,
-		Downloader: downloader,
-		Enricher:   edge,
-		Locks:      locks,
-		Now:        now,
-		Logf:       logf,
-	})
+	delivery := service.NewDelivery(service.DeliveryOptions{Store: options.Store, Downloader: downloader})
+	enrichment := service.NewEnrichmentJobs(service.EnrichmentJobOptions{Store: options.Store, Enricher: edge, Locks: locks, Now: now, Logf: logf})
 	orchestrator := service.NewImages(service.ImageOptions{
-		Pool:        pool,
-		Edge:        edge,
-		Tasks:       tasks,
-		Archiver:    archiver,
-		Logs:        options.Store,
-		Context:     runtimeCtx,
-		MaxInFlight: maxInFlight,
-		Now:         now,
-		Logf:        logf,
+		Pool:         pool,
+		Edge:         edge,
+		Tasks:        tasks,
+		Delivery:     delivery,
+		Enrichment:   enrichment,
+		Measurements: options.Store,
+		Logs:         options.Store,
+		Context:      runtimeCtx,
+		MaxInFlight:  maxInFlight,
+		Now:          now,
+		Logf:         logf,
 	})
 	backfill := service.NewBackfill(service.BackfillOptions{
 		Store:    options.Store,
@@ -168,16 +164,18 @@ func NewRuntime(options Options) (*Runtime, error) {
 		assets = httpapi.NewAssets(options.Assets)
 	}
 	handler := httpapi.New(httpapi.Options{
-		Auth:      authz,
-		Images:    orchestrator,
-		Store:     options.Store,
-		Backfill:  backfill,
-		Probe:     probe,
-		Settings:  options.Store.ReadSettings,
-		Reference: remote,
-		Logs:      options.Store,
-		Assets:    assets,
-		DeepCheck: options.Store.Ping,
+		Auth:         authz,
+		ImageLinks:   auth.NewImageLinks(options.APIKey, now),
+		PublicImages: options.Store,
+		Images:       orchestrator,
+		Store:        options.Store,
+		Backfill:     backfill,
+		Probe:        probe,
+		Settings:     options.Store.ReadSettings,
+		Reference:    remote,
+		Logs:         options.Store,
+		Assets:       assets,
+		DeepCheck:    options.Store.Ping,
 	})
 
 	return &Runtime{
@@ -196,7 +194,7 @@ func (r *Runtime) Handler() http.Handler { return r.handler }
 // StopAdmission rejects new reservations while admitted work may still submit.
 func (r *Runtime) StopAdmission() { r.tasks.StopAdmission() }
 
-// Shutdown stops admission, stops the backfill, drains submitted archives and
+// Shutdown stops admission, stops the backfill, drains delivery reservations and enrichment,
 // then closes the database. If the budget expires, running work is canceled and
 // the unfinished count is logged; no stronger guarantee is claimed.
 func (r *Runtime) Shutdown(ctx context.Context) error {

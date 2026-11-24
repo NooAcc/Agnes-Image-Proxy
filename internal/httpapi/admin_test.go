@@ -298,6 +298,7 @@ func TestAdminGalleryAndContent(t *testing.T) {
 	ctx := context.Background()
 	pngBytes := testutil.PNG(t, 4, 4)
 	id, err := env.store.InsertGallery(ctx, domain.GalleryInsert{
+		OutputKey: "req-g:0:0",
 		RequestID: "req-g", Model: "model", Prompt: "prompt", SizeRequest: "1K",
 		Image: pngBytes, ImageMIME: ptrString("image/png"),
 	})

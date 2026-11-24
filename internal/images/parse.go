@@ -3,6 +3,7 @@ package images
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -24,6 +25,16 @@ const (
 
 // ReferenceReader resolves the pixel size of a reference image. Production
 // uses *Remote; tests provide a fake.
+type ReferenceResolver interface {
+	ResolveReference(context.Context, string) (string, error)
+}
+
+// BudgetReferenceResolver preflights local originals before loading their BLOB.
+// The limit includes the normalized reference's JSON string representation.
+type BudgetReferenceResolver interface {
+	ResolveReferenceWithinBudget(context.Context, string, int) (string, error)
+}
+
 type ReferenceReader interface {
 	Dimensions(context.Context, string) (domain.PixelSize, error)
 }
@@ -144,11 +155,37 @@ func buildRequest(ctx context.Context, obj map[string]json.RawMessage, endpoint 
 		return domain.ImageRequest{}, err
 	}
 
-	images, err := collectImages(obj, extraBody)
+	for _, field := range []string{"response_format", "return_base64"} {
+		if _, present := extraBody[field]; present {
+			return domain.ImageRequest{}, invalidParam("extra_body."+field, "output format controls are not supported in extra_body", "unsupported_parameter")
+		}
+	}
+	images, referenceSizes, err := collectImages(obj, extraBody)
 	if err != nil {
 		return domain.ImageRequest{}, err
 	}
 
+	normalizedBytes := 2 // JSON array brackets.
+	for i, value := range images {
+		if i > 0 {
+			normalizedBytes++
+		}
+		remaining := MaxRequestBytes - normalizedBytes
+		if resolver, ok := reader.(BudgetReferenceResolver); ok {
+			value, err = resolver.ResolveReferenceWithinBudget(ctx, value, remaining)
+		} else if resolver, ok := reader.(ReferenceResolver); ok {
+			value, err = resolver.ResolveReference(ctx, value)
+		}
+		if err != nil {
+			return domain.ImageRequest{}, err
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil || len(encoded) > remaining {
+			return domain.ImageRequest{}, invalidParam("image", "normalized reference images are too large", "image_too_large")
+		}
+		normalizedBytes += len(encoded)
+		images[i] = value
+	}
 	responseFormat, err := readResponseFormat(obj)
 	if err != nil {
 		return domain.ImageRequest{}, err
@@ -160,12 +197,20 @@ func buildRequest(ctx context.Context, obj map[string]json.RawMessage, endpoint 
 	var size domain.ResolvedSize
 	switch {
 	case isAuto && len(images) > 0:
-		if reader == nil {
-			return domain.ImageRequest{}, unreadableReference()
-		}
-		reference, err := reader.Dimensions(ctx, images[0])
-		if err != nil {
-			return domain.ImageRequest{}, unreadableReference()
+		var reference domain.PixelSize
+		if validated, ok := referenceSizes[images[0]]; ok {
+			if validated.Width < 1 || validated.Height < 1 {
+				return domain.ImageRequest{}, unreadableReference()
+			}
+			reference = validated
+		} else {
+			if reader == nil {
+				return domain.ImageRequest{}, unreadableReference()
+			}
+			reference, err = reader.Dimensions(ctx, images[0])
+			if err != nil {
+				return domain.ImageRequest{}, unreadableReference()
+			}
 		}
 		size, err = ResolveSize("auto", strings.TrimSpace(rawRatio), &reference, defaults.DefaultSize)
 		if err != nil {
@@ -197,6 +242,9 @@ func buildRequest(ctx context.Context, obj map[string]json.RawMessage, endpoint 
 }
 
 func rejectUnsupported(obj map[string]json.RawMessage) error {
+	if _, ok := obj["return_base64"]; ok {
+		return invalidParam("return_base64", "return_base64 is not supported; use response_format", "unsupported_parameter")
+	}
 	if raw, ok := obj["stream"]; ok {
 		var value bool
 		if err := json.Unmarshal(raw, &value); err != nil {
@@ -259,13 +307,13 @@ func parseExtraBody(raw json.RawMessage) (map[string]json.RawMessage, error) {
 	return extra, nil
 }
 
-func collectImages(obj map[string]json.RawMessage, extraBody map[string]json.RawMessage) ([]string, error) {
+func collectImages(obj map[string]json.RawMessage, extraBody map[string]json.RawMessage) ([]string, map[string]domain.PixelSize, error) {
 	var raw []string
 	for _, field := range []string{"image", "images"} {
 		if value, ok := obj[field]; ok {
 			images, err := readImageValue(value, field)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			raw = append(raw, images...)
 		}
@@ -273,27 +321,46 @@ func collectImages(obj map[string]json.RawMessage, extraBody map[string]json.Raw
 	if value, ok := extraBody["image"]; ok {
 		images, err := readImageValue(value, "image")
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		raw = append(raw, images...)
 	}
-
 	if len(raw) > MaxInputImages {
-		return nil, invalidParam("image", "at most 16 images are allowed", "too_many_images")
+		return nil, nil, invalidParam("image", "at most 16 images are allowed", "too_many_images")
 	}
-
 	out := make([]string, 0, len(raw))
+	sizes := make(map[string]domain.PixelSize)
+	normalizedValues := make(map[string]string)
 	for _, value := range raw {
-		normalized, err := validateImageReference(value)
-		if err != nil {
-			return nil, err
+		value = strings.TrimSpace(value)
+		if normalized, ok := normalizedValues[value]; ok {
+			out = append(out, normalized)
+			continue
 		}
-		if _, _, byteLength, ok := parseDataURI(normalized); ok && byteLength > MaxInputImageBytes {
-			return nil, invalidParam("image", "input image is too large", "image_too_large")
+		var normalized string
+		if strings.HasPrefix(strings.ToLower(value), "data:") {
+			mime, data, err := DecodeImageDataURI(value, MaxInputImageBytes)
+			if err != nil {
+				return nil, nil, invalidParam("image", "reference data URI is unsupported; use png, jpeg or webp with base64 encoding", "unsupported_parameter")
+			}
+			normalized = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+			if size, err := ImageDimensions(data); err == nil {
+				sizes[normalized] = size
+			} else {
+				// Remember a failed header read too: auto must not decode again.
+				sizes[normalized] = domain.PixelSize{}
+			}
+		} else {
+			var err error
+			normalized, err = validateImageReference(value)
+			if err != nil {
+				return nil, nil, err
+			}
 		}
+		normalizedValues[value] = normalized
 		out = append(out, normalized)
 	}
-	return out, nil
+	return out, sizes, nil
 }
 
 func readImageValue(raw json.RawMessage, field string) ([]string, error) {
@@ -381,17 +448,6 @@ func readResponseFormat(obj map[string]json.RawMessage) (string, error) {
 			return "", invalidParam("response_format", "response_format must be url or b64_json", "invalid_value")
 		}
 		format = value
-	}
-	if raw, ok := obj["return_base64"]; ok {
-		var value bool
-		if err := json.Unmarshal(raw, &value); err != nil {
-			return "", invalidParam("return_base64", "return_base64 must be a boolean", "invalid_value")
-		}
-		if value {
-			format = "b64_json"
-		} else {
-			format = "url"
-		}
 	}
 	return format, nil
 }

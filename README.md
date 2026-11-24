@@ -8,7 +8,7 @@
 和管理 API 权限，请勿将其作为“仅生成图片”的密钥分享给不受信任的人。
 
 - 上游账号池：原子领取、失败冷却、成功 CAS 回写、逐账号尝试记录。
-- 图片归档：原图与缩略图存数据库 BLOB，URL 在响应后受控下载；失败保留源链接。
+- 图片交付：生成后受控下载并同步保存原图 BLOB；成功才返回本程序限时签名 URL 或原图 base64。
 - 元数据富化：可选 Edge-Images `/api/batch` 服务，自动测量尺寸、生成缩略图并做五类 NSFW 分类；支持手动补齐。
 - 控制台：总览、图库、账号、日志、设置五个页面，中文界面、深浅主题、键盘可访问。
 - 单库：远程 Turso（libSQL）；数据库 schema 固定版本，不迁移旧库。
@@ -101,14 +101,16 @@ docker run -d --name agnes-proxy --restart unless-stopped \
 | `PORT` | 否 | `8000` | HTTP 监听端口。 |
 | `CORS_ALLOWED_ORIGINS` | 否 | 空 | 逗号分隔的完整 origin，用于数据面 CORS。 |
 | `TRUSTED_PROXY_CIDRS` | 否 | 空 | 可信反代网段。为空时完全忽略 `X-Forwarded-*`；仅可信来源的单值 `X-Forwarded-Proto/Host` 可用于推导 Cookie Secure 与同源判断。 |
-| `MAX_IN_FLIGHT` | 否 | `8` | 上游全局在途请求上限。 |
-| `ARCHIVE_WORKERS` | 否 | `4` | 归档 worker 数量。 |
+| `MAX_IN_FLIGHT` | 否 | `8` | 生成 → 下载 → 保存的全局在途子请求上限。 |
+| `ARCHIVE_WORKERS` | 否 | `4` | 后台富化 worker 数量（变量名沿用）。 |
 | `ARCHIVE_CAPACITY` | 否 | `32` | 请求级后台任务容量，必须 ≥ workers；满时新请求等待容量。 |
 | `SHUTDOWN_TIMEOUT_SECONDS` | 否 | `120` | SIGTERM/SIGINT 优雅退出预算。 |
 
-`PROXY_API_KEY` 轮换会让旧管理会话失效。密钥不会出现在日志、管理列表或错误响应中。
+`PROXY_API_KEY` 轮换会让旧管理会话和旧图片签名链接失效；撤销管理会话不影响图片链接。密钥不会出现在日志、管理列表或错误响应中。
 
 ## 数据库
+
+当前 schema 为 **2**，不兼容 schema 1，必须新库或自行明确执行重建；升级不会自动删除真实数据。
 
 Turso 需要一个**空的**新库。首次启动自动建表并写入 schema 标识；如果库非空、版本不符
 或来自旧 Deno 实现，服务会拒绝启动，不会自动迁移、改表或读取旧数据。
@@ -129,26 +131,48 @@ docker compose run --rm agnes-proxy reset-db --confirm
 | --- | --- | --- |
 | POST | `/v1/images/generations` | JSON 文生图，也支持 JSON 内参考图。 |
 | POST | `/v1/images/edits` | JSON 或 multipart 图生图/多图合成；不保留单数 `/edit` 别名。 |
+| GET/HEAD/OPTIONS | `/v1/images/content/{publicID}` | 签名参数授权读取已保存原图；无需 Bearer/Cookie。 |
 | GET | `/v1/models` | 静态模型目录；目录外模型仍原样转发。 |
 | GET | `/health`、`/health?deep=1` | 存活 / 数据库就绪。 |
 | GET | `/` | 302 到 `/admin`。 |
 
-数据面只接受 `Authorization: Bearer <PROXY_API_KEY>`，Cookie 永远不能调用图片 API。
+生成/编辑只接受 `Authorization: Bearer <PROXY_API_KEY>`，Cookie 不能调用生成 API。图片内容端点只接受 expires/signature，不接受 Bearer/Cookie 绕过签名。图片协议见
+[`docs/api/images.openapi.yaml`](docs/api/images.openapi.yaml)。
 管理 API 位于 `/admin/api/*`，接受会话 Cookie 或同一个 Bearer；文档见
 [`docs/api/admin.openapi.yaml`](docs/api/admin.openapi.yaml)。管理面响应 `no-store`，
 Cookie 变更请求校验 Origin，登录失败限速。
 
 请求规则摘要：
 
-- 默认返回 `url`；`response_format=b64_json` 或 `return_base64=true` 请求 base64。
-- 支持 `1K`–`4K`、精确 `WxH`、`ratio` 与有参考图时的自动尺寸；显式尺寸不读取参考图。
-- 参考图最多 16 张、单张 20 MiB、请求体 32 MiB；`mask`、`stream`、`partial_images`、`file_id` 不支持。
+- 默认 `response_format=url` 返回本程序签名地址；唯一另一选项 `b64_json` 为保存原图的标准带 padding base64。
+  显式 `return_base64` 或 extra_body 格式控制参数返回 400 unsupported_parameter。Agnes 固定请求 URL。
+- 支持 `1K`–`4K`、精确 `WxH`、`ratio` 与有参考图时的自动尺寸；显式尺寸仍校验参考图及签名，自动尺寸才解析参考图尺寸。
+- 参考图最多 16 张、单张 20 MiB、请求体及规范化参考图列表 JSON 32 MiB；`mask`、`stream`、`partial_images`、`file_id` 不支持。
 - 客户端 `n` 为正整数，上游始终按 `n=1` 逐子请求执行；并发上限是资源限制，不是协议 `n` 上限。
 - 每个子请求最多尝试设置中的不同账号；部分成功返回 200 与成功图片；全失败按
   `429 > 504 > 502 > 503` 聚合，429 的 `Retry-After` 取较短值并封顶 900 秒。
+- Succeeded/Failed 为子请求数（至少一张交付成功即 succeeded），两者合计 Requested；Images 为实际交付图片数。
+  同一子请求仅保存部分输出也标记 partial-success；日志交付失败与账号尝试分开。账号成功表示 Agnes 成功，不因下游失败冷却。
 - 响应头 `X-Agnes-Requested`、`X-Agnes-Succeeded`、`X-Agnes-Failed`、
   `X-Agnes-Resolved-Size`、`X-Agnes-Warnings`、`X-Agnes-Failure-Statuses`。
 - 未认证请求不写日志；解析失败会记录 request/parse 日志。
+
+## 图片链接与公开地址
+
+- 设置“图片链接有效期（小时）” `imageUrlTtlHours` 默认 24，整数范围 1–720（最多30天）。
+  TTL 从 HTTP 签发时开始，仅影响新链接；旧 expires 不会因设置改变而失效或延长。过期不删除原图。
+- `imagePublicBaseUrl` 默认空，建议正式部署设置为 `https://images.example.com`。只接受外部 origin，
+  不含路径、query、fragment 或凭据；仅 localhost/127.0.0.1/::1 允许 HTTP。
+- 留空时根据请求 TLS 或可信反代的单值 X-Forwarded-Proto/Host 推导；未受信任的头不使用，
+  多值/逗号/非法 authority 拒绝。无法推导合法 HTTPS origin 时，生成前即400，不消耗 Agnes 额度。
+- 例如 Docker 反代在 `10.20.0.0/24`，设置 `TRUSTED_PROXY_CIDRS=10.20.0.0/24`，代理发送
+  `X-Forwarded-Proto: https`、`X-Forwarded-Host: images.example.com`；不要信任所有来源。
+- 链接形如 `/v1/images/content/<32位随机publicID>?expires=<Unix秒>&signature=<base64url>`，
+  独立领域 HMAC-SHA256，只授权这一张原图。到期边界 now >= expires，无效/过期/删除统一404。
+- GET/HEAD 成功和错误均 no-store，HEAD只读元信息。删除/清空使链接立即失效，数字ID重用不会指向新图。
+  **no-store 无法撤回已下载的副本**。管理员原图读取不受 TTL 影响。
+- 有效本程序 URL 可再次作为参考图：精确匹配公开 origin，先验签，再从存储读取并展开为 Data URI，
+  不向自己发 HTTP、不放宽外部参考图 SSRF；过期/篡改/已删除引用返回 image 参数400。
 
 ## 外部图片服务（Edge-Images）契约
 
@@ -190,21 +214,23 @@ Cookie 变更请求校验 Origin，登录失败限速。
 
 - 测量读取 `width/height/format`；富化读取 `nsfw` 五分类与 `isNsfw`，最高分生成 tag，
   并列按 safe/drawing/sexy/porn/hentai 顺序；`base64` 是可选的缩略图。
-- URL 失败且本地有原图时只重试一次 base64。内联源每批预算 32 MiB，单张超过 50 MiB
-  不发送；缩略图必须能被识别为 PNG/JPEG/WebP，且小于已知原图体积才保存。
+- Edge 优先 Agnes 源 URL，从不发送本程序签名 URL；尺寸同步 best-effort，仅请求 URL。
+  后台缩略图/NSFW 在 URL fetch 失败后按需读取已有原图，最多一次 base64 重试，不再次保存。
+- 所有实际内联项每批最多20项、decoded预算32MiB、JSON请求上限46MiB（含base64膨胀）。
+  单张大于32MiB明确 failed source exceeds batch budget，大于50MiB为安全上限失败，均不发送；缩略图必须能被识别为 PNG/JPEG/WebP，且小于已知原图体积才保存。
 - Edge-Images 必须在其侧允许访问两类域名：代理归档下载的**生成图片源域名**，以及
   富化时发送的**图库源 URL 域名**（包括你允许客户端传入的参考图托管域名）。代理本身
   不会替 Edge 做这项 allowlist 配置。
 
 ## 资源、并发与退出边界
 
-- 每个有成功图片的客户端请求在发起上游调用前预留一份请求级归档容量；全部失败释放。
+- 每个有成功图片的客户端请求在发起上游调用前预留一份请求级富化容量；全部失败释放。
   容量、worker 与上游并发均为进程级资源限制。
-- 归档队列限制任务数，不限制输出字节数。批量请求体、单图 base64、响应图片仍可能占用
+- 富化队列限制任务数，不限制输出字节数。批量请求体、单图 base64、响应图片仍可能占用
   大量内存；服务不宣称队列使内存严格有界。
-- SIGTERM/SIGINT：停止接收新请求与新容量预留 → 等待在途请求提交归档 → 排空已接受
-  归档任务（默认 120 秒）→ 关闭数据库。预算耗尽会取消生命周期 context 并在服务日志
-  记录未完成任务数；进程被强杀或容器崩溃仍可能丢失内存中的未归档任务，本期不提供持久化
+- SIGTERM/SIGINT：停止接收新请求与新容量预留 → 等待在途请求完成同步保存并提交富化 → 排空已接受
+  富化任务（默认 120 秒）→ 关闭数据库。预算耗尽会取消生命周期 context 并在服务日志
+  记录未完成任务数；进程被强杀或容器崩溃仍可能丢失内存中的未完成富化任务（已保存原图保留），本期不提供持久化
   任务队列。Docker 的 `stop_grace_period` 与预算一致。
 
 ## 管理控制台
@@ -216,8 +242,8 @@ API 会自动续期，总寿命不超过 90 天；设置页可撤销全部会话
 - 总览：UTC 日期范围、请求/成功/部分成功/失败/图片统计、两张单系列折线与逐日数据表、模型用量、账号健康。
 - 图库：按 UTC 日期分组、24 项游标分页、tag 筛选、懒加载缩略图、原图弹窗/下载/删除/清空、补齐状态。
 - 账号：脱敏 Key、启用/停用、探测、冷却重置、导入（同名 Key 不叠加额度）、删除。
-- 日志：request/enrich 分类、逐账号尝试详情、清空确认。
-- 设置：上游与尺寸、超时/重试、图片服务参数、撤销全部会话。
+- 日志：request/enrich 分类、逐账号尝试与 download/persist 交付失败详情、清空确认。
+- 设置：上游与尺寸、超时/重试、图片服务参数、链接TTL/公开origin、撤销全部会话。
 
 ## 测试与验收
 

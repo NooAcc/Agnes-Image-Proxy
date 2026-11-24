@@ -35,14 +35,19 @@ type GallerySource struct {
 	MIME        string  `json:"mime"`
 	Bytes       int64   `json:"bytes"`
 	SourceBytes int64   `json:"sourceBytes"`
-	HasImage    bool    `json:"hasImage"`
-	// Data is the local original image bytes when the caller has them; it is
-	// never serialized and is used for the base64 enrichment fallback.
-	Data []byte `json:"-"`
+}
+
+// StoredImage identifies a persisted original without loading its body.
+type StoredImage struct {
+	ID       int64
+	PublicID string
+	MIME     string
+	Bytes    int64
 }
 
 // GalleryInsert is a new archived image row.
 type GalleryInsert struct {
+	OutputKey   string
 	RequestID   string
 	Model       string
 	Prompt      string

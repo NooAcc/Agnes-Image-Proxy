@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -59,7 +60,7 @@ func TestMeasureEmptyServiceMakesNoRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	edge := service.NewEdge(server.Client())
+	edge := service.NewEdge(server.Client()).WithOriginalReader(edgeTestReader{})
 	outputs := []domain.OutputImage{{URL: strPtr("https://img.example/a.png")}}
 	measurements, warnings := edge.Measure(context.Background(), outputs, edgeSettings(""))
 	if len(measurements) != 1 || measurements[0].Size != nil || measurements[0].Format != nil {
@@ -108,7 +109,7 @@ func TestMeasureBatchesAndFailures(t *testing.T) {
 	for i := range outputs {
 		outputs[i] = domain.OutputImage{URL: strPtr(fmt.Sprintf("https://img.example/%d.png", i))}
 	}
-	edge := service.NewEdge(server.Client())
+	edge := service.NewEdge(server.Client()).WithOriginalReader(edgeTestReader{})
 	measurements, warnings := edge.Measure(context.Background(), outputs, edgeSettings(server.URL))
 	if len(measurements) != 21 {
 		t.Fatalf("measurements = %d", len(measurements))
@@ -155,7 +156,7 @@ func TestMeasureSourceContentTypeFallback(t *testing.T) {
 	}))
 	defer server.Close()
 
-	edge := service.NewEdge(server.Client())
+	edge := service.NewEdge(server.Client()).WithOriginalReader(edgeTestReader{})
 	measurements, warnings := edge.Measure(context.Background(),
 		[]domain.OutputImage{{URL: strPtr("https://img.example/a.png")}}, edgeSettings(server.URL))
 	if len(warnings) != 0 {
@@ -174,7 +175,7 @@ func TestMeasureTimeoutContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	edge := service.NewEdge(server.Client())
+	edge := service.NewEdge(server.Client()).WithOriginalReader(edgeTestReader{})
 	measurements, warnings := edge.Measure(ctx,
 		[]domain.OutputImage{{URL: strPtr("https://img.example/a.png")}}, edgeSettings(server.URL))
 	if measurements[0].Size != nil || len(warnings) != 1 || warnings[0] != "size-measure-failed" {
@@ -242,10 +243,9 @@ func (f *fakeWriter) get(id int64) (domain.EnrichmentWrite, bool) {
 func gallerySource(id int64, url *string, data []byte) domain.GallerySource {
 	source := domain.GallerySource{ID: id, SourceURL: url}
 	if data != nil {
-		source.Data = data
+		edgeTestOriginals.Store(id, data)
 		source.Bytes = int64(len(data))
 		source.MIME = "image/png"
-		source.HasImage = true
 	}
 	return source
 }
@@ -274,7 +274,7 @@ func TestEnrichWritesSuccessAndFailures(t *testing.T) {
 	defer server.Close()
 
 	writer := newFakeWriter()
-	edge := service.NewEdge(server.Client()).WithEnrichmentWriter(writer)
+	edge := service.NewEdge(server.Client()).WithOriginalReader(edgeTestReader{}).WithEnrichmentWriter(writer)
 	sources := []domain.GallerySource{
 		gallerySource(1, strPtr("https://img.example/a.png"), nil),
 		gallerySource(2, strPtr("https://img.example/b.png"), nil),
@@ -309,7 +309,7 @@ func TestEnrichParamsAndURLPriority(t *testing.T) {
 	defer server.Close()
 
 	writer := newFakeWriter()
-	edge := service.NewEdge(server.Client()).WithEnrichmentWriter(writer)
+	edge := service.NewEdge(server.Client()).WithOriginalReader(edgeTestReader{}).WithEnrichmentWriter(writer)
 	sources := []domain.GallerySource{
 		gallerySource(1, strPtr("https://img.example/a.png"), []byte("orig")),
 		gallerySource(2, nil, []byte("inline")),
@@ -358,7 +358,7 @@ func TestEnrichURLFallbackOnce(t *testing.T) {
 	defer server.Close()
 
 	writer := newFakeWriter()
-	edge := service.NewEdge(server.Client()).WithEnrichmentWriter(writer)
+	edge := service.NewEdge(server.Client()).WithOriginalReader(edgeTestReader{}).WithEnrichmentWriter(writer)
 	sources := []domain.GallerySource{gallerySource(1, strPtr("https://img.example/a.png"), []byte("local-copy"))}
 	report, err := edge.Enrich(context.Background(), sources, edgeSettings(server.URL))
 	if err != nil {
@@ -393,7 +393,7 @@ func TestEnrichFallbackBudget(t *testing.T) {
 	defer server.Close()
 
 	writer := newFakeWriter()
-	edge := service.NewEdge(server.Client()).WithEnrichmentWriter(writer)
+	edge := service.NewEdge(server.Client()).WithOriginalReader(edgeTestReader{}).WithEnrichmentWriter(writer)
 	big := make([]byte, 33<<20)
 	sources := []domain.GallerySource{gallerySource(1, strPtr("https://img.example/a.png"), big)}
 	report, err := edge.Enrich(context.Background(), sources, edgeSettings(server.URL))
@@ -420,7 +420,7 @@ func TestEnrichOversizeSource(t *testing.T) {
 	defer server.Close()
 
 	writer := newFakeWriter()
-	edge := service.NewEdge(server.Client()).WithEnrichmentWriter(writer)
+	edge := service.NewEdge(server.Client()).WithOriginalReader(edgeTestReader{}).WithEnrichmentWriter(writer)
 	big := make([]byte, (50<<20)+1)
 	if _, err := edge.Enrich(context.Background(),
 		[]domain.GallerySource{gallerySource(1, nil, big)}, edgeSettings(server.URL)); err != nil {
@@ -442,7 +442,7 @@ func TestEnrichBatchFailureMarksAllFailed(t *testing.T) {
 	defer server.Close()
 
 	writer := newFakeWriter()
-	edge := service.NewEdge(server.Client()).WithEnrichmentWriter(writer)
+	edge := service.NewEdge(server.Client()).WithOriginalReader(edgeTestReader{}).WithEnrichmentWriter(writer)
 	report, err := edge.Enrich(context.Background(), []domain.GallerySource{
 		gallerySource(1, strPtr("https://img.example/a.png"), nil),
 		gallerySource(2, strPtr("https://img.example/b.png"), nil),
@@ -471,7 +471,7 @@ func TestEnrichThumbnailValidation(t *testing.T) {
 	defer server.Close()
 
 	writer := newFakeWriter()
-	edge := service.NewEdge(server.Client()).WithEnrichmentWriter(writer)
+	edge := service.NewEdge(server.Client()).WithOriginalReader(edgeTestReader{}).WithEnrichmentWriter(writer)
 	if _, err := edge.Enrich(context.Background(), []domain.GallerySource{
 		gallerySource(1, strPtr("https://img.example/a.png"), nil),
 	}, edgeSettings(server.URL)); err != nil {
@@ -502,8 +502,8 @@ func TestEnrichSkipsOversizedThumbnail(t *testing.T) {
 	defer server.Close()
 
 	writer := newFakeWriter()
-	edge := service.NewEdge(server.Client()).WithEnrichmentWriter(writer)
-	source := domain.GallerySource{ID: 1, SourceURL: strPtr("https://img.example/a.png"), Bytes: 3, HasImage: true, MIME: "image/png"}
+	edge := service.NewEdge(server.Client()).WithOriginalReader(edgeTestReader{}).WithEnrichmentWriter(writer)
+	source := domain.GallerySource{ID: 1, SourceURL: strPtr("https://img.example/a.png"), Bytes: 3, MIME: "image/png"}
 	if _, err := edge.Enrich(context.Background(), []domain.GallerySource{source}, edgeSettings(server.URL)); err != nil {
 		t.Fatalf("enrich: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestEnrichBatchesTwentyItems(t *testing.T) {
 	defer server.Close()
 
 	writer := newFakeWriter()
-	edge := service.NewEdge(server.Client()).WithEnrichmentWriter(writer)
+	edge := service.NewEdge(server.Client()).WithOriginalReader(edgeTestReader{}).WithEnrichmentWriter(writer)
 	sources := make([]domain.GallerySource, 21)
 	for i := range sources {
 		sources[i] = gallerySource(int64(i+1), strPtr(fmt.Sprintf("https://img.example/%d.png", i)), nil)
@@ -562,4 +562,16 @@ func TestEnrichDisabled(t *testing.T) {
 	if err != nil || report.Processed != 0 || len(writer.writes) != 0 {
 		t.Fatalf("report=%+v err=%v", report, err)
 	}
+}
+
+var edgeTestOriginals sync.Map
+
+type edgeTestReader struct{}
+
+func (edgeTestReader) GalleryContent(_ context.Context, id int64, _ bool) ([]byte, string, error) {
+	data, ok := edgeTestOriginals.Load(id)
+	if !ok {
+		return nil, "", errors.New("not found")
+	}
+	return data.([]byte), "image/png", nil
 }

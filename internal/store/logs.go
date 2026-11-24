@@ -44,7 +44,7 @@ func (s *Store) RecordRequest(ctx context.Context, log domain.RequestLog) error 
 		} else {
 			failures = 1
 		}
-		if normalized.Images > 0 && normalized.Failed > 0 {
+		if normalized.Images > 0 && normalized.Partial {
 			partials = 1
 		}
 		day := normalized.TS.UTC().Format("2006-01-02")
@@ -117,6 +117,10 @@ func normalizeRequestLog(log domain.RequestLog, now time.Time) (domain.RequestLo
 		}
 	}
 	log.OK = log.Images > 0
+	log.Partial = log.OK && (log.Partial || log.Failed > 0 || len(log.DeliveryFailures) > 0)
+	if log.DeliveryFailures == nil {
+		log.DeliveryFailures = []domain.DeliveryFailure{}
+	}
 	if log.Attempts == nil {
 		log.Attempts = []domain.Attempt{}
 	}
@@ -131,13 +135,17 @@ func insertRequestLog(ctx context.Context, tx *sql.Tx, log domain.RequestLog) er
 	if string(attempts) == "null" {
 		attempts = []byte("[]")
 	}
+	deliveryFailures, err := json.Marshal(log.DeliveryFailures)
+	if err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO request_logs (request_id, ts, category, stage, endpoint, path, model, status, ok,
-			requested, images, failed, duration_ms, size_request, size_actual, attempts)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			requested, images, failed, duration_ms, size_request, size_actual, attempts, partial, delivery_failures)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.RequestID, formatTime(log.TS), log.Category, log.Stage, log.Endpoint, log.Path, log.Model,
 		log.Status, boolToInt(log.OK), log.Requested, log.Images, log.Failed, log.DurationMS,
-		nullString(log.SizeRequest), nullString(log.SizeActual), string(attempts),
+		nullString(log.SizeRequest), nullString(log.SizeActual), string(attempts), boolToInt(log.Partial), string(deliveryFailures),
 	)
 	return classifyDBError(err)
 }
@@ -157,7 +165,7 @@ func (s *Store) ListLogs(ctx context.Context, query domain.CursorQuery) (domain.
 	}
 
 	sqlQuery := `SELECT id, request_id, ts, category, stage, endpoint, path, model, status, ok,
-		requested, images, failed, duration_ms, size_request, size_actual, attempts
+		requested, images, failed, duration_ms, size_request, size_actual, attempts, partial, delivery_failures
 		FROM request_logs WHERE 1=1`
 	var args []any
 	if query.Before != nil {
@@ -200,16 +208,18 @@ func (s *Store) ListLogs(ctx context.Context, query domain.CursorQuery) (domain.
 
 func scanRequestLog(row rowScanner) (domain.RequestLog, error) {
 	var (
-		item    domain.RequestLog
-		ts      string
-		ok      int
-		sizeReq sql.NullString
-		sizeAct sql.NullString
-		attempt string
+		item             domain.RequestLog
+		ts               string
+		ok               int
+		sizeReq          sql.NullString
+		sizeAct          sql.NullString
+		attempt          string
+		partial          int
+		deliveryFailures string
 	)
 	if err := row.Scan(&item.ID, &item.RequestID, &ts, &item.Category, &item.Stage, &item.Endpoint,
 		&item.Path, &item.Model, &item.Status, &ok, &item.Requested, &item.Images, &item.Failed,
-		&item.DurationMS, &sizeReq, &sizeAct, &attempt); err != nil {
+		&item.DurationMS, &sizeReq, &sizeAct, &attempt, &partial, &deliveryFailures); err != nil {
 		return domain.RequestLog{}, err
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, ts)
@@ -218,6 +228,11 @@ func scanRequestLog(row rowScanner) (domain.RequestLog, error) {
 	}
 	item.TS = parsed.UTC()
 	item.OK = ok != 0
+	item.Partial = partial != 0
+	item.DeliveryFailures = []domain.DeliveryFailure{}
+	if err := json.Unmarshal([]byte(deliveryFailures), &item.DeliveryFailures); err != nil {
+		return domain.RequestLog{}, err
+	}
 	if sizeReq.Valid {
 		item.SizeRequest = &sizeReq.String
 	}

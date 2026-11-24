@@ -30,7 +30,10 @@ func TestDatabaseOperationsHaveOwnDeadline(t *testing.T) {
 	}{
 		{"settings read", func(ctx context.Context) error { _, e := s.ReadSettings(ctx); return e }},
 		{"account claim", func(ctx context.Context) error { _, e := s.Claim(ctx, nil); return e }},
-		{"gallery write", func(ctx context.Context) error { _, e := s.InsertGallery(ctx, domain.GalleryInsert{}); return e }},
+		{"gallery write", func(ctx context.Context) error {
+			_, e := s.InsertGallery(ctx, domain.GalleryInsert{OutputKey: "deadline:0:0"})
+			return e
+		}},
 		{"log transaction", func(ctx context.Context) error {
 			return s.RecordRequest(ctx, domain.RequestLog{Model: "m", Requested: 1})
 		}},
@@ -52,7 +55,7 @@ func TestDatabaseOperationsHaveOwnDeadline(t *testing.T) {
 	}
 }
 
-func TestEnrichmentStateContainsStoredOriginal(t *testing.T) {
+func TestEnrichmentStateContainsOnlyMetadata(t *testing.T) {
 	db := testutil.OpenDB(t)
 	s := New(db, time.Now)
 	ctx := context.Background()
@@ -62,12 +65,12 @@ func TestEnrichmentStateContainsStoredOriginal(t *testing.T) {
 	mime := "image/png"
 	url := "https://expired.example/image.png"
 	data := []byte{0, 1, 2, 255}
-	id, err := s.InsertGallery(ctx, domain.GalleryInsert{Image: data, ImageMIME: &mime, SourceURL: &url})
+	id, err := s.InsertGallery(ctx, domain.GalleryInsert{OutputKey: "recovery:0:0", Image: data, ImageMIME: &mime, SourceURL: &url})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, source, found, err := s.GalleryEnrichState(ctx, id)
-	if err != nil || !found || string(source.Data) != string(data) {
+	if err != nil || !found || source.Bytes != int64(len(data)) {
 		t.Fatalf("stored original unavailable to backfill: %+v %v", source, err)
 	}
 }

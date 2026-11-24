@@ -118,10 +118,12 @@ components:
         thumbnailWidth: { type: integer, minimum: 128, maximum: 2048 }
         thumbnailQuality: { type: integer, minimum: 40, maximum: 100 }
         enrichTimeoutMs: { type: integer, minimum: 5000, maximum: 60000 }
+        imageUrlTtlHours: { type: integer, minimum: 1, maximum: 720, default: 24 }
+        imagePublicBaseUrl: { type: string, default: "" }
       required:
         [agnesBaseUrl, defaultSize, imageParamMode, probeModel, probeConcurrency,
          requestTimeoutMs, autoRefreshIntervalMs, maxAttempts, imageServiceBaseUrl,
-         thumbnailWidth, thumbnailQuality, enrichTimeoutMs]
+         thumbnailWidth, thumbnailQuality, enrichTimeoutMs, imageUrlTtlHours, imagePublicBaseUrl]
     Attempt:
       type: object
       properties:
@@ -133,6 +135,16 @@ components:
         durationMs: { type: integer }
         message: { type: string }
       required: [index, accountId, accountName, status, code, durationMs, message]
+    DeliveryFailure:
+      type: object
+      additionalProperties: false
+      properties:
+        subrequestIndex: { type: integer }
+        imageIndex: { type: integer }
+        stage: { type: string, enum: [download, persist] }
+        status: { type: integer }
+        code: { type: string }
+      required: [subrequestIndex, imageIndex, stage, status, code]
     RequestLog:
       type: object
       properties:
@@ -152,12 +164,16 @@ components:
         durationMs: { type: integer }
         sizeRequest: { type: [string, "null"] }
         sizeActual: { type: [string, "null"] }
+        partial: { type: boolean }
+        deliveryFailures:
+          type: array
+          items: { $ref: "#/components/schemas/DeliveryFailure" }
         attempts:
           type: array
           items: { $ref: "#/components/schemas/Attempt" }
       required:
         [id, requestId, ts, category, stage, endpoint, path, model, status, ok,
-         requested, images, failed, durationMs, attempts]
+         requested, images, failed, durationMs, attempts, partial, deliveryFailures]
     LogPage:
       type: object
       properties:

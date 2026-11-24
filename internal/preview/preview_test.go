@@ -2,6 +2,7 @@ package preview
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -11,11 +12,128 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestPreviewImageDeliveryContract(t *testing.T) {
+	var clock atomic.Int64
+	clock.Store(time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC).Unix())
+	p, err := New(Options{Now: func() time.Time { return time.Unix(clock.Load(), 0) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	client := newTestClient(t)
+	loginPreview(t, client, p.URL)
+	generate := func(endpoint, body string) map[string]json.RawMessage {
+		req, _ := http.NewRequest("POST", p.URL+endpoint, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer preview")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 200 {
+			t.Fatalf("generate: %d %s", resp.StatusCode, raw)
+		}
+		var out struct {
+			Data []map[string]json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil || len(out.Data) != 1 {
+			t.Fatal("bad response", string(raw), err)
+		}
+		return out.Data[0]
+	}
+	item := generate("/v1/images/generations", `{"model":"m","prompt":"signed contract"}`)
+	var link string
+	_ = json.Unmarshal(item["url"], &link)
+	parsed, _ := url.Parse(link)
+	expiry, _ := strconv.ParseInt(parsed.Query().Get("expires"), 10, 64)
+	if expiry-clock.Load() != 86400 || !strings.HasPrefix(link, p.URL+"/v1/images/content/") {
+		t.Fatal("wrong proxy link", link)
+	}
+	get, err := http.Get(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, _ := io.ReadAll(get.Body)
+	get.Body.Close()
+	if get.StatusCode != 200 || len(original) == 0 || get.Header.Get("Cache-Control") != "no-store" {
+		t.Fatal("signed content unavailable")
+	}
+	head, _ := http.Head(link)
+	head.Body.Close()
+	if head.StatusCode != 200 || head.ContentLength != int64(len(original)) {
+		t.Fatal("HEAD wrong")
+	}
+	settingsRaw := doJSON(t, client, "GET", p.URL+"/admin/api/settings", "", 200)
+	var settings map[string]any
+	_ = json.Unmarshal(settingsRaw, &settings)
+	settings["imageUrlTtlHours"] = 1
+	nextRaw, _ := json.Marshal(settings)
+	doJSON(t, client, "PUT", p.URL+"/admin/api/settings", string(nextRaw), 200)
+	editBody, _ := json.Marshal(map[string]any{"model": "m", "prompt": "signed edit", "size": "auto", "image": link})
+	edit := generate("/v1/images/edits", string(editBody))
+	var nextLink string
+	_ = json.Unmarshal(edit["url"], &nextLink)
+	nextURL, _ := url.Parse(nextLink)
+	nextExpiry, _ := strconv.ParseInt(nextURL.Query().Get("expires"), 10, 64)
+	if nextExpiry-clock.Load() != 3600 {
+		t.Fatal("new TTL ignored")
+	}
+	b64 := generate("/v1/images/generations", `{"model":"m","prompt":"base64 contract","response_format":"b64_json"}`)
+	var encoded string
+	_ = json.Unmarshal(b64["b64_json"], &encoded)
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(decoded) == 0 {
+		t.Fatal("base64 invalid")
+	}
+	page := doJSON(t, client, "GET", p.URL+"/admin/api/gallery?limit=100", "", 200)
+	var gallery struct {
+		Items []struct {
+			ID     int64  `json:"id"`
+			Prompt string `json:"prompt"`
+		}
+	}
+	_ = json.Unmarshal(page, &gallery)
+	var originalID int64
+	for _, row := range gallery.Items {
+		if row.Prompt == "base64 contract" {
+			body := doJSON(t, client, "GET", fmt.Sprintf("%s/admin/api/gallery/%d/content", p.URL, row.ID), "", 200)
+			if !bytes.Equal(body, decoded) {
+				t.Fatal("base64 not stored original")
+			}
+		}
+		if row.Prompt == "signed contract" {
+			originalID = row.ID
+		}
+	}
+	clock.Add(86400)
+	expired, _ := http.Get(link)
+	expired.Body.Close()
+	if expired.StatusCode != 404 {
+		t.Fatal("expired link accepted")
+	}
+	if originalID == 0 {
+		t.Fatal("original not persisted")
+	}
+	doJSON(t, client, "GET", fmt.Sprintf("%s/admin/api/gallery/%d/content", p.URL, originalID), "", 200)
+	doJSON(t, client, "DELETE", fmt.Sprintf("%s/admin/api/gallery/%d", p.URL, originalID), "", 204)
+	clock.Add(-86400)
+	deleted, _ := http.Get(link)
+	deleted.Body.Close()
+	if deleted.StatusCode != 404 {
+		t.Fatal("deleted link accepted")
+	}
+}
 
 func newTestClient(t *testing.T) *http.Client {
 	t.Helper()
@@ -42,24 +160,28 @@ func waitForHealth(t *testing.T, baseURL string) {
 	t.Fatalf("preview did not become healthy at %s", baseURL)
 }
 
-func doJSON(t *testing.T, client *http.Client, method, url, body string, want int) []byte {
+func doJSON(t *testing.T, client *http.Client, method, target, body string, want int) []byte {
 	t.Helper()
-	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	req, err := http.NewRequest(method, target, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if method == "PUT" || method == "DELETE" {
+		parsed, _ := url.Parse(target)
+		req.Header.Set("Origin", parsed.Scheme+"://"+parsed.Host)
+	}
 	if body == "" {
 		req.Header.Del("Content-Type")
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		t.Fatalf("%s %s: %v", method, url, err)
+		t.Fatalf("%s %s: %v", method, target, err)
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != want {
-		t.Fatalf("%s %s status = %d, want %d (body %s)", method, url, resp.StatusCode, want, data)
+		t.Fatalf("%s %s status = %d, want %d (body %s)", method, target, resp.StatusCode, want, data)
 	}
 	return data
 }

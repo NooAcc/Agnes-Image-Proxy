@@ -52,6 +52,7 @@ type Options struct {
 	Port   int
 	Assets fs.FS
 	Logf   func(format string, args ...any)
+	Now    func() time.Time
 }
 
 // Preview is a running offline console.
@@ -92,7 +93,7 @@ func New(options Options) (*Preview, error) {
 		cleanup()
 		return nil, fmt.Errorf("preview: open sqlite: %w", err)
 	}
-	st := store.New(db, nil)
+	st := store.New(db, options.Now)
 
 	upstream, err := newMockUpstream()
 	if err != nil {
@@ -109,6 +110,7 @@ func New(options Options) (*Preview, error) {
 		Downloader: httpDownloader{client: client},
 		HTTPClient: client,
 		Logf:       logf,
+		Now:        options.Now,
 	})
 	if err != nil {
 		upstream.close()
@@ -478,6 +480,7 @@ func seed(ctx context.Context, st *store.Store, upstream *mockUpstream) error {
 		accountID := account.ID
 		id, err := st.InsertGallery(ctx, domain.GalleryInsert{
 			RequestID:   fmt.Sprintf("preview-seed-%d", i+1),
+			OutputKey:   fmt.Sprintf("preview-seed-%d:0:0", i+1),
 			Model:       "agnes-image-2.5-flash",
 			Prompt:      prompts[i],
 			SizeRequest: "1K",
@@ -538,6 +541,7 @@ func seed(ctx context.Context, st *store.Store, upstream *mockUpstream) error {
 	accountID := account.ID
 	if _, err := st.InsertGallery(ctx, domain.GalleryInsert{
 		RequestID:   "preview-seed-pending",
+		OutputKey:   "preview-seed-pending:0:0",
 		Model:       "agnes-image-2.5-flash",
 		Prompt:      "preview: waiting for enrichment",
 		SizeRequest: "1K",
@@ -557,6 +561,7 @@ func seed(ctx context.Context, st *store.Store, upstream *mockUpstream) error {
 	unarchivedSource := upstream.server.URL + "/mock/png/unarchived"
 	if _, err := st.InsertGallery(ctx, domain.GalleryInsert{
 		RequestID:   "preview-seed-unarchived",
+		OutputKey:   "preview-seed-unarchived:0:0",
 		Model:       "agnes-image-2.5-flash",
 		Prompt:      "preview: metadata only",
 		SizeRequest: "1K",

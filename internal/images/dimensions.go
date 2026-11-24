@@ -144,38 +144,38 @@ func readUint24LE(data []byte) int {
 	return int(data[0]) | int(data[1])<<8 | int(data[2])<<16
 }
 
-// parseDataURI validates and splits a base64 image data URI.
-func parseDataURI(value string) (mime string, payload string, byteLength int, ok bool) {
+// DecodeImageDataURI performs one bounded decode and validates the declared type.
+func DecodeImageDataURI(value string, maxBytes int) (string, []byte, error) {
 	match := dataURIPattern.FindStringSubmatch(value)
 	if match == nil {
-		return "", "", 0, false
-	}
-	payload = value[len(match[0]):]
-	if payload == "" || len(payload)%4 != 0 {
-		return "", "", 0, false
-	}
-	decoded, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		return "", "", 0, false
-	}
-	subtype := strings.ToLower(match[1])
-	if subtype == "jpg" {
-		subtype = "jpeg"
-	}
-	return "image/" + subtype, payload, len(decoded), true
-}
-
-// decodeDataURI returns the declared MIME type and decoded bytes.
-func decodeDataURI(value string) (string, []byte, error) {
-	mime, payload, _, ok := parseDataURI(value)
-	if !ok {
 		return "", nil, fmt.Errorf("unsupported data URI")
 	}
-	data, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		return "", nil, err
+	payload := value[len(match[0]):]
+	if payload == "" || len(payload)%4 != 0 || strings.ContainsAny(payload, "\r\n") {
+		return "", nil, fmt.Errorf("invalid base64 image")
+	}
+	if len(payload) > base64.StdEncoding.EncodedLen(maxBytes) {
+		return "", nil, fmt.Errorf("input image is too large")
+	}
+	data, err := base64.StdEncoding.Strict().DecodeString(payload)
+	if err != nil || len(data) == 0 || len(data) > maxBytes {
+		return "", nil, fmt.Errorf("invalid or oversized base64 image")
+	}
+	mime := normalizeImageMIME("image/" + match[1])
+	if SniffImage(data) != mime {
+		return "", nil, fmt.Errorf("declared image type does not match image contents")
 	}
 	return mime, data, nil
+}
+func parseDataURI(value string) (mime string, payload string, byteLength int, ok bool) {
+	mime, data, err := DecodeImageDataURI(value, MaxInputImageBytes)
+	if err != nil {
+		return "", "", 0, false
+	}
+	return mime, base64.StdEncoding.EncodeToString(data), len(data), true
+}
+func decodeDataURI(value string) (string, []byte, error) {
+	return DecodeImageDataURI(value, MaxInputImageBytes)
 }
 
 func normalizeImageMIME(value string) string {

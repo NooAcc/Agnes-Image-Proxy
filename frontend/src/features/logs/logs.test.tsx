@@ -13,6 +13,19 @@ afterEach(() => {
 });
 
 describe("logs", () => {
+  it("separates delivery failures from successful account attempts", async () => {
+    server = startServer(adminHandlers(createAdminState({ logs: [makeLog({
+      partial: true,
+      deliveryFailures: [{ subrequestIndex: 0, imageIndex: 1, stage: "persist", status: 503, code: "image_persist_failed" }],
+      attempts: [{ index: 0, accountId: 1, accountName: "primary", status: 200, code: "", durationMs: 100, message: "" }],
+    })] })));
+    renderApp(["/logs"]);
+    await userEvent.click(await screen.findByRole("button", { name: "查看 req-1 详情" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("图片交付失败")).toBeInTheDocument();
+    expect(within(dialog).getByText("image_persist_failed")).toBeInTheDocument();
+    expect(within(dialog).getByText("primary")).toBeInTheDocument();
+  });
   it("filters by the URL-driven category and opens details", async () => {
     const state = createAdminState({
       logs: [

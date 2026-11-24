@@ -37,7 +37,7 @@ func TestEnsureSchemaCreatesAndReopens(t *testing.T) {
 	if err := db.QueryRow("SELECT value FROM app_meta WHERE key='schema'").Scan(&version); err != nil {
 		t.Fatalf("read schema: %v", err)
 	}
-	if app != "agnes-go" || version != "1" {
+	if app != "agnes-go" || version != "2" {
 		t.Fatalf("unexpected meta: %q %q", app, version)
 	}
 
@@ -100,7 +100,7 @@ func TestEnsureSchemaRejectsNonEmptyWithoutMutation(t *testing.T) {
 
 func TestEnsureSchemaRejectsVersionMismatch(t *testing.T) {
 	_, db := newSchemaStore(t)
-	if _, err := db.Exec("UPDATE app_meta SET value='2' WHERE key='schema'"); err != nil {
+	if _, err := db.Exec("UPDATE app_meta SET value='1' WHERE key='schema'"); err != nil {
 		t.Fatalf("bump version: %v", err)
 	}
 	s := store.New(db, fixedNow)
@@ -139,7 +139,7 @@ func TestSchemaBlobRoundTripAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if _, err := tx.Exec(`INSERT INTO gallery (created_at, image, thumb, enrich_status) VALUES (?, ?, ?, 'pending')`,
+	if _, err := tx.Exec(`INSERT INTO gallery (public_id, output_key, created_at, image, thumb, enrich_status) VALUES ('0123456789abcdef0123456789abcdef', 'blob:0:0', ?, ?, ?, 'pending')`,
 		"2026-11-24T12:00:00Z", blob, blob); err != nil {
 		t.Fatalf("insert gallery: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestSchemaBlobRoundTripAndRollback(t *testing.T) {
 		t.Fatalf("rollback left %d rows", count)
 	}
 
-	if _, err := db.Exec(`INSERT INTO gallery (created_at, image, thumb, enrich_status) VALUES (?, ?, ?, 'pending')`,
+	if _, err := db.Exec(`INSERT INTO gallery (public_id, output_key, created_at, image, thumb, enrich_status) VALUES ('0123456789abcdef0123456789abcdef', 'blob:0:0', ?, ?, ?, 'pending')`,
 		"2026-11-24T12:00:00Z", blob, blob); err != nil {
 		t.Fatalf("insert gallery: %v", err)
 	}

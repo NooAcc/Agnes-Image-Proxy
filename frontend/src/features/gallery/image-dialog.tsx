@@ -67,7 +67,7 @@ export function ImageDialog({ item, onClose }: { item: GalleryItem; onClose: () 
 
   return (
     <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] max-w-3xl flex-col overflow-y-auto [&>*]:shrink-0">
         <DialogHeader>
           <DialogTitle className="break-words">{alt}</DialogTitle>
           <DialogDescription>
@@ -131,7 +131,6 @@ export function ImageDialog({ item, onClose }: { item: GalleryItem; onClose: () 
         {item.archived ? (
           <a
             href={`/admin/api/gallery/${item.id}/content?download=1`}
-            download={`agnes-${item.id}.png`}
             className="w-fit text-sm text-primary underline-offset-4 hover:underline"
           >
             下载原图

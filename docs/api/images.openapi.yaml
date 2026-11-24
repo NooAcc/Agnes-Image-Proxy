@@ -1,0 +1,203 @@
+openapi: 3.1.0
+info:
+  title: Agnes Image Delivery API
+  version: "2"
+  description: |
+    Agnes always returns source URLs. Every successful output is downloaded, validated and persisted
+    before responding. Edge dimensions are best-effort; originals are never resized or transcoded.
+    URL links authorize only one saved original, not any administration operation.
+paths:
+  /v1/images/generations:
+    post:
+      summary: Generate images (JSON reference images also supported)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImageRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Delivered" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+        "504": { $ref: "#/components/responses/Error" }
+  /v1/images/edits:
+    post:
+      summary: Edit with URLs, signed local URLs, Data URIs or multipart files
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImageRequest" }
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                model: { type: string }
+                prompt: { type: string }
+                image: { type: array, maxItems: 16, items: { type: string, format: binary } }
+                size: { type: string, default: auto }
+                response_format: { type: string, enum: [url, b64_json], default: url }
+                n: { type: integer, minimum: 1 }
+              required: [model, prompt, image]
+      responses:
+        "200": { $ref: "#/components/responses/Delivered" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+        "504": { $ref: "#/components/responses/Error" }
+  /v1/images/content/{publicID}:
+    parameters:
+      - name: publicID
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[0-9a-f]{32}$" }
+      - name: expires
+        in: query
+        required: true
+        description: Canonical positive decimal Unix seconds; now >= expires is invalid. No duplicate parameters.
+        schema: { type: string, pattern: "^[1-9][0-9]*$" }
+      - name: signature
+        in: query
+        required: true
+        description: Unpadded base64url HMAC-SHA256 covering domain, publicID and expires. No other query keys accepted.
+        schema: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
+    get:
+      summary: Read an original with its signed link (Bearer/Cookie cannot bypass signature)
+      security: [{ expirySignature: [], imageSignature: [] }]
+      responses:
+        "200":
+          description: Exact stored original bytes
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+            Content-Length: { schema: { type: integer } }
+            Content-Disposition: { schema: { type: string }, description: Actual png/jpg/webp filename }
+            X-Content-Type-Options: { schema: { type: string, const: nosniff } }
+            Content-Security-Policy: { schema: { type: string, const: sandbox } }
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        "404": { $ref: "#/components/responses/ImageNotFound" }
+        "503": { $ref: "#/components/responses/ContentUnavailable" }
+    head:
+      summary: Verify link and existence without reading the original BLOB
+      security: [{ expirySignature: [], imageSignature: [] }]
+      responses:
+        "200":
+          description: Same MIME, length and filename headers as GET; no body
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+            Content-Length: { schema: { type: integer } }
+            Content-Type: { schema: { type: string, enum: [image/png, image/jpeg, image/webp] } }
+            Content-Disposition: { schema: { type: string } }
+        "404": { description: Same uniform not-found status; no body; Cache-Control no-store }
+        "503": { description: Generic unavailable status; no body; Cache-Control no-store }
+    options:
+      summary: Non-credential CORS preflight; does not authorize content
+      security: []
+      responses:
+        "204":
+          description: No database access
+          headers:
+            Access-Control-Allow-Methods: { schema: { type: string, const: "GET, HEAD, OPTIONS" } }
+            Cache-Control: { schema: { type: string, const: no-store } }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+    expirySignature: { type: apiKey, in: query, name: expires }
+    imageSignature: { type: apiKey, in: query, name: signature }
+  schemas:
+    ImageRequest:
+      type: object
+      description: |
+        Only response_format controls delivery; return_base64 and extra_body format controls are rejected
+        with unsupported_parameter. At most 16 references, 20 MiB each, 32 MiB request and normalized
+        reference JSON budget. Exact size still validates all references and signed local URLs.
+      properties:
+        model: { type: string, minLength: 1 }
+        prompt: { type: string, minLength: 1 }
+        n: { type: integer, minimum: 1, default: 1 }
+        size: { type: string, description: "1K–4K, WxH or auto" }
+        ratio: { type: string }
+        image: { oneOf: [{ type: string }, { type: array, maxItems: 16, items: { type: string } }] }
+        response_format: { type: string, enum: [url, b64_json], default: url }
+        extra_body: { type: object, description: Reserved output format controls are not supported }
+      required: [model, prompt]
+    ImageItem:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          properties:
+            url: { type: string, format: uri }
+            revised_prompt: { type: "null" }
+          required: [url, revised_prompt]
+        - type: object
+          additionalProperties: false
+          properties:
+            b64_json: { type: string, minLength: 1, description: Standard padded base64 of the exact persisted original, without Data URI prefix }
+            revised_prompt: { type: "null" }
+          required: [b64_json, revised_prompt]
+    ImageResponse:
+      type: object
+      properties:
+        created: { type: integer, description: Unix seconds }
+        size: { type: string, description: First Edge measured size or expected size; best-effort, not local measurement }
+        data: { type: array, minItems: 1, items: { $ref: "#/components/schemas/ImageItem" } }
+      required: [created, size, data]
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message: { type: string }
+            type: { type: string }
+            param: { type: [string, "null"] }
+            code: { type: [string, "null"] }
+          required: [message, type, param, code]
+      required: [error]
+  responses:
+    Delivered:
+      description: |
+        Only persisted images, ordered by subrequest/output. Partial success also applies when one
+        subrequest delivers only part of its outputs. Downstream failures never regenerate with another account.
+      headers:
+        X-Agnes-Requested: { schema: { type: integer } }
+        X-Agnes-Succeeded: { schema: { type: integer }, description: Subrequests with at least one delivered image }
+        X-Agnes-Failed: { schema: { type: integer }, description: Subrequests with no delivered images; Succeeded + Failed = Requested }
+        X-Agnes-Warnings: { schema: { type: string }, description: "partial-success, size-measure-failed and ignored client fields" }
+        X-Agnes-Resolved-Size: { schema: { type: string } }
+        X-Agnes-Failure-Statuses: { schema: { type: string } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ImageResponse" }
+    Error:
+      description: |
+        OpenAI envelope. Download errors: 502 image_download_failed, 504 image_download_timeout.
+        Persistence errors: 503 image_persist_failed. All-failure priority: 429 > 504 > 502 > 503.
+        Origin errors are 400 invalid_image_origin before generation. Format aliases are 400 unsupported_parameter.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ImageNotFound:
+      description: Uniform 404 for invalid/expired/tampered/unknown image links; verified before database access
+      headers:
+        Cache-Control: { schema: { type: string, const: no-store } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { message: "image not found", type: invalid_request_error, param: null, code: not_found } }
+    ContentUnavailable:
+      description: Generic 503, no internal database details
+      headers:
+        Cache-Control: { schema: { type: string, const: no-store } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }

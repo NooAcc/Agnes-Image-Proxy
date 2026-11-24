@@ -235,10 +235,8 @@ func TestParseResponseFormat(t *testing.T) {
 	if err != nil || got.ResponseFormat != "url" {
 		t.Fatalf("default format: %v %+v", err, got)
 	}
-	got, err = parseJSON(t, "/v1/images/generations", `{"model":"m","prompt":"p","return_base64":true}`, nil)
-	if err != nil || got.ResponseFormat != "b64_json" {
-		t.Fatalf("return_base64: %v %+v", err, got)
-	}
+	_, err = parseJSON(t, "/v1/images/generations", `{"model":"m","prompt":"p","return_base64":true}`, nil)
+	mustStatus(t, err, 400)
 	got, err = parseJSON(t, "/v1/images/generations", `{"model":"m","prompt":"p","response_format":"b64_json"}`, nil)
 	if err != nil || got.ResponseFormat != "b64_json" {
 		t.Fatalf("response_format: %v %+v", err, got)
@@ -303,8 +301,8 @@ func TestParseMultipart(t *testing.T) {
 	if got.Size.Mode != "exact" || got.Size.Exact == nil || got.Size.Exact.Width != 3 {
 		t.Fatalf("auto size not read from reference: %+v", got.Size)
 	}
-	if len(reader.calls) != 1 || !strings.HasPrefix(reader.calls[0], "data:image/png;base64,") {
-		t.Fatalf("reader calls = %v", reader.calls)
+	if len(reader.calls) != 0 {
+		t.Fatalf("validated multipart bytes were decoded again: %v", reader.calls)
 	}
 }
 

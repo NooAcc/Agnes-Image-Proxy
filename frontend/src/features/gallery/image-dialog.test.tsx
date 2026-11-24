@@ -135,6 +135,7 @@ describe("ImageDialog", () => {
     await screen.findByAltText("first");
     const download = screen.getByRole("link", { name: "下载原图" });
     expect(download).toHaveAttribute("href", "/admin/api/gallery/5/content?download=1");
+    expect(download).not.toHaveAttribute("download");
   });
 
   it("explains unarchived rows without fetching an image", async () => {

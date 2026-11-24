@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/agnes"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/apierror"
+	"github.com/NooAcc/Agnes-Image-Proxy/internal/auth"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/domain"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/httpapi"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/service"
@@ -38,10 +40,10 @@ func (f *imageLogs) snapshot() []domain.RequestLog {
 }
 
 type imageArchiver struct {
-	done chan service.ArchiveJob
+	done chan service.EnrichmentJob
 }
 
-func (f *imageArchiver) Run(_ context.Context, job service.ArchiveJob) error {
+func (f *imageArchiver) Run(_ context.Context, job service.EnrichmentJob) error {
 	f.done <- job
 	return nil
 }
@@ -56,12 +58,13 @@ func newImageHandler(t *testing.T, subrequest func(context.Context, int64) (agne
 	t.Helper()
 	tasks := service.NewTasks(service.TaskOptions{Workers: 1, Capacity: 8})
 	logs := &imageLogs{}
-	archiver := &imageArchiver{done: make(chan service.ArchiveJob, 8)}
+	archiver := &imageArchiver{done: make(chan service.EnrichmentJob, 8)}
 	measurer := &fixedMeasurer{}
 	images := service.NewImages(service.ImageOptions{
 		Tasks:       tasks,
 		Edge:        measurer,
-		Archiver:    archiver,
+		Enrichment:  archiver,
+		Delivery:    imageDelivery{},
 		Logs:        logs,
 		Subrequest:  subrequest,
 		Workers:     4,
@@ -75,10 +78,11 @@ func newImageHandler(t *testing.T, subrequest func(context.Context, int64) (agne
 	})
 	return &imageHandlerEnv{
 		handler: httpapi.New(httpapi.Options{
-			Auth:     authn,
-			Images:   images,
-			Settings: func(context.Context) (domain.Settings, error) { return domain.DefaultSettings(), nil },
-			Logs:     logs,
+			Auth:       authn,
+			ImageLinks: auth.NewImageLinks("secret-key", nil),
+			Images:     images,
+			Settings:   func(context.Context) (domain.Settings, error) { return domain.DefaultSettings(), nil },
+			Logs:       logs,
 		}),
 		logs:     logs,
 		archiver: archiver,
@@ -101,6 +105,7 @@ func imageRequest(t *testing.T, body string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(body))
 	req.RemoteAddr = "192.0.2.10:1234"
+	req.Host = "localhost"
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer secret-key")
 	return req
@@ -167,7 +172,7 @@ func TestImagePartialHTTPResponse(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	var body service.ImageResponse
+	var body httpapi.ImageResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("body: %v (%s)", err, rec.Body.String())
 	}
@@ -188,8 +193,8 @@ func TestImagePartialHTTPResponse(t *testing.T) {
 	}
 	select {
 	case job := <-env.archiver.done:
-		if len(job.Images) != 3 {
-			t.Fatalf("archived images = %d", len(job.Images))
+		if len(job.IDs) != 3 {
+			t.Fatalf("archived images = %d", len(job.IDs))
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("archive not committed after response")
@@ -252,7 +257,7 @@ func TestDeepHealthHidesDatabaseDetails(t *testing.T) {
 		Auth: httpapi.NewAuth(httpapi.AuthOptions{
 			APIKey: "secret-key", Sessions: newSessionsForTest(t), Limiter: authLimiter(t),
 		}),
-		Images:   service.NewImages(service.ImageOptions{Tasks: tasks, Edge: &fixedMeasurer{}, Archiver: &imageArchiver{done: make(chan service.ArchiveJob, 1)}, Logs: &imageLogs{}}),
+		Images:   service.NewImages(service.ImageOptions{Tasks: tasks, Edge: &fixedMeasurer{}, Enrichment: &imageArchiver{done: make(chan service.EnrichmentJob, 1)}, Delivery: imageDelivery{}, Logs: &imageLogs{}}),
 		Settings: func(context.Context) (domain.Settings, error) { return domain.DefaultSettings(), nil },
 		DeepCheck: func(context.Context) error {
 			return errors.New("libsql: connection refused to db.turso.io token=super-secret")
@@ -294,4 +299,10 @@ func itoa64(value int64) string {
 		value /= 10
 	}
 	return string(digits)
+}
+
+type imageDelivery struct{}
+
+func (imageDelivery) Deliver(_ context.Context, in service.DeliveryInput) (service.DeliveredImage, error) {
+	return service.DeliveredImage{Stored: domain.StoredImage{ID: in.SubrequestIndex + 1, PublicID: fmt.Sprintf("%032x", in.SubrequestIndex+1), MIME: "image/png", Bytes: 68}, SourceURL: in.SourceURL}, nil
 }

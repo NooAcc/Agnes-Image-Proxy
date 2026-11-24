@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -41,12 +42,12 @@ func TestBackfillStoredBLOBWorksWithoutURLAndAfterURLFailure(t *testing.T) {
 	}
 	mime := "image/png"
 	url := "https://expired.example/image.png"
-	for _, source := range []*string{nil, &url} {
-		if _, err := s.InsertGallery(ctx, domain.GalleryInsert{Image: data, ImageMIME: &mime, SourceURL: source}); err != nil {
+	for i, source := range []*string{nil, &url} {
+		if _, err := s.InsertGallery(ctx, domain.GalleryInsert{OutputKey: fmt.Sprintf("backfill:%d:0", i), Image: data, ImageMIME: &mime, SourceURL: source}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	edge := service.NewEdge(server.Client()).WithEnrichmentWriter(s)
+	edge := service.NewEdge(server.Client()).WithEnrichmentWriter(s).WithOriginalReader(s)
 	backfill := service.NewBackfill(service.BackfillOptions{Store: s, Enricher: edge, Settings: settingsFunc(edgeSettings(server.URL))})
 	if _, err := backfill.Start(ctx); err != nil {
 		t.Fatal(err)

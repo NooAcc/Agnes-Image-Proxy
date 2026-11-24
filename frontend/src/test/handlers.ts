@@ -46,6 +46,8 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     thumbnailWidth: 640,
     thumbnailQuality: 75,
     enrichTimeoutMs: 60_000,
+    imageUrlTtlHours: 24,
+    imagePublicBaseUrl: "",
     ...overrides,
   };
 }
@@ -86,6 +88,8 @@ export function makeLog(overrides: Partial<RequestLog> = {}): RequestLog {
     sizeRequest: "1K",
     sizeActual: "1024x1024",
     attempts: [],
+    partial: false,
+    deliveryFailures: [],
     ...overrides,
   };
 }

@@ -49,6 +49,22 @@ function LogDetail({ log, onClose }: { log: RequestLog | null; onClose: () => vo
               <dd>{log.requested} / {log.images} / {log.failed}</dd>
               <dt className="text-muted-foreground">耗时</dt><dd>{log.durationMs} ms</dd>
             </dl>
+            {log.deliveryFailures.length > 0 ? (
+              <div>
+                <p className="mb-1 font-medium">图片交付失败</p>
+                <Table className="min-w-[520px]">
+                  <TableHeader><TableRow>
+                    <TableHead scope="col">子请求</TableHead><TableHead scope="col">图片序号</TableHead>
+                    <TableHead scope="col">阶段</TableHead><TableHead scope="col">状态</TableHead><TableHead scope="col">代码</TableHead>
+                  </TableRow></TableHeader>
+                  <TableBody>{log.deliveryFailures.map((failure, index) => (
+                    <TableRow key={index}><TableCell>{failure.subrequestIndex}</TableCell><TableCell>{failure.imageIndex}</TableCell>
+                      <TableCell>{failure.stage}</TableCell><TableCell>{failure.status}</TableCell><TableCell>{failure.code}</TableCell>
+                    </TableRow>
+                  ))}</TableBody>
+                </Table>
+              </div>
+            ) : null}
             <div>
               <p className="mb-1 font-medium">账号尝试</p>
               {log.attempts.length === 0 ? (

@@ -20,6 +20,7 @@ const (
 	maxEnrichSourceBytes     = 50 << 20
 	enrichmentErrorMaxLength = 200
 	maxEdgeResponseBytes     = 64 << 20
+	maxEdgeRequestBytes      = 46 << 20
 )
 
 // EnrichmentWriter persists enrichment outcomes for gallery rows.
@@ -34,11 +35,16 @@ type EnrichReport struct {
 	Failed    int
 }
 
+type OriginalReader interface {
+	GalleryContent(context.Context, int64, bool) ([]byte, string, error)
+}
+
 // Edge is the shared Edge-Images client for metadata and enrichment.
 type Edge struct {
-	client *http.Client
-	writer EnrichmentWriter
-	now    func() time.Time
+	client    *http.Client
+	writer    EnrichmentWriter
+	originals OriginalReader
+	now       func() time.Time
 }
 
 // NewEdge builds the client. A nil client uses http.DefaultClient semantics.
@@ -54,6 +60,8 @@ func (e *Edge) WithEnrichmentWriter(writer EnrichmentWriter) *Edge {
 	e.writer = writer
 	return e
 }
+
+func (e *Edge) WithOriginalReader(reader OriginalReader) *Edge { e.originals = reader; return e }
 
 type batchItem struct {
 	UUID        string         `json:"uuid"`
@@ -83,6 +91,9 @@ func (e *Edge) postBatch(ctx context.Context, baseURL string, timeout time.Durat
 	payload, err := json.Marshal(items)
 	if err != nil {
 		return nil, err
+	}
+	if len(payload) > maxEdgeRequestBytes {
+		return nil, fmt.Errorf("image service request exceeds batch budget")
 	}
 	endpoint := strings.TrimRight(baseURL, "/") + "/api/batch"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))

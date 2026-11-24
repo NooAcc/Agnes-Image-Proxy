@@ -60,7 +60,9 @@
     "imageServiceBaseUrl": "",
     "thumbnailWidth": 640,
     "thumbnailQuality": 75,
-    "enrichTimeoutMs": 60000
+    "enrichTimeoutMs": 60000,
+    "imageUrlTtlHours": 24,
+    "imagePublicBaseUrl": ""
   },
   "requestLog": {
     "id": 1,
@@ -76,6 +78,8 @@
     "requested": 2,
     "images": 2,
     "failed": 0,
+    "partial": false,
+    "deliveryFailures": [],
     "durationMs": 1200,
     "sizeRequest": "1K",
     "sizeActual": "1024x1024",
@@ -107,6 +111,8 @@
         "requested": 1,
         "images": 1,
         "failed": 0,
+    "partial": false,
+    "deliveryFailures": [],
         "durationMs": 1200,
         "sizeRequest": "1K",
         "sizeActual": "1024x1024",

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/domain"
@@ -80,11 +81,11 @@ func (e *Edge) Enrich(ctx context.Context, sources []domain.GallerySource, setti
 			continue
 		}
 		switch {
-		case !source.HasImage || len(source.Data) == 0:
+		case source.Bytes <= 0:
 			outcomes[source.ID] = enrichOutcome{err: "no image source"}
-		case int64(len(source.Data)) > maxEnrichSourceBytes:
+		case source.Bytes > maxEnrichSourceBytes:
 			outcomes[source.ID] = enrichOutcome{err: "source exceeds 50 MiB"}
-		case int64(len(source.Data)) > enrichBatchSourceBytes:
+		case source.Bytes > enrichBatchSourceBytes:
 			outcomes[source.ID] = enrichOutcome{err: "source exceeds batch budget"}
 		default:
 			eligible = append(eligible, source)
@@ -92,43 +93,76 @@ func (e *Edge) Enrich(ctx context.Context, sources []domain.GallerySource, setti
 	}
 
 	request := func(chunk []domain.GallerySource, inline bool) {
-		items := make([]batchItem, 0, len(chunk))
+		items := make([]batchItem, 0, edgeBatchItems)
+		decodedBytes, encodedBytes := 0, 2
+		flush := func() {
+			if len(items) == 0 {
+				return
+			}
+			results, err := e.postBatch(ctx, settings.ImageServiceBaseURL, timeout, items)
+			for _, item := range items {
+				id, _ := strconv.ParseInt(item.UUID, 10, 64)
+				if err != nil {
+					outcomes[id] = enrichOutcome{err: "image service request failed", retryable: item.URL != ""}
+				} else {
+					outcomes[id] = outcomeFor(domain.GallerySource{ID: id, Bytes: sourceBytesFor(chunk, id)}, results[item.UUID])
+				}
+			}
+			items = make([]batchItem, 0, edgeBatchItems)
+			decodedBytes, encodedBytes = 0, 2
+		}
 		for _, source := range chunk {
 			item := batchItem{UUID: strconv.FormatInt(source.ID, 10), Params: params}
+			var data []byte
+			cost := 0
 			if !inline && sourceHasURL(source) {
 				item.URL = *source.SourceURL
 			} else {
-				item.Base64 = base64.StdEncoding.EncodeToString(source.Data)
-				item.ContentType = sourceMIME(source)
+				var err error
+				data, item.ContentType, err = e.readOriginal(ctx, source)
+				if err != nil {
+					outcomes[source.ID] = enrichOutcome{err: "original image unavailable"}
+					continue
+				}
+				cost = len(data)
+				if cost > maxEnrichSourceBytes {
+					outcomes[source.ID] = enrichOutcome{err: "source exceeds 50 MiB"}
+					continue
+				}
+				if cost > enrichBatchSourceBytes {
+					outcomes[source.ID] = enrichOutcome{err: "source exceeds batch budget"}
+					continue
+				}
 			}
+			overhead, _ := json.Marshal(item)
+			encodedCost := len(overhead) + base64.StdEncoding.EncodedLen(cost) + 16
+			if len(items) > 0 && (decodedBytes+cost > enrichBatchSourceBytes || encodedBytes+encodedCost > maxEdgeRequestBytes || len(items) >= edgeBatchItems) {
+				flush()
+			}
+			if cost > 0 {
+				item.Base64 = base64.StdEncoding.EncodeToString(data)
+			}
+			data = nil
 			items = append(items, item)
+			decodedBytes += cost
+			encodedBytes += encodedCost
 		}
-		results, err := e.postBatch(ctx, settings.ImageServiceBaseURL, timeout, items)
-		if err != nil {
-			for _, source := range chunk {
-				outcomes[source.ID] = enrichOutcome{err: err.Error()}
-			}
-			return
-		}
-		for _, source := range chunk {
-			outcomes[source.ID] = outcomeFor(source, results[strconv.FormatInt(source.ID, 10)])
-		}
+		flush()
 	}
-
 	for _, chunk := range chunkEnrichSources(eligible, false) {
 		request(chunk, false)
 	}
-
 	retry := make([]domain.GallerySource, 0)
 	for _, source := range eligible {
 		outcome := outcomes[source.ID]
-		if !outcome.retryable || !sourceHasURL(source) || len(source.Data) == 0 {
+		if !outcome.retryable || !sourceHasURL(source) || source.Bytes <= 0 {
 			continue
 		}
-		if int64(len(source.Data)) > maxEnrichSourceBytes {
+		if source.Bytes > maxEnrichSourceBytes {
+			outcomes[source.ID] = enrichOutcome{err: "source exceeds 50 MiB"}
 			continue
 		}
-		if int64(len(source.Data)) > enrichBatchSourceBytes {
+		if source.Bytes > enrichBatchSourceBytes {
 			outcomes[source.ID] = enrichOutcome{err: "source exceeds batch budget"}
 			continue
 		}
@@ -174,11 +208,11 @@ func (e *Edge) Enrich(ctx context.Context, sources []domain.GallerySource, setti
 
 func outcomeFor(source domain.GallerySource, entry batchResult) enrichOutcome {
 	if !entry.ok() {
-		message := entry.Error
-		if message == "" {
-			message = "image service item failed"
+		message := "image service item failed"
+		if strings.Contains(strings.ToLower(entry.Error), "fetch") || strings.Contains(strings.ToLower(entry.Error), "url") {
+			message = "image service fetch failed"
 		}
-		return enrichOutcome{err: message, retryable: true}
+		return enrichOutcome{err: message, retryable: strings.Contains(message, "fetch")}
 	}
 	if len(entry.Data) == 0 {
 		return enrichOutcome{err: "nsfw: prediction unavailable"}
@@ -269,8 +303,8 @@ func chunkEnrichSources(sources []domain.GallerySource, inline bool) [][]domain.
 	}
 	for _, source := range sources {
 		cost := 0
-		if inline {
-			cost = len(source.Data)
+		if inline || !sourceHasURL(source) {
+			cost = int(source.Bytes)
 		}
 		if len(chunk) > 0 && (len(chunk) >= edgeBatchItems || sum+cost > enrichBatchSourceBytes) {
 			flush()
@@ -293,12 +327,17 @@ func writeFailure(ctx context.Context, writer EnrichmentWriter, id int64, messag
 	report.Failed++
 }
 
-func sourceMIME(source domain.GallerySource) string {
-	if source.MIME != "" {
-		return source.MIME
+func (e *Edge) readOriginal(ctx context.Context, source domain.GallerySource) ([]byte, string, error) {
+	if e.originals != nil {
+		return e.originals.GalleryContent(ctx, source.ID, false)
 	}
-	if mime := images.SniffImage(source.Data); mime != "" {
-		return mime
+	return nil, "", fmt.Errorf("original unavailable")
+}
+func sourceBytesFor(sources []domain.GallerySource, id int64) int64 {
+	for _, source := range sources {
+		if source.ID == id {
+			return source.Bytes
+		}
 	}
-	return "application/octet-stream"
+	return 0
 }
