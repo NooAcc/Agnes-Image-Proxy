@@ -4,6 +4,9 @@
 管理控制台使用 React/TypeScript/Vite/Tailwind/shadcn/TanStack Query，构建产物通过
 `go:embed` 打进同一个二进制；生产运行不需要 Node、Deno 或前端构建工具。
 
+本项目面向**个人自用、自托管**，不提供多用户权限隔离。`PROXY_API_KEY` 同时拥有图片 API
+和管理 API 权限，请勿将其作为“仅生成图片”的密钥分享给不受信任的人。
+
 - 上游账号池：原子领取、失败冷却、成功 CAS 回写、逐账号尝试记录。
 - 图片归档：原图与缩略图存数据库 BLOB，URL 在响应后受控下载；失败保留源链接。
 - 元数据富化：可选 Edge-Images `/api/batch` 服务，自动测量尺寸、生成缩略图并做五类 NSFW 分类；支持手动补齐。
@@ -14,8 +17,11 @@
 
 ### 离线预览（不消耗真实额度）
 
+首次运行前必须构建前端，生成 Go 编译时嵌入的 `internal/webassets/dist/`：
+
 ```bash
 npm --prefix frontend ci
+npm --prefix frontend run build
 go run ./cmd/agnes-proxy preview --port 8001
 ```
 
@@ -186,17 +192,20 @@ API 会自动续期，总寿命不超过 90 天；设置页可撤销全部会话
 
 ## 测试与验收
 
+Go 检查同样需要嵌入前端产物；新 clone 或清理构建目录后，先安装依赖并构建前端：
+
 ```bash
+npm --prefix frontend ci
+npm --prefix frontend run build
+
 gofmt -l internal cmd
 go vet ./...
 go test ./...                 # 离线；不访问真实 Turso/Agnes
 go test -race ./...           # 工具链支持时
 
-npm --prefix frontend ci
 npm --prefix frontend run typecheck
 npm --prefix frontend run lint
 npm --prefix frontend run test -- --run
-npm --prefix frontend run build
 npm --prefix frontend run test:e2e
 ```
 
@@ -215,3 +224,9 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o .build/agnes-proxy ./cmd/agnes
 
 不迁移旧数据库、不兼容旧内部路由/DTO、不在生产运行 Deno/Node、不做模型名映射、
 不支持 mask/流式输出、不做本地图片转码/缩放、不提供自动图库清理或分布式任务服务。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)，版权归 NooAcc 所有。第三方依赖及其包含的代码仍适用
+各自的许可证；本项目许可证不替代第三方许可，也不授予 Agnes、Edge-Images 等外部服务、
+模型或生成内容的权利。
