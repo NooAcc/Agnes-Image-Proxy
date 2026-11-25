@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -29,12 +31,24 @@ func TestPublicInfoDoesNotSelectBlob(t *testing.T) {
 	// A metadata-only SQL boundary: selecting image would fail because the column
 	// does not exist. This verifies both public and numeric HEAD queries.
 	db := testutil.OpenDB(t)
-	_, err := db.Exec(`CREATE TABLE gallery (id INTEGER PRIMARY KEY, public_id TEXT, image_mime TEXT, image_bytes INTEGER);
-		INSERT INTO gallery VALUES (1, '0123456789abcdef0123456789abcdef', 'image/png', 68)`)
+	_, err := db.Exec(`CREATE TABLE gallery (id INTEGER PRIMARY KEY, public_id TEXT, image_mime TEXT, image_bytes INTEGER, image_path TEXT);
+		INSERT INTO gallery VALUES (1, '0123456789abcdef0123456789abcdef', 'image/png', 68, '01/0123456789abcdef0123456789abcdef/original.png')`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := store.New(db, nil)
+	dir := t.TempDir()
+	pictureDir := filepath.Join(dir, "images", "01", "0123456789abcdef0123456789abcdef")
+	if err := os.MkdirAll(pictureDir, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pictureDir, "original.png"), make([]byte, 68), 0640); err != nil {
+		t.Fatal(err)
+	}
+	s, constructErr := store.New(db, nil, dir)
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	for _, read := range []func() (domain.StoredImage, error){
 		func() (domain.StoredImage, error) { return s.ImageInfo(context.Background(), 1) },
 		func() (domain.StoredImage, error) {

@@ -9,6 +9,9 @@ services:
       - .env
     environment:
       PORT: "8000"
+      DATA_DIR: /data
+    volumes:
+      - image-data:/data
     stop_grace_period: 120s
     read_only: true
     security_opt:
@@ -24,3 +27,6 @@ services:
     # Optional host-level limits; compose does not use swarm `deploy` blocks.
     # mem_limit: 1g
     # cpus: 2.0
+
+volumes:
+  image-data:

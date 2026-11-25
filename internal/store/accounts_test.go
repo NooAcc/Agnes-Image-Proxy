@@ -37,7 +37,11 @@ func newAccountStore(t *testing.T) (*store.Store, *clock) {
 	t.Helper()
 	db := testutil.OpenDB(t)
 	c := &clock{t: time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)}
-	s := store.New(db, c.now)
+	s, err := store.New(db, c.now, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.EnsureSchema(context.Background()); err != nil {
 		t.Fatalf("ensure schema: %v", err)
 	}

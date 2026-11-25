@@ -36,7 +36,11 @@ func TestBackfillStoredBLOBWorksWithoutURLAndAfterURLFailure(t *testing.T) {
 	}))
 	defer server.Close()
 	ctx := context.Background()
-	s := store.New(testutil.OpenDB(t), time.Now)
+	s, constructErr := store.New(testutil.OpenDB(t), time.Now, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}

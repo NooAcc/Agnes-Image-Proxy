@@ -24,34 +24,49 @@ var galleryTags = map[string]bool{
 	"safe": true, "drawing": true, "sexy": true, "porn": true, "hentai": true, "unclassified": true,
 }
 
-// SaveGeneratedImage persists a valid original atomically by its execution output key.
+// SaveGeneratedImage persists an original before publishing its metadata.
 func (s *Store) SaveGeneratedImage(ctx context.Context, insert domain.GalleryInsert) (domain.StoredImage, error) {
-	if len(insert.Image) == 0 || insert.ImageMIME == nil || !validStoredMIME(*insert.ImageMIME) {
-		return domain.StoredImage{}, apierror.Invalid("image", "a supported non-empty original image is required", "invalid_value")
-	}
-	stored, _, err := s.insertGallery(ctx, insert)
+	stored, _, err := s.SaveDeliveryImage(ctx, insert, false)
 	return stored, err
 }
 
-// SaveDeliveryImage returns the authoritative original only for base64 delivery.
-// A newly inserted output reuses the download; a deduplicated output reads its saved BLOB.
+// SaveDeliveryImage holds one lifecycle across publication and authoritative reading.
 func (s *Store) SaveDeliveryImage(ctx context.Context, insert domain.GalleryInsert, includeOriginal bool) (domain.StoredImage, []byte, error) {
 	if len(insert.Image) == 0 || insert.ImageMIME == nil || !validStoredMIME(*insert.ImageMIME) {
 		return domain.StoredImage{}, nil, apierror.Invalid("image", "a supported non-empty original image is required", "invalid_value")
 	}
-	stored, reused, err := s.insertGallery(ctx, insert)
-	if err != nil || !includeOriginal {
+	ctx, cancel := s.operation(ctx)
+	defer cancel()
+	s.galleryGate.RLock()
+	defer s.galleryGate.RUnlock()
+	unlock := s.outputLocks.lock(insert.OutputKey)
+	defer unlock()
+	stored, _, err := s.insertGallery(ctx, insert)
+	if err != nil {
 		return stored, nil, err
 	}
-	if !reused {
-		return stored, insert.Image, nil
+	unlockImage := s.imageLocks.lock(fmt.Sprint(stored.ID))
+	defer unlockImage()
+	info, path, err := s.imageMetadata(ctx, "public_id", stored.PublicID)
+	if err != nil {
+		return domain.StoredImage{}, nil, err
 	}
-	data, _, err := s.PublicImageContent(ctx, stored.PublicID)
-	return stored, data, err
+	if !includeOriginal {
+		_, err = s.verifyOriginal(ctx, info, path)
+		return info, nil, err
+	}
+	data, err := s.readOriginal(ctx, info, path)
+	return info, data, err
 }
 
-// InsertGallery shares the idempotent insertion boundary for seeds and ordinary rows.
+// InsertGallery permits metadata-only internal seeds, never BLOB fallback.
 func (s *Store) InsertGallery(ctx context.Context, insert domain.GalleryInsert) (int64, error) {
+	ctx, cancel := s.operation(ctx)
+	defer cancel()
+	s.galleryGate.RLock()
+	defer s.galleryGate.RUnlock()
+	unlock := s.outputLocks.lock(insert.OutputKey)
+	defer unlock()
 	stored, _, err := s.insertGallery(ctx, insert)
 	return stored.ID, err
 }
@@ -61,6 +76,13 @@ func (s *Store) insertGallery(ctx context.Context, insert domain.GalleryInsert) 
 	defer cancel()
 	if strings.TrimSpace(insert.OutputKey) == "" {
 		return domain.StoredImage{}, false, apierror.Invalid("outputKey", "outputKey is required", "invalid_value")
+	}
+	// Fence publication in the database as well as in-process: an accepted HTTP
+	// request may execute after cancellation has returned and clear/reset ran.
+	var generation string
+	generationErr := s.db.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key='gallery_generation'`).Scan(&generation)
+	if generationErr != nil {
+		return domain.StoredImage{}, false, classifyDBError(generationErr)
 	}
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {
@@ -87,7 +109,11 @@ func (s *Store) insertGallery(ctx context.Context, insert domain.GalleryInsert) 
 		sizeActual  any
 	)
 	if image != nil {
-		imageArg = image
+		path, err := s.files.writeOriginal(ctx, publicID, imageMIME, image)
+		if err != nil {
+			return domain.StoredImage{}, false, localStorageError(err)
+		}
+		imageArg = path
 		bytesArg = len(image)
 		mimeArg = imageMIME
 	}
@@ -110,16 +136,23 @@ func (s *Store) insertGallery(ctx context.Context, insert domain.GalleryInsert) 
 	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO gallery (public_id, output_key, created_at, request_id, model, prompt, size_request, size_actual,
 			account_id, account_name, source_url, source_mime, source_bytes,
-			image, image_mime, image_bytes, archived, enrich_status)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+			image_path, image_mime, image_bytes, archived, enrich_status)
+		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending'
+		 WHERE (SELECT value FROM app_meta WHERE key='gallery_generation') = ?
 		 ON CONFLICT(output_key) DO NOTHING
 		 RETURNING id, public_id, image_mime, image_bytes`,
 		publicID, insert.OutputKey, formatTime(s.now()), insert.RequestID, insert.Model, insert.Prompt, insert.SizeRequest,
 		sizeActual, accountID, insert.AccountName, nullString(insert.SourceURL), sourceMime, sourceBytes,
-		imageArg, mimeArg, bytesArg, boolToInt(image != nil),
+		imageArg, mimeArg, bytesArg, boolToInt(image != nil), generation,
 	).Scan(&stored.ID, &stored.PublicID, &mime, &byteCount)
 	reused := err == sql.ErrNoRows
 	if reused {
+		// DO NOTHING returning no row definitively proves this candidate is unreferenced.
+		if image != nil {
+			if err := s.files.removeImage(publicID); err != nil {
+				return domain.StoredImage{}, false, localStorageError(err)
+			}
+		}
 		err = s.db.QueryRowContext(ctx, `SELECT id, public_id, image_mime, image_bytes FROM gallery WHERE output_key = ?`, insert.OutputKey).Scan(&stored.ID, &stored.PublicID, &mime, &byteCount)
 	}
 	if err != nil {
@@ -233,25 +266,14 @@ func scanGalleryItem(row rowScanner) (domain.GalleryItem, error) {
 func (s *Store) GalleryContent(ctx context.Context, id int64, thumbnail bool) ([]byte, string, error) {
 	ctx, cancel := s.operation(ctx)
 	defer cancel()
-	query := `SELECT image, image_mime FROM gallery WHERE id = ?`
-	if thumbnail {
-		query = `SELECT thumb, thumb_mime FROM gallery WHERE id = ?`
+	s.galleryGate.RLock()
+	defer s.galleryGate.RUnlock()
+	unlock := s.imageLocks.lock(fmt.Sprint(id))
+	defer unlock()
+	if !thumbnail {
+		return s.originalContent(ctx, "id", id)
 	}
-	var (
-		data []byte
-		mime sql.NullString
-	)
-	err := s.db.QueryRowContext(ctx, query, id).Scan(&data, &mime)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, "", galleryNotFound()
-		}
-		return nil, "", classifyDBError(err)
-	}
-	if len(data) == 0 || !mime.Valid || mime.String == "" {
-		return nil, "", galleryNotFound()
-	}
-	return data, mime.String, nil
+	return s.thumbnailContent(ctx, id)
 }
 
 // GallerySources loads enrichment metadata for the given ids in input order.
@@ -431,6 +453,22 @@ func (s *Store) SetImageMeasurement(ctx context.Context, id int64, measurement d
 func (s *Store) SetEnrichment(ctx context.Context, id int64, write domain.EnrichmentWrite) error {
 	ctx, cancel := s.operation(ctx)
 	defer cancel()
+	s.galleryGate.RLock()
+	defer s.galleryGate.RUnlock()
+	unlock := s.imageLocks.lock(fmt.Sprint(id))
+	defer unlock()
+	var publicID string
+	var oldPath sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT public_id, thumb_path FROM gallery WHERE id = ?`, id).Scan(&publicID, &oldPath)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return classifyDBError(err)
+	}
+	if !validPublicID(publicID) {
+		return localStorageError(fmt.Errorf("invalid image identity"))
+	}
 	status := strings.TrimSpace(write.Status)
 	if status != "success" && status != "failed" && status != "pending" {
 		return apierror.Invalid("status", "enrichment status must be success, failed or pending", "invalid_value")
@@ -458,22 +496,53 @@ func (s *Store) SetEnrichment(ctx context.Context, id int64, write domain.Enrich
 	}
 	args := []any{status, nullString(write.Error), formatTime(at), tag, scores}
 
+	newPath := ""
 	if len(write.Thumb) > 0 && validStoredMIME(normalizeStoredMIME(write.ThumbMIME)) {
-		setClauses = append(setClauses, "thumb = ?", "thumb_mime = ?", "thumb_bytes = ?")
-		args = append(args, write.Thumb, normalizeStoredMIME(write.ThumbMIME), len(write.Thumb))
+		mime := normalizeStoredMIME(write.ThumbMIME)
+		newPath, err = s.files.writeThumbnail(ctx, publicID, mime, write.Thumb)
+		if err != nil {
+			return localStorageError(err)
+		}
+		setClauses = append(setClauses, "thumb_path = ?", "thumb = ?", "thumb_mime = ?", "thumb_bytes = ?")
+		args = append(args, newPath, write.Thumb, mime, len(write.Thumb))
 	}
-	args = append(args, id)
+	args = append(args, id, publicID)
 
-	_, err := s.db.ExecContext(ctx,
-		"UPDATE gallery SET "+strings.Join(setClauses, ", ")+" WHERE id = ?", args...)
-	return classifyDBError(err)
+	result, err := s.db.ExecContext(ctx,
+		"UPDATE gallery SET "+strings.Join(setClauses, ", ")+" WHERE id = ? AND public_id = ?", args...)
+	if err != nil {
+		return classifyDBError(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return classifyDBError(err)
+	}
+	if affected == 0 {
+		return nil
+	} // Cannot occur under in-process coordination; retain uncertain candidates.
+	if newPath != "" && oldPath.Valid && oldPath.String != "" && oldPath.String != newPath {
+		return localStorageError(s.files.remove(oldPath.String))
+	}
+	return nil
 }
 
 // DeleteGallery removes one row.
 func (s *Store) DeleteGallery(ctx context.Context, id int64) (bool, error) {
 	ctx, cancel := s.operation(ctx)
 	defer cancel()
-	result, err := s.db.ExecContext(ctx, `DELETE FROM gallery WHERE id = ?`, id)
+	s.galleryGate.RLock()
+	defer s.galleryGate.RUnlock()
+	unlock := s.imageLocks.lock(fmt.Sprint(id))
+	defer unlock()
+	var publicID string
+	err := s.db.QueryRowContext(ctx, `SELECT public_id FROM gallery WHERE id = ?`, id).Scan(&publicID)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, classifyDBError(err)
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM gallery WHERE id = ? AND public_id = ?`, id, publicID)
 	if err != nil {
 		return false, classifyDBError(err)
 	}
@@ -481,15 +550,39 @@ func (s *Store) DeleteGallery(ctx context.Context, id int64) (bool, error) {
 	if err != nil {
 		return false, classifyDBError(err)
 	}
+	if affected > 0 {
+		if err := s.files.removeImage(publicID); err != nil {
+			return false, localStorageError(err)
+		}
+	}
 	return affected > 0, nil
 }
 
-// ClearGallery removes every gallery row.
+// ClearGallery removes every gallery row and application-owned candidate file.
 func (s *Store) ClearGallery(ctx context.Context) error {
 	ctx, cancel := s.operation(ctx)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM gallery`)
-	return classifyDBError(err)
+	s.galleryGate.Lock()
+	defer s.galleryGate.Unlock()
+	generation, err := randomFileName("")
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return classifyDBError(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE app_meta SET value = ? WHERE key='gallery_generation'`, generation); err != nil {
+		return classifyDBError(err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM gallery`); err != nil {
+		return classifyDBError(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return classifyDBError(err)
+	}
+	return localStorageError(s.files.clear())
 }
 
 func galleryNotFound() error {

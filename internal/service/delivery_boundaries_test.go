@@ -23,7 +23,11 @@ func TestDeliveryOriginalMIMEMatrix(t *testing.T) {
 		{"image/png", testutil.PNG(t, 4, 5)}, {"image/jpeg", testutil.JPEG(t, 6, 7)}, {"image/webp", testutil.WebP(8, 9)},
 	} {
 		t.Run(tc.mime, func(t *testing.T) {
-			s := store.New(testutil.OpenDB(t), nil)
+			s, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+			if constructErr != nil {
+				t.Fatal(constructErr)
+			}
+			t.Cleanup(func() { _ = s.Close() })
 			if err := s.EnsureSchema(context.Background()); err != nil {
 				t.Fatal(err)
 			}

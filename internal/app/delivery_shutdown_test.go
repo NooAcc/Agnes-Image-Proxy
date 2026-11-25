@@ -51,7 +51,11 @@ func TestRuntimeShutdownDuringDelivery(t *testing.T) {
 	}))
 	defer upstream.Close()
 	db := testutil.OpenDB(t)
-	st := store.New(db, nil)
+	st, constructErr := store.New(db, nil, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = st.Close() })
 	downloader := gatedOriginal{data: data, entered: make(chan struct{}), release: make(chan struct{})}
 	rt, err := NewRuntime(Options{Store: st, APIKey: "secret", Downloader: downloader})
 	if err != nil {

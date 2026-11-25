@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +88,33 @@ func TestRunHealthcheck(t *testing.T) {
 	if err := Run(context.Background(), []string{"healthcheck"}, envFrom(nil), io.Discard, io.Discard); err == nil ||
 		!strings.Contains(err.Error(), "--url") {
 		t.Fatalf("healthcheck without url = %v, want --url error", err)
+	}
+}
+
+func TestRunResetDBDoesNotTouchFilesWithoutConfirmation(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	env := validEnv()
+	env["DATA_DIR"] = dir
+	getter := func(string) string { t.Fatal("unconfirmed reset read environment"); return "" }
+	err := Run(context.Background(), []string{"reset-db"}, getter, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "image files") {
+		t.Fatal("reset warning omits image files", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "images")); !os.IsNotExist(err) {
+		t.Fatal("unconfirmed reset initialized storage", err)
+	}
+	got, err := os.ReadFile(sentinel)
+	if err != nil || string(got) != "keep" {
+		t.Fatal("unconfirmed reset changed data", err)
+	}
+	var help bytes.Buffer
+	_ = Run(context.Background(), []string{"reset-db", "--help"}, envFrom(env), io.Discard, &help)
+	if !strings.Contains(help.String(), "image files") {
+		t.Fatal("help omits destructive image cleanup", help.String())
 	}
 }
 

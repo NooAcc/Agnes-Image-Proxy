@@ -14,7 +14,7 @@ import (
 
 const (
 	metaApplication = "agnes-go"
-	metaVersion     = "2"
+	metaVersion     = "3"
 )
 
 // appTables lists the tables this application owns. Reset only ever touches
@@ -46,7 +46,7 @@ var requiredColumns = map[string][]string{
 	"gallery": {
 		"id", "public_id", "output_key", "created_at", "request_id", "model", "prompt", "size_request", "size_actual",
 		"account_id", "account_name", "source_url", "source_mime", "source_bytes",
-		"image", "image_mime", "image_bytes", "archived", "thumb", "thumb_mime",
+		"image_path", "image_mime", "image_bytes", "archived", "thumb", "thumb_path", "thumb_mime",
 		"thumb_bytes", "nsfw_tag", "nsfw_scores", "enrich_status", "enrich_error", "enriched_at",
 	},
 }
@@ -129,11 +129,12 @@ var schemaStatements = []string{
 		source_url TEXT,
 		source_mime TEXT,
 		source_bytes INTEGER,
-		image BLOB,
+		image_path TEXT,
 		image_mime TEXT,
 		image_bytes INTEGER,
 		archived INTEGER NOT NULL DEFAULT 0,
 		thumb BLOB,
+		thumb_path TEXT,
 		thumb_mime TEXT,
 		thumb_bytes INTEGER,
 		nsfw_tag TEXT,
@@ -183,9 +184,13 @@ func createSchema(ctx context.Context, tx *sql.Tx, now func() time.Time) error {
 			return classifyDBError(err)
 		}
 	}
+	generation, err := randomFileName("")
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO app_meta (key, value) VALUES ('application', ?), ('schema', ?)`,
-		metaApplication, metaVersion,
+		`INSERT INTO app_meta (key, value) VALUES ('application', ?), ('schema', ?), ('gallery_generation', ?)`,
+		metaApplication, metaVersion, generation,
 	); err != nil {
 		return classifyDBError(err)
 	}
@@ -217,6 +222,10 @@ func verifySchema(ctx context.Context, tx *sql.Tx) error {
 		return incompatibleSchema()
 	}
 	if application != metaApplication || version != metaVersion {
+		return incompatibleSchema()
+	}
+	var generation string
+	if err := tx.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key='gallery_generation'`).Scan(&generation); err != nil || !validPublicID(generation) {
 		return incompatibleSchema()
 	}
 
@@ -270,13 +279,25 @@ func (s *Store) ResetSchema(ctx context.Context, confirmed bool) error {
 	if !confirmed {
 		return apierror.Coded(400, "reset requires explicit confirmation", "invalid_request_error", "reset_not_confirmed")
 	}
+	s.galleryGate.Lock()
+	defer s.galleryGate.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return classifyDBError(err)
+	}
+	defer tx.Rollback()
 	for _, table := range appTables {
-		// Table names are a fixed whitelist.
-		if _, err := s.db.ExecContext(ctx, "DROP TABLE IF EXISTS "+table); err != nil {
+		if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS "+table); err != nil {
 			return classifyDBError(err)
 		}
 	}
-	return s.EnsureSchema(ctx)
+	if err := createSchema(ctx, tx, s.now); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return classifyDBError(err)
+	}
+	return localStorageError(s.files.clear())
 }
 
 func incompatibleSchema() error {

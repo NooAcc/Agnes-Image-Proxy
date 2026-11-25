@@ -17,10 +17,14 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 COPY --from=frontend /src/internal/webassets/dist ./internal/webassets/dist
+RUN mkdir -p /out/data && chmod 0750 /out/data
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/agnes-proxy ./cmd/agnes-proxy
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/agnes-proxy /agnes-proxy
+COPY --from=build --chown=65532:65532 /out/data /data
+ENV DATA_DIR=/data
+VOLUME ["/data"]
 EXPOSE 8000
 USER nonroot:nonroot
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

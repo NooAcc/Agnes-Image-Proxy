@@ -515,7 +515,7 @@ paths:
         schema: { type: integer, minimum: 1 }
       - { name: download, in: query, schema: { type: string, enum: ["1"] } }
     get:
-      description: Original PNG/JPEG/WebP bytes or 404
+      description: Local original PNG/JPEG/WebP bytes or 404; no upstream or database BLOB fallback.
       responses:
         "200":
           description: Image bytes (nosniff, sandbox CSP)
@@ -531,7 +531,7 @@ paths:
         required: true
         schema: { type: integer, minimum: 1 }
     get:
-      description: Stored thumbnail or 404; the original is never substituted
+      description: Local thumbnail or 404; only missing files read the database backup and attempt restoration. Non-missing I/O errors fail; the original is never substituted.
       responses:
         "200":
           description: Thumbnail bytes (nosniff, sandbox CSP)

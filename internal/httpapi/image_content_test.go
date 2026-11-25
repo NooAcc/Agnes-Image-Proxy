@@ -109,7 +109,11 @@ func (d contentDownload) Download(context.Context, string) ([]byte, string, erro
 	return []byte(d), "image/png", nil
 }
 func TestHTTPDeliveryURLBase64Equality(t *testing.T) {
-	s := store.New(testutil.OpenDB(t), nil)
+	s, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	ctx := context.Background()
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)

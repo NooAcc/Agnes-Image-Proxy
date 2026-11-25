@@ -20,7 +20,11 @@ var fixedNow = func() time.Time {
 func newSchemaStore(t *testing.T) (*store.Store, *sql.DB) {
 	t.Helper()
 	db := testutil.OpenDB(t)
-	s := store.New(db, fixedNow)
+	s, constructErr := store.New(db, fixedNow, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.EnsureSchema(context.Background()); err != nil {
 		t.Fatalf("ensure schema: %v", err)
 	}
@@ -37,7 +41,7 @@ func TestEnsureSchemaCreatesAndReopens(t *testing.T) {
 	if err := db.QueryRow("SELECT value FROM app_meta WHERE key='schema'").Scan(&version); err != nil {
 		t.Fatalf("read schema: %v", err)
 	}
-	if app != "agnes-go" || version != "2" {
+	if app != "agnes-go" || version != "3" {
 		t.Fatalf("unexpected meta: %q %q", app, version)
 	}
 
@@ -56,7 +60,11 @@ func TestEnsureSchemaCreatesAndReopens(t *testing.T) {
 		t.Fatalf("epoch = %d", epoch)
 	}
 
-	s := store.New(db, fixedNow)
+	s, constructErr := store.New(db, fixedNow, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.EnsureSchema(context.Background()); err != nil {
 		t.Fatalf("reopen failed: %v", err)
 	}
@@ -71,7 +79,11 @@ func TestEnsureSchemaRejectsNonEmptyWithoutMutation(t *testing.T) {
 		t.Fatalf("insert legacy row: %v", err)
 	}
 
-	s := store.New(db, fixedNow)
+	s, constructErr := store.New(db, fixedNow, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	err := s.EnsureSchema(context.Background())
 	if err == nil {
 		t.Fatal("expected non-empty database to be rejected")
@@ -103,7 +115,11 @@ func TestEnsureSchemaRejectsVersionMismatch(t *testing.T) {
 	if _, err := db.Exec("UPDATE app_meta SET value='1' WHERE key='schema'"); err != nil {
 		t.Fatalf("bump version: %v", err)
 	}
-	s := store.New(db, fixedNow)
+	s, constructErr := store.New(db, fixedNow, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.EnsureSchema(context.Background()); err == nil {
 		t.Fatal("expected schema version mismatch")
 	}
@@ -124,7 +140,11 @@ func TestEnsureSchemaRejectsIncompleteSchema(t *testing.T) {
 	if _, err := db.Exec(`CREATE TABLE accounts (id INTEGER PRIMARY KEY)`); err != nil {
 		t.Fatalf("create partial accounts: %v", err)
 	}
-	s := store.New(db, fixedNow)
+	s, constructErr := store.New(db, fixedNow, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.EnsureSchema(context.Background()); err == nil {
 		t.Fatal("expected incomplete schema to be rejected")
 	}
@@ -139,8 +159,8 @@ func TestSchemaBlobRoundTripAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if _, err := tx.Exec(`INSERT INTO gallery (public_id, output_key, created_at, image, thumb, enrich_status) VALUES ('0123456789abcdef0123456789abcdef', 'blob:0:0', ?, ?, ?, 'pending')`,
-		"2026-11-24T12:00:00Z", blob, blob); err != nil {
+	if _, err := tx.Exec(`INSERT INTO gallery (public_id, output_key, created_at, thumb, enrich_status) VALUES ('0123456789abcdef0123456789abcdef', 'blob:0:0', ?, ?, 'pending')`,
+		"2026-11-24T12:00:00Z", blob); err != nil {
 		t.Fatalf("insert gallery: %v", err)
 	}
 	if err := tx.Rollback(); err != nil {
@@ -154,16 +174,16 @@ func TestSchemaBlobRoundTripAndRollback(t *testing.T) {
 		t.Fatalf("rollback left %d rows", count)
 	}
 
-	if _, err := db.Exec(`INSERT INTO gallery (public_id, output_key, created_at, image, thumb, enrich_status) VALUES ('0123456789abcdef0123456789abcdef', 'blob:0:0', ?, ?, ?, 'pending')`,
-		"2026-11-24T12:00:00Z", blob, blob); err != nil {
+	if _, err := db.Exec(`INSERT INTO gallery (public_id, output_key, created_at, thumb, enrich_status) VALUES ('0123456789abcdef0123456789abcdef', 'blob:0:0', ?, ?, 'pending')`,
+		"2026-11-24T12:00:00Z", blob); err != nil {
 		t.Fatalf("insert gallery: %v", err)
 	}
-	var gotImage, gotThumb []byte
-	if err := db.QueryRow("SELECT image, thumb FROM gallery LIMIT 1").Scan(&gotImage, &gotThumb); err != nil {
-		t.Fatalf("read blobs: %v", err)
+	var gotThumb []byte
+	if err := db.QueryRow("SELECT thumb FROM gallery LIMIT 1").Scan(&gotThumb); err != nil {
+		t.Fatalf("read backup: %v", err)
 	}
-	if !bytes.Equal(gotImage, blob) || !bytes.Equal(gotThumb, blob) {
-		t.Fatalf("blob mismatch: %x %x", gotImage, gotThumb)
+	if !bytes.Equal(gotThumb, blob) {
+		t.Fatalf("backup mismatch: %x", gotThumb)
 	}
 }
 
@@ -194,7 +214,11 @@ func TestResetSchemaRequiresConfirmation(t *testing.T) {
 
 func TestEnsureSchemaHonorsCancellation(t *testing.T) {
 	db := testutil.OpenDB(t)
-	s := store.New(db, fixedNow)
+	s, constructErr := store.New(db, fixedNow, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := s.EnsureSchema(ctx); err == nil {

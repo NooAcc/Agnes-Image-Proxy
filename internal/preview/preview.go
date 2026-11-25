@@ -93,11 +93,16 @@ func New(options Options) (*Preview, error) {
 		cleanup()
 		return nil, fmt.Errorf("preview: open sqlite: %w", err)
 	}
-	st := store.New(db, options.Now)
+	st, err := store.New(db, options.Now, filepath.Join(dir, "data"))
+	if err != nil {
+		_ = db.Close()
+		cleanup()
+		return nil, fmt.Errorf("preview: image storage: %w", err)
+	}
 
 	upstream, err := newMockUpstream()
 	if err != nil {
-		_ = db.Close()
+		_ = st.Close()
 		cleanup()
 		return nil, fmt.Errorf("preview: mock upstream: %w", err)
 	}
@@ -114,7 +119,7 @@ func New(options Options) (*Preview, error) {
 	})
 	if err != nil {
 		upstream.close()
-		_ = db.Close()
+		_ = st.Close()
 		cleanup()
 		return nil, fmt.Errorf("preview: runtime: %w", err)
 	}

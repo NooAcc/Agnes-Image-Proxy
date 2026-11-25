@@ -2,6 +2,7 @@ package preview
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -19,7 +20,49 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/NooAcc/Agnes-Image-Proxy/internal/domain"
 )
+
+func TestPreviewLocalStorageCleanup(t *testing.T) {
+	p, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	root := p.dir
+	entries, err := os.ReadDir(root + "/data/images")
+	if err != nil {
+		t.Fatal("preview image directory unavailable", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("preview persisted no image files")
+	}
+	page, err := p.store.ListGallery(context.Background(), domain.CursorQuery{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readable := false
+	for _, row := range page.Items {
+		if row.Archived {
+			data, _, err := p.store.GalleryContent(context.Background(), row.ID, false)
+			if err != nil || len(data) == 0 {
+				t.Fatal("preview original not readable", err)
+			}
+			readable = true
+			break
+		}
+	}
+	if !readable {
+		t.Fatal("preview has no readable original")
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatal("preview root remains", err)
+	}
+}
 
 func TestPreviewImageDeliveryContract(t *testing.T) {
 	var clock atomic.Int64

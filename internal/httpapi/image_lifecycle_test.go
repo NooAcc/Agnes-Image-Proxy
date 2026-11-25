@@ -35,7 +35,11 @@ func (f contentEnrichment) Run(ctx context.Context, job service.EnrichmentJob) e
 
 func TestHTTPWriteFailureStillEnrichesSavedIDs(t *testing.T) {
 	ctx := context.Background()
-	s := store.New(testutil.OpenDB(t), nil)
+	s, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -35,7 +35,11 @@ type adminEnv struct {
 func newAdminEnv(t *testing.T, prober service.Prober) *adminEnv {
 	t.Helper()
 	db := testutil.OpenDB(t)
-	st := store.New(db, time.Now)
+	st, constructErr := store.New(db, time.Now, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = st.Close() })
 	if err := st.EnsureSchema(context.Background()); err != nil {
 		t.Fatalf("schema: %v", err)
 	}

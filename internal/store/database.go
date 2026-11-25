@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tursodatabase/libsql-client-go/libsql"
@@ -20,22 +22,31 @@ type Options struct {
 	URL       string
 	AuthToken string
 	Timeout   time.Duration
+	DataDir   string
 }
 
 // Store is the single database/sql-backed storage implementation.
 type Store struct {
-	db      *sql.DB
-	now     func() time.Time
-	timeout time.Duration
+	db          *sql.DB
+	now         func() time.Time
+	timeout     time.Duration
+	files       *localFiles
+	galleryGate sync.RWMutex
+	outputLocks operationLocks
+	imageLocks  operationLocks
 }
 
 // New wraps an existing database handle. Tests and preview use this with a
 // local SQLite database; production uses Open.
-func New(db *sql.DB, now func() time.Time) *Store {
+func New(db *sql.DB, now func() time.Time, dataDir string) (*Store, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &Store{db: db, now: now, timeout: DefaultTimeout}
+	files, err := newLocalFiles(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{db: db, now: now, timeout: DefaultTimeout, files: files}, nil
 }
 
 // operation bounds the whole storage operation, including row consumption and
@@ -80,7 +91,15 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 		_ = db.Close()
 		return nil, unavailable()
 	}
-	s := New(db, time.Now)
+	dataDir := opts.DataDir
+	if dataDir == "" {
+		dataDir = "/data"
+	}
+	s, err := New(db, time.Now, dataDir)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	s.timeout = timeout
 	return s, nil
 }
@@ -97,12 +116,16 @@ func (s *Store) Ping(ctx context.Context) error {
 	return nil
 }
 
-// Close releases the underlying database handle.
+// Close releases the database and local filesystem handles.
 func (s *Store) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return nil
 	}
-	return s.db.Close()
+	var err error
+	if s.db != nil {
+		err = s.db.Close()
+	}
+	return errors.Join(err, s.files.close())
 }
 
 func unavailable() *apierror.Error {

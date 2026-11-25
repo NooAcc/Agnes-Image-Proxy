@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ type Config struct {
 	ProxyAPIKey        string
 	TursoDatabaseURL   string
 	TursoAuthToken     string
+	DataDir            string
 	Port               int
 	CORSAllowedOrigins []string
 	TrustedProxyCIDRs  []*net.IPNet
@@ -44,6 +46,14 @@ func Load(getenv func(string) string) (Config, error) {
 		ArchiveWorkers:   defaultArchiveWorkers,
 		ArchiveCapacity:  defaultArchiveCapacity,
 		ShutdownTimeout:  defaultShutdownTimeout,
+	}
+	rawDataDir := getenv("DATA_DIR")
+	cfg.DataDir = "/data"
+	if rawDataDir != "" {
+		if strings.TrimSpace(rawDataDir) == "" || (rawDataDir != "/data" && !filepath.IsAbs(rawDataDir)) {
+			return Config{}, fmt.Errorf("DATA_DIR must be a non-empty absolute directory")
+		}
+		cfg.DataDir = rawDataDir
 	}
 	if cfg.ProxyAPIKey == "" {
 		return Config{}, fmt.Errorf("PROXY_API_KEY is required")

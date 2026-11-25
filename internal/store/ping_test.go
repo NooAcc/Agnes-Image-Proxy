@@ -10,7 +10,11 @@ import (
 
 func TestPingReportsConnectivityAndClosedStore(t *testing.T) {
 	db := testutil.OpenDB(t)
-	st := store.New(db, nil)
+	st, err := store.New(db, nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
 
 	if err := st.Ping(context.Background()); err != nil {
 		t.Fatalf("Ping on open store: %v", err)

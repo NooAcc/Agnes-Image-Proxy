@@ -90,6 +90,7 @@ func TestOpenSpeaksHranaProtocol(t *testing.T) {
 		URL:       "https://db.example.turso.io",
 		AuthToken: "tok-123",
 		Timeout:   2 * time.Second,
+		DataDir:   t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("open: %v", err)

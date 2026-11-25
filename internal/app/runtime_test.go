@@ -18,7 +18,11 @@ import (
 
 func newTestRuntime(t *testing.T, options Options) (*Runtime, *store.Store) {
 	t.Helper()
-	st := store.New(testutil.OpenDB(t), nil)
+	st, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = st.Close() })
 	options.Store = st
 	if options.APIKey == "" {
 		options.APIKey = "test-admin-key"

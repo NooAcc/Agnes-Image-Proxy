@@ -137,6 +137,26 @@ func TestConfigResourceValidation(t *testing.T) {
 	}
 }
 
+func TestConfigDataDir(t *testing.T) {
+	m := validEnv()
+	cfg, err := config.Load(env(m))
+	if err != nil || cfg.DataDir != "/data" {
+		t.Fatalf("default data directory: %+v %v", cfg, err)
+	}
+	custom := t.TempDir()
+	m["DATA_DIR"] = custom
+	cfg, err = config.Load(env(m))
+	if err != nil || cfg.DataDir != custom {
+		t.Fatalf("custom directory: %+v %v", cfg, err)
+	}
+	for _, bad := range []string{"   ", "relative/path"} {
+		m["DATA_DIR"] = bad
+		if _, err := config.Load(env(m)); err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+}
+
 func TestConfigTrimsSecrets(t *testing.T) {
 	m := validEnv()
 	m["PROXY_API_KEY"] = "  key  "

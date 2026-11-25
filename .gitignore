@@ -15,6 +15,9 @@ frontend/test-results/
 internal/webassets/dist/
 .build/
 
+# Local runtime image directory (DATA_DIR development example)
+.data/
+
 # Local secrets and environment
 .env
 .env.*

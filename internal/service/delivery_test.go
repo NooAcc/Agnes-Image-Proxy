@@ -72,7 +72,11 @@ func TestDeliveryPersistsBeforeReturn(t *testing.T) {
 }
 func TestDeliveryBase64MatchesOriginal(t *testing.T) {
 	data := testutil.PNG(t, 4, 4)
-	s := store.New(testutil.OpenDB(t), nil)
+	s, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.EnsureSchema(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +166,11 @@ func TestDeliveryCanceledRetry(t *testing.T) {
 func TestDeliveryCanceledAmbiguousCommitKeepsOriginal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s := store.New(testutil.OpenDB(t), nil)
+	s, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +199,11 @@ func TestDeliveryCanceledAmbiguousCommitKeepsOriginal(t *testing.T) {
 
 func TestDeliveryAmbiguousWriteChangedBodyUsesStoredBase64(t *testing.T) {
 	ctx := context.Background()
-	s := store.New(testutil.OpenDB(t), nil)
+	s, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +245,11 @@ func TestDeliveryAmbiguousWriteChangedBodyUsesStoredBase64(t *testing.T) {
 
 func TestDeliveryAmbiguousWriteRetryIsIdempotent(t *testing.T) {
 	db := testutil.OpenDB(t)
-	s := store.New(db, nil)
+	s, constructErr := store.New(db, nil, t.TempDir())
+	if constructErr != nil {
+		t.Fatal(constructErr)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	ctx := context.Background()
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)

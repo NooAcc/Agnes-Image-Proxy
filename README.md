@@ -8,7 +8,7 @@
 和管理 API 权限，请勿将其作为“仅生成图片”的密钥分享给不受信任的人。
 
 - 上游账号池：原子领取、失败冷却、成功 CAS 回写、逐账号尝试记录。
-- 图片交付：生成后受控下载并同步保存原图 BLOB；成功才返回本程序限时签名 URL 或原图 base64。
+- 图片交付：生成后受控下载并同步保存原图到本地 `/data/images`；成功才返回本程序限时签名 URL 或原图 base64。
 - 元数据富化：可选 Edge-Images `/api/batch` 服务，自动测量尺寸、生成缩略图并做五类 NSFW 分类；支持手动补齐。
 - 控制台：总览、图库、账号、日志、设置五个页面，中文界面、深浅主题、键盘可访问。
 - 单库：远程 Turso（libSQL）；数据库 schema 固定版本，不迁移旧库。
@@ -27,7 +27,7 @@ go run ./cmd/agnes-proxy preview --port 8001
 
 打开 `http://127.0.0.1:8001/admin`，管理密钥固定为 `preview`。预览使用临时 SQLite
 数据库和本机模拟的 Agnes/Edge-Images 服务，含示例账号、日志、图库与补齐任务，不读取
-生产环境变量、不连接 Turso、也不访问真实上游。退出后临时数据库删除。
+生产环境变量、不连接 Turso、也不访问真实上游。原图、缩略图与 SQLite 均在隔离临时目录中，退出后一起删除。
 
 ### 本地开发
 
@@ -44,7 +44,7 @@ Vite 开发服务器（`npm --prefix frontend run dev`，端口 5173）会把 `/
 作为后端。生产模式需要真实环境变量：
 
 ```bash
-PROXY_API_KEY=... TURSO_DATABASE_URL=libsql://... TURSO_AUTH_TOKEN=... \
+PROXY_API_KEY=... TURSO_DATABASE_URL=libsql://... TURSO_AUTH_TOKEN=... DATA_DIR="$PWD/.data" \
   go run ./cmd/agnes-proxy serve
 ```
 
@@ -58,9 +58,11 @@ docker compose up -d --build
 ```
 
 镜像为多阶段构建：Node 24 构建前端 → Go 1.26 以 `CGO_ENABLED=0` 编译 Linux 二进制 →
-distroless 非 root 运行镜像（仅含二进制与 CA）。Compose 只启动 `agnes-proxy`，映射
-`8000`，`restart: unless-stopped`、`stop_grace_period: 120s`、只读根文件系统、健康检查
-调用二进制自带的 `healthcheck`。没有数据卷，也不需要 SQLite sidecar。
+distroless 非 root 运行镜像（UID/GID 65532，预建可写 `/data`）。Compose 只启动
+`agnes-proxy`，映射 `8000`，`restart: unless-stopped`、`stop_grace_period: 120s`、只读根文件系统、
+健康检查调用二进制自带的 `healthcheck`。命名卷 `image-data` 挂载到 `/data`，固定
+`DATA_DIR=/data`；容器重建保留图片，无需 SQLite sidecar。不要执行 `docker compose down -v`
+除非明确要删除图片卷。使用已有卷或 bind mount 时，须确保 UID/GID 65532 拥有写权限。
 
 ### GHCR 镜像与自动构建
 
@@ -84,7 +86,7 @@ GHCR 包公开**。若需匿名拉取，将包可见性设为 Public，然后运
 ```bash
 docker pull ghcr.io/nooacc/agnes-image-proxy:latest
 docker run -d --name agnes-proxy --restart unless-stopped \
-  --env-file .env -p 8000:8000 --read-only \
+  --env-file .env -e DATA_DIR=/data -v agnes-image-data:/data -p 8000:8000 --read-only \
   --security-opt no-new-privileges:true --cap-drop ALL --stop-timeout 120 \
   ghcr.io/nooacc/agnes-image-proxy:latest
 ```
@@ -98,6 +100,7 @@ docker run -d --name agnes-proxy --restart unless-stopped \
 | `PROXY_API_KEY` | 是 | — | 同时作为数据面 Bearer 密钥与管理页登录密钥；只做恒定时间比较，不持久化明文以外的地方。 |
 | `TURSO_DATABASE_URL` | 是 | — | `libsql://` 或 `https://`，不得带路径/查询/凭据。 |
 | `TURSO_AUTH_TOKEN` | 是 | — | Turso token。 |
+| `DATA_DIR` | 否 | `/data` | 可写绝对目录；所有应用图片存于 `images/` 子目录，启动检查可写性，配置为空白时报错。Compose 固定 `/data` 并挂载持久化卷。 |
 | `PORT` | 否 | `8000` | HTTP 监听端口。 |
 | `CORS_ALLOWED_ORIGINS` | 否 | 空 | 逗号分隔的完整 origin，用于数据面 CORS。 |
 | `TRUSTED_PROXY_CIDRS` | 否 | 空 | 可信反代网段。为空时完全忽略 `X-Forwarded-*`；仅可信来源的单值 `X-Forwarded-Proto/Host` 可用于推导 Cookie Secure 与同源判断。 |
@@ -108,22 +111,41 @@ docker run -d --name agnes-proxy --restart unless-stopped \
 
 `PROXY_API_KEY` 轮换会让旧管理会话和旧图片签名链接失效；撤销管理会话不影响图片链接。密钥不会出现在日志、管理列表或错误响应中。
 
-## 数据库
+## 数据库与图片存储
 
-当前 schema 为 **2**，不兼容 schema 1，必须新库或自行明确执行重建；升级不会自动删除真实数据。
+当前 schema 为 **3**，不兼容 schema 1/2 和旧 Deno 数据；没有迁移或原图 BLOB 回退。
+升级须使用空库，或**先停服**后显式重建。普通启动遇到非空旧库、版本不符时拒绝启动，
+不会自动删除真实数据。首次启动空库会自动建表并写入 schema 标识。
 
-Turso 需要一个**空的**新库。首次启动自动建表并写入 schema 标识；如果库非空、版本不符
-或来自旧 Deno 实现，服务会拒绝启动，不会自动迁移、改表或读取旧数据。
+- 原图只保存到本地 `DATA_DIR/images/<分片>/<随机publicID>/original.<扩展名>`，数据库只保留
+  路径、MIME、字节数和图库元数据。缩略图使用不可变版本文件，数据库保留同版本 BLOB 备份。
+- 正常 GET/HEAD 只查询小型元数据；HEAD 验证文件并返回长度，不读完整原图。缩略图本地缺失时
+  才读取备份并尝试恢复；恢复写失败可返回备份，权限/其它 I/O 错误不能被备份掩盖。原图缺失
+  不回源下载、不回退旧数据库内容。`/data` 不作为静态目录公开，现有签名/管理鉴权不变。
+- 原图发布前同步文件与目录项（Linux 容器部署）；Windows 非容器开发环境不承诺目录
+  fsync 级掉电恢复，建议正式部署使用 Linux 持久化卷。
+- **仅支持单实例**。本地卷和 Turso 必须作为同一套数据备份、恢复；只恢复其中一侧会产生
+  丢失文件或孤立文件。备份时停服，保持两侧同一时间点；多个独立磁盘实例不能共享同库。
+- 留意磁盘空间。文件成功写入后才发布数据库记录；数据库超时/不确定提交会保留可能被引用
+  的候选文件，不会覆盖已保存原图，可能留下孤立文件。本期没有后台垃圾回收。
+- 单删会删除数据库记录和整张图片目录；清空图库会清理全部应用图片，包括孤立文件。
+  文件清理失败会报错，数据库可能已删除而文件仍在；后续清空图库可再次清理。
+  不删除 DATA_DIR 根目录里的无关文件。
 
-重建（破坏性，删除本应用的全部表并重新建空 schema）：
+重建会清空**账号、设置、日志、图库及应用图片文件**（破坏性，无旧图迁移）：
 
 ```bash
-go run ./cmd/agnes-proxy reset-db --confirm     # 先提供三个必填环境变量
-# 或
-docker compose run --rm agnes-proxy reset-db --confirm
+# 必须先停止运行中的 serve；提供三个必填变量和与 serve 相同的 DATA_DIR。
+DATA_DIR="$PWD/.data" go run ./cmd/agnes-proxy reset-db --confirm
+# Compose 部署：先停服，再使用相同数据库和图片卷重建
+ docker compose stop agnes-proxy
+ docker compose run --rm agnes-proxy reset-db --confirm
+ docker compose up -d
 ```
 
-不带 `--confirm` 会在打开数据库连接之前失败。`deep` 健康检查只执行 `SELECT 1`。
+**禁止在 serve 仍运行时执行 reset-db**：进程内图库锁不能协调另一个 CLI 进程。
+不带 `--confirm` 会在读取配置、打开数据库、初始化图片目录之前失败。数据库重建确认成功
+才清理本地文件；若文件清理失败，命令会报错而不是声称完全清理。`deep` 健康检查只执行 `SELECT 1`。
 
 ## API
 
