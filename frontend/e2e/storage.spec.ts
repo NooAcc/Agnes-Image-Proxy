@@ -1,5 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
-import { login } from "./helpers";
+import { gotoSection, listGallery, login } from "./helpers";
 
 type StorageStatus =
   | { initialized: false }
@@ -47,6 +47,36 @@ async function mockStorage(page: Page, state: { status: StorageStatus; posted?: 
     await fulfill(route, 200, state.status);
   });
 }
+
+test("same-document ImgBed address updates refresh all loaded gallery URLs", async ({ page }) => {
+  await login(page);
+  const item = (await listGallery(page)).find((entry) => entry.archived && entry.imageUrl?.endsWith(".png"))!;
+  const data = await (await page.request.get(item.imageUrl!)).body();
+  const state: { status: StorageStatus } = { status: { initialized: true, mode: "imgbed", imgbedBaseUrl: "https://old.example.com", hasImgbedToken: true } };
+  await mockStorage(page, state);
+  await page.route(/https:\/\/(old|new)\.example\.com\//, (route) => route.fulfill({ status: 200, contentType: "image/png", body: data }));
+  await page.route(/\/admin\/api\/gallery\?/, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const origin = state.status.initialized && state.status.mode === "imgbed" ? state.status.imgbedBaseUrl : "";
+    body.items = [{ ...item, imageUrl: origin + "/file/random.png", thumbnailUrl: null }];
+    body.nextBefore = null;
+    await route.fulfill({ response, json: body });
+  });
+  await page.reload();
+  await gotoSection(page, "gallery");
+  const image = page.locator(".gallery-card img").first();
+  await expect(image).toHaveAttribute("src", "https://old.example.com/file/random.png");
+  await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(64);
+  await gotoSection(page, "settings");
+  await page.getByLabel("ImgBed 地址").fill("https://new.example.com");
+  await page.getByRole("button", { name: "保存存储配置" }).click();
+  await expect(page.getByText("存储配置已保存", { exact: true })).toBeVisible();
+  await gotoSection(page, "gallery");
+  await expect(image).toHaveAttribute("src", "https://new.example.com/file/random.png");
+  await page.getByRole("button", { name: "查看图片：" + item.prompt }).click();
+  await expect(page.getByRole("dialog").locator("img")).toHaveAttribute("src", "https://new.example.com/file/random.png");
+});
 
 test("setup requires an explicit choice, is keyboard operable and fits 375px", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 800 });

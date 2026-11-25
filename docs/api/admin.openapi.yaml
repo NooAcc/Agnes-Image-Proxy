@@ -300,9 +300,15 @@ components:
         enrichStatus: { type: string, enum: [pending, success, failed] }
         archived: { type: boolean }
         sourceUrl: { type: [string, "null"] }
+        imageUrl:
+          type: [string, "null"]
+          description: Public original URL with a file extension; local /images resource or direct ImgBed URL.
+        thumbnailUrl:
+          type: [string, "null"]
+          description: Public versioned local thumbnail URL; null when unavailable.
       required:
         [id, createdAt, requestId, model, prompt, size, accountName, nsfwTag,
-         enrichStatus, archived]
+         enrichStatus, archived, imageUrl, thumbnailUrl]
     GalleryPage:
       type: object
       properties:
@@ -331,6 +337,43 @@ components:
     NoContent:
       description: No content
 paths:
+  /images/{publicID}/{filename}:
+    parameters:
+      - name: publicID
+        in: path
+        required: true
+        schema: { type: string, pattern: '^[0-9a-f]{32}$' }
+      - name: filename
+        in: path
+        required: true
+        schema: { type: string }
+        description: original.png/jpg/webp or the current thumb-{randomVersion}.png/jpg/webp filename.
+    get:
+      security: []
+      summary: Read a public cacheable local original or versioned thumbnail
+      description: |
+        No Cookie/Bearer/signature required. ImgBed originals use direct file URLs instead.
+        Only registered local resources are served. Deleting an image does not purge cached copies.
+      responses:
+        "200":
+          description: Image bytes; public, max-age=31536000, immutable; no Set-Cookie.
+          headers:
+            Cache-Control: { schema: { type: string } }
+            Content-Length: { schema: { type: integer } }
+            Content-Disposition: { schema: { type: string } }
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        "404": { description: Unknown ID, wrong filename/version/extension, or deleted image; no-store. }
+        "503": { description: Storage unavailable; no-store. }
+    head:
+      security: []
+      summary: Verify a public local resource and return image headers without a body
+      responses:
+        "200": { description: Same cache and image headers as GET; empty body. }
+        "404": { description: Image not found; no-store and empty body. }
+        "503": { description: Storage unavailable; no-store and empty body. }
   /admin/api/session:
     post:
       summary: Log in with the proxy key

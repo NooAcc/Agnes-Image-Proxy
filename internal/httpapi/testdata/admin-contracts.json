@@ -152,7 +152,9 @@
     },
     "enrichStatus": "success",
     "archived": true,
-    "sourceUrl": null
+    "sourceUrl": null,
+    "imageUrl": "/images/0123456789abcdef0123456789abcdef/original.png",
+    "thumbnailUrl": null
   },
   "galleryPage": {
     "items": [
@@ -168,7 +170,9 @@
         "nsfwScores": null,
         "enrichStatus": "pending",
         "archived": true,
-        "sourceUrl": null
+        "sourceUrl": null,
+    "imageUrl": "/images/0123456789abcdef0123456789abcdef/original.png",
+    "thumbnailUrl": null
       }
     ],
     "nextBefore": null

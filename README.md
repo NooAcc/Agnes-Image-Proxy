@@ -139,6 +139,24 @@ docker run -d --name agnes-proxy --restart unless-stopped \
 - 数据库明文保存图床 Token；数据库凭据与备份都属于敏感数据，需按包含密钥的资源保护。
 - 本程序只删除图库登记过的远端文件；不递归清理 `agnes-image-proxy` 目录，也不清理孤立文件。
 
+### 相册公开图片与 CDN 缓存
+
+相册列表提供 `imageUrl` 与 `thumbnailUrl`，浏览器直接加载这些 URL，不使用 Blob URL 展示：
+
+- 本地原图：`/images/<随机publicID>/original.png`（JPEG 为 `.jpg`，WebP 为 `.webp`）。
+- 缩略图：`/images/<随机publicID>/thumb-<随机版本标识>.<真实扩展名>`，重新补齐图片会生成新版本 URL。
+- ImgBed 原图：直接使用当前图床地址下的 `/file/agnes-image-proxy/YYYY-MM-DD/<文件名>`，不经本程序中转，也不是生成时的上游临时地址。
+
+本地公开资源支持 GET/HEAD，无需 Cookie、Bearer 或签名；仅公开数据库登记的图片资源，
+不会把 `/data` 作为静态目录开放。成功响应为 `Cache-Control: public, max-age=31536000, immutable`，
+错误响应为 `no-store`，URL 路径保留真实图片后缀，可匹配按后缀缓存的 CDN 规则。
+ImgBed 直链的缓存响应头由图床/CDN 自己配置，本程序无法替它设置。
+
+**这些图片是公开资源，知道 URL 即可访问；随机标识用于降低枚举风险，不是权限控制。**
+删除图片或重建数据库不会自动清除 CDN/浏览器中的副本，副本可能保留到缓存过期，
+如需即时清除应在 CDN 侧主动 purge。管理列表、删除和下载接口继续要求登录并 `no-store`；
+生成 API 仍返回原有的限时签名 URL，不改变签名验证与 base64 交付协议，但签名过期不撤销相册公开 URL。
+
 ### 原图与数据库
 
 - 原图定位统一存于 `original_ref`：local 模式为本地相对路径

@@ -24,20 +24,21 @@ var defaultModels = []string{"agnes-image-2.5-flash", "agnes-image-2.1-flash"}
 // Options wires the HTTP boundary. The administration routes are enabled when
 // Store and Auth are both set.
 type Options struct {
-	Auth         *Auth
-	ImageLinks   *auth.ImageLinks
-	PublicImages PublicImageStore
-	Images       *service.Images
-	Store        AdminStore
-	Storage      StorageStore
-	Backfill     *service.Backfill
-	Probe        *service.Probe
-	Settings     func(context.Context) (domain.Settings, error)
-	Reference    images.ReferenceReader
-	Logs         service.RequestLogStore
-	Assets       http.Handler
-	DeepCheck    func(context.Context) error
-	Models       []string
+	Auth             *Auth
+	ImageLinks       *auth.ImageLinks
+	PublicImages     PublicImageStore
+	GalleryResources GalleryResourceStore
+	Images           *service.Images
+	Store            AdminStore
+	Storage          StorageStore
+	Backfill         *service.Backfill
+	Probe            *service.Probe
+	Settings         func(context.Context) (domain.Settings, error)
+	Reference        images.ReferenceReader
+	Logs             service.RequestLogStore
+	Assets           http.Handler
+	DeepCheck        func(context.Context) error
+	Models           []string
 }
 
 type router struct {
@@ -81,6 +82,8 @@ func (r *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusFound)
 	case path == "/health":
 		r.handleHealth(w, req)
+	case strings.HasPrefix(path, "/images/"):
+		r.serveGalleryResource(w, req)
 	case strings.HasPrefix(path, "/v1/images/content/"):
 		r.servePublicImage(w, req)
 	case path == "/v1/models":

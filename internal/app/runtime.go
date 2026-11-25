@@ -166,19 +166,20 @@ func NewRuntime(options Options) (*Runtime, error) {
 		assets = httpapi.NewAssets(options.Assets)
 	}
 	handler := httpapi.New(httpapi.Options{
-		Auth:         authz,
-		ImageLinks:   auth.NewImageLinks(options.APIKey, now),
-		PublicImages: options.Store,
-		Images:       orchestrator,
-		Store:        options.Store,
-		Storage:      options.Store,
-		Backfill:     backfill,
-		Probe:        probe,
-		Settings:     options.Store.ReadSettings,
-		Reference:    remote,
-		Logs:         options.Store,
-		Assets:       assets,
-		DeepCheck:    options.Store.Ping,
+		Auth:             authz,
+		ImageLinks:       auth.NewImageLinks(options.APIKey, now),
+		PublicImages:     options.Store,
+		GalleryResources: options.Store,
+		Images:           orchestrator,
+		Store:            options.Store,
+		Storage:          options.Store,
+		Backfill:         backfill,
+		Probe:            probe,
+		Settings:         options.Store.ReadSettings,
+		Reference:        remote,
+		Logs:             options.Store,
+		Assets:           assets,
+		DeepCheck:        options.Store.Ping,
 	})
 
 	return &Runtime{

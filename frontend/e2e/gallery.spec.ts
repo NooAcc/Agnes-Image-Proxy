@@ -3,6 +3,41 @@ import { generateImages, listGallery, login, gotoSection, waitForPrompt } from "
 
 test.describe.configure({ mode: "serial" });
 
+test("HTTPS 图床原图直接展示且不请求代理内容接口", async ({ page }) => {
+  await login(page);
+  const item = (await listGallery(page)).find((entry) => entry.archived && entry.imageUrl?.endsWith(".png"))!;
+  expect(item).toBeTruthy();
+  const data = await (await page.request.get(item.imageUrl!)).body();
+  const external = "https://img.example.com/file/agnes-image-proxy/2026-11-25/random.png";
+  let externalImages = 0;
+  let proxyImages = 0;
+  await page.route("https://img.example.com/**", (route) => {
+    externalImages++;
+    expect(route.request().resourceType()).toBe("image");
+    return route.fulfill({ status: 200, contentType: "image/png", body: data });
+  });
+  await page.route(/\/admin\/api\/gallery\?/, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.items = [{ ...item, imageUrl: external, thumbnailUrl: null }];
+    body.nextBefore = null;
+    await route.fulfill({ response, json: body });
+  });
+  page.on("request", (request) => {
+    if (/\/admin\/api\/gallery\/\d+\/(content|thumbnail)$/.test(request.url())) proxyImages++;
+  });
+  await gotoSection(page, "gallery");
+  const card = page.locator(".gallery-card img").first();
+  await expect(card).toHaveAttribute("src", external);
+  await expect.poll(() => card.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(64);
+  await page.getByRole("button", { name: "查看图片：" + item.prompt }).click();
+  const original = page.getByRole("dialog").locator("img");
+  await expect(original).toHaveAttribute("src", external);
+  await expect.poll(() => original.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(64);
+  expect(externalImages).toBeGreaterThan(0);
+  expect(proxyImages).toBe(0);
+});
+
 test("标签筛选、未归档占位与清除筛选", async ({ page }) => {
   await login(page);
   await gotoSection(page, "gallery");
@@ -16,7 +51,7 @@ test("标签筛选、未归档占位与清除筛选", async ({ page }) => {
   await expect(page.locator(".gallery-card").filter({ hasText: "preview: metadata only" })).toContainText("未归档");
 });
 
-test("模拟生成后可查看原图、下载，删除取消不删除", async ({ page }) => {
+test("模拟生成后可查看原图、下载，删除取消不删除", async ({ page, playwright, baseURL }) => {
   await login(page);
   const prompt = "e2e gallery image";
   await generateImages(page, prompt, 2);
@@ -30,6 +65,18 @@ test("模拟生成后可查看原图、下载，删除取消不删除", async ({
   const original = dialog.locator("img");
   await expect(original).toBeVisible();
   await expect.poll(() => original.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(64);
+  await expect(original).toHaveAttribute("src", target.imageUrl!);
+  expect(target.imageUrl).toMatch(/^\/images\/[0-9a-f]{32}\/original\.(png|jpg|webp)$/);
+  await expect(page.locator(`.gallery-card[data-id="${target.id}"] img`)).not.toHaveAttribute("src", /^blob:/);
+  const anonymous = await playwright.request.newContext({ baseURL });
+  try {
+    const response = await anonymous.get(target.imageUrl!);
+    expect(response.status()).toBe(200);
+    expect(response.headers()["cache-control"]).toBe("public, max-age=31536000, immutable");
+    expect(response.headers()["set-cookie"]).toBeUndefined();
+  } finally {
+    await anonymous.dispose();
+  }
 
   const downloadLink = dialog.getByRole("link", { name: "下载" });
   await expect(downloadLink).not.toHaveAttribute("download", /.+/);
@@ -85,7 +132,7 @@ test("快速切换原图不残留上一张", async ({ page }) => {
   const [first, second] = pngItems;
 
   let delayed = false;
-  await page.route(/\/admin\/api\/gallery\/\d+\/content$/, async (route) => {
+  await page.route(/\/images\/[0-9a-f]{32}\/original\.png$/, async (route) => {
     if (!delayed) {
       delayed = true;
       await new Promise((resolve) => setTimeout(resolve, 800));

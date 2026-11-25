@@ -26,6 +26,8 @@ type GalleryItem struct {
 	EnrichStatus string      `json:"enrichStatus"`
 	Archived     bool        `json:"archived"`
 	SourceURL    *string     `json:"sourceUrl"`
+	ImageURL     *string     `json:"imageUrl"`
+	ThumbnailURL *string     `json:"thumbnailUrl"`
 }
 
 // GallerySource is the enrichment view of one gallery row.
@@ -35,6 +37,13 @@ type GallerySource struct {
 	MIME        string  `json:"mime"`
 	Bytes       int64   `json:"bytes"`
 	SourceBytes int64   `json:"sourceBytes"`
+}
+
+// GalleryResource is the content or HEAD metadata of one public local image.
+type GalleryResource struct {
+	Data  []byte
+	MIME  string
+	Bytes int64
 }
 
 // StoredImage identifies a persisted original without loading its body.

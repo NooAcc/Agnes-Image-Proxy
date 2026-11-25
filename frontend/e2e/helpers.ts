@@ -9,6 +9,8 @@ export interface GalleryItem {
   enrichStatus: string;
   archived: boolean;
   sourceUrl: string | null;
+  imageUrl: string | null;
+  thumbnailUrl: string | null;
   createdAt: string;
 }
 

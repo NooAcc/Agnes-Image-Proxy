@@ -94,6 +94,15 @@ func parseUploadSource(src, baseURL, folder string) (string, error) {
 	return ref, nil
 }
 
+// PublicFileURL builds a token-free URL for a stored original on the current site.
+func PublicFileURL(baseURL, ref string) (string, error) {
+	origin, err := domain.NormalizeImgbedBaseURL(baseURL)
+	if err != nil {
+		return "", err
+	}
+	return fileURL(origin, "file", ref)
+}
+
 // fileURL rebuilds a file or delete endpoint for the current site address,
 // escaping each decoded segment exactly once. It never cleans a path.
 func fileURL(baseURL, endpoint, ref string) (string, error) {

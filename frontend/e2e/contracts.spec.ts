@@ -61,14 +61,14 @@ test("initialization_required 停止板块请求并转到 setup", async ({ page 
   await expect(page.getByRole("heading", { name: "选择原图存储方式" })).toBeVisible();
 });
 
-test("缩略图明确 404 时只回退一次到鉴权原图", async ({ page }) => {
+test("缩略图失败时回退到公开原图", async ({ page }) => {
   let thumbnailRequests = 0;
   let contentRequests = 0;
-  await page.route(/\/admin\/api\/gallery\/\d+\/thumbnail$/, (route) => {
+  await page.route(/\/images\/[0-9a-f]{32}\/thumb-[0-9a-f]{32}\.(png|jpg|webp)$/, (route) => {
     thumbnailRequests += 1;
     return route.fulfill({ status: 404, body: "" });
   });
-  await page.route(/\/admin\/api\/gallery\/\d+\/content$/, (route) => {
+  await page.route(/\/images\/[0-9a-f]{32}\/original\.(png|jpg|webp)$/, (route) => {
     contentRequests += 1;
     return route.continue();
   });

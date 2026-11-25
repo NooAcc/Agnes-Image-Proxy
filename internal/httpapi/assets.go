@@ -10,7 +10,7 @@ import (
 )
 
 const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; " +
-	"style-src-attr 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; " +
+	"style-src-attr 'unsafe-inline'; img-src 'self' https: blob: data:; font-src 'self'; " +
 	"connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; " +
 	"frame-ancestors 'none'"
 

@@ -244,8 +244,17 @@ func (s *Store) galleryByOutputKey(ctx context.Context, key string) (domain.Stor
 
 // ListGallery returns gallery summaries newest-first with tag filtering.
 func (s *Store) ListGallery(ctx context.Context, query domain.CursorQuery) (domain.Page[domain.GalleryItem], error) {
+	release, err := s.storageGate.acquire(ctx, false)
+	if err != nil {
+		return domain.Page[domain.GalleryItem]{}, err
+	}
+	defer release()
 	ctx, cancel := s.operation(ctx)
 	defer cancel()
+	config, _, err := s.readStorageConfig(ctx)
+	if err != nil {
+		return domain.Page[domain.GalleryItem]{}, err
+	}
 	tag := strings.TrimSpace(query.Tag)
 	if tag != "" && !galleryTags[tag] {
 		return domain.Page[domain.GalleryItem]{}, apierror.Invalid("tag", "unknown nsfw tag", "invalid_value")
@@ -256,7 +265,8 @@ func (s *Store) ListGallery(ctx context.Context, query domain.CursorQuery) (doma
 	limit := normalizeLimit(query.Limit, defaultGalleryLimit)
 
 	sqlQuery := `SELECT id, created_at, request_id, model, prompt, size_request, size_actual,
-		account_name, nsfw_tag, nsfw_scores, enrich_status, source_url, archived
+		account_name, nsfw_tag, nsfw_scores, enrich_status, source_url, archived,
+  public_id, original_ref, image_mime, image_bytes, thumb_path, thumb_mime, thumb_bytes
 		FROM gallery WHERE 1=1`
 	var args []any
 	if query.Before != nil {
@@ -282,7 +292,7 @@ func (s *Store) ListGallery(ctx context.Context, query domain.CursorQuery) (doma
 
 	items := make([]domain.GalleryItem, 0, limit)
 	for rows.Next() {
-		item, err := scanGalleryItem(rows)
+		item, err := scanGalleryItem(rows, config)
 		if err != nil {
 			return domain.Page[domain.GalleryItem]{}, classifyDBError(err)
 		}
@@ -301,19 +311,23 @@ func (s *Store) ListGallery(ctx context.Context, query domain.CursorQuery) (doma
 	return domain.Page[domain.GalleryItem]{Items: items, NextBefore: nextBefore}, nil
 }
 
-func scanGalleryItem(row rowScanner) (domain.GalleryItem, error) {
+func scanGalleryItem(row rowScanner, config domain.StorageConfig) (domain.GalleryItem, error) {
 	var (
-		item      domain.GalleryItem
-		createdAt string
-		sizeReq   string
-		sizeAct   sql.NullString
-		tag       sql.NullString
-		scores    sql.NullString
-		source    sql.NullString
-		archived  int
+		item                            domain.GalleryItem
+		createdAt                       string
+		sizeReq                         string
+		sizeAct                         sql.NullString
+		tag                             sql.NullString
+		scores                          sql.NullString
+		source                          sql.NullString
+		archived                        int
+		publicID                        string
+		ref, mime, thumbPath, thumbMIME sql.NullString
+		imageBytes, thumbBytes          sql.NullInt64
 	)
 	if err := row.Scan(&item.ID, &createdAt, &item.RequestID, &item.Model, &item.Prompt, &sizeReq,
-		&sizeAct, &item.AccountName, &tag, &scores, &item.EnrichStatus, &source, &archived); err != nil {
+		&sizeAct, &item.AccountName, &tag, &scores, &item.EnrichStatus, &source, &archived,
+		&publicID, &ref, &mime, &imageBytes, &thumbPath, &thumbMIME, &thumbBytes); err != nil {
 		return domain.GalleryItem{}, err
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, createdAt)
@@ -339,6 +353,7 @@ func scanGalleryItem(row rowScanner) (domain.GalleryItem, error) {
 		item.SourceURL = &source.String
 	}
 	item.Archived = archived != 0
+	galleryResourceURLs(&item, config, publicID, ref.String, mime.String, imageBytes.Int64, thumbPath.String, thumbMIME.String, thumbBytes.Int64)
 	return item, nil
 }
 

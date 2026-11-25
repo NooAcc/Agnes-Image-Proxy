@@ -1,6 +1,29 @@
 import { icon } from "./icons.ts";
 import { enrichSummaryText } from "./contracts.ts";
 
+/** Load a public image directly, with one bounded thumbnail-to-original fallback. */
+export function loadGalleryCardImage(item, image, failures, showError) {
+  var original = item.imageUrl;
+  var initial = item.thumbnailUrl || original;
+  var key = (item.thumbnailUrl || "") + "|" + (original || "");
+  if (!initial || failures[key]) {
+    showError();
+    return;
+  }
+  var fallback = initial !== original && Boolean(original);
+  image.onerror = function () {
+    if (fallback) {
+      fallback = false;
+      image.src = original;
+      return;
+    }
+    image.onerror = null;
+    failures[key] = true;
+    showError();
+  };
+  image.src = initial;
+}
+
 /** Gallery section: archived output images grouped by UTC day. */
 export const GALLERY_HTML = `
 <section class="panel" data-section="gallery" data-title="图片">
@@ -95,6 +118,7 @@ export const GALLERY_SCRIPT = String.raw`
   var section = document.querySelector('[data-section="gallery"]');
   if (!section) return;
   var enrichSummaryText = ${enrichSummaryText.toString()};
+  var loadGalleryCardImage = ${loadGalleryCardImage.toString()};
   var enrichButton = section.querySelector('[data-action="enrich-gallery"]');
   var enrichAvailable = false;
   var enrichPolling = false;
@@ -114,8 +138,7 @@ export const GALLERY_SCRIPT = String.raw`
     current: 0,
     generation: 0,
     imageToken: 0,
-    imageUrls: {},
-    objectUrls: [],
+    imageErrors: {},
   };
 
   var TAG_LABELS = {
@@ -198,14 +221,6 @@ export const GALLERY_SCRIPT = String.raw`
     });
   }
 
-  function revokeImageUrls() {
-    for (var i = 0; i < state.objectUrls.length; i++) {
-      try { URL.revokeObjectURL(state.objectUrls[i]); } catch (error) { /* ignore */ }
-    }
-    state.objectUrls = [];
-    state.imageUrls = {};
-  }
-
   function showImageError(open, message) {
     open.replaceChildren();
     var placeholder = A.el("div", "gallery-placeholder");
@@ -215,45 +230,8 @@ export const GALLERY_SCRIPT = String.raw`
     open.disabled = true;
   }
 
-  function fetchImageBlob(item, thumbnail) {
-    var url = "/admin/api/gallery/" + item.id + "/" + (thumbnail ? "thumbnail" : "content");
-    return fetch(url, { credentials: "same-origin" }).then(function (response) {
-      if (thumbnail && response.status === 404) return null;
-      if (!response.ok) {
-        var error = new Error("图片加载失败（HTTP " + response.status + "）");
-        error.status = response.status;
-        throw error;
-      }
-      return response.blob();
-    });
-  }
-
   function loadCardImage(item, open, image) {
-    var cached = state.imageUrls[item.id];
-    if (cached === "error") {
-      showImageError(open, "图片不可用");
-      return;
-    }
-    if (cached) {
-      image.src = cached;
-      return;
-    }
-    fetchImageBlob(item, true).then(function (blob) {
-      if (!blob) {
-        // Only a definite 404 falls back to the authenticated original once.
-        return fetchImageBlob(item, false).then(function (original) {
-          if (!original) throw new Error("图片内容不存在");
-          return original;
-        });
-      }
-      return blob;
-    }).then(function (blob) {
-      var url = URL.createObjectURL(blob);
-      state.imageUrls[item.id] = url;
-      state.objectUrls.push(url);
-      image.src = url;
-    }).catch(function () {
-      state.imageUrls[item.id] = "error";
+    loadGalleryCardImage(item, image, state.imageErrors, function () {
       showImageError(open, "图片不可用");
     });
   }
@@ -396,7 +374,7 @@ export const GALLERY_SCRIPT = String.raw`
 
   function reset() {
     state.generation += 1;
-    revokeImageUrls();
+    state.imageErrors = {};
     state.items = [];
     state.visible = [];
     state.before = null;
@@ -450,7 +428,12 @@ export const GALLERY_SCRIPT = String.raw`
       var meta = node("gallery-dialog-meta");
       if (meta && token === state.imageToken) meta.textContent = "原图加载失败";
     };
-    image.src = "/admin/api/gallery/" + item.id + "/content";
+    if (item.imageUrl) {
+      image.src = item.imageUrl;
+    } else {
+      image.removeAttribute("src");
+      image.onerror();
+    }
     image.alt = item.prompt || "生成图片";
   }
 
@@ -755,6 +738,14 @@ export const GALLERY_SCRIPT = String.raw`
   A.api("/admin/api/settings").then(function (settings) {
     setEnrichAvailability(imageServiceConfigured(settings));
   }).catch(function () { /* stay unavailable until settings arrive */ });
+
+  document.addEventListener("agnes:storage", function () {
+    // A site-address update changes every ImgBed URL, including older pages
+    // that refreshNewest does not fetch. Discard all previously loaded links.
+    var dialog = node("gallery-dialog");
+    if (dialog && dialog.open) dialog.close();
+    reset();
+  });
 
   document.addEventListener("agnes:settings", function (event) {
     setEnrichAvailability(imageServiceConfigured(event.detail));

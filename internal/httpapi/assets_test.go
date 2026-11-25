@@ -36,6 +36,23 @@ func serveFS(t *testing.T, fsys fstest.MapFS, method, target string) *httptest.R
 	return rec
 }
 
+func TestAssetsCSPAllowsImgbedImagesOnly(t *testing.T) {
+	csp := serve(t, http.MethodGet, "/admin/gallery").Header().Get("Content-Security-Policy")
+	directives := map[string]string{}
+	for _, directive := range strings.Split(csp, ";") {
+		fields := strings.Fields(directive)
+		if len(fields) > 0 {
+			directives[fields[0]] = strings.Join(fields[1:], " ")
+		}
+	}
+	if !strings.Contains(directives["img-src"], "https:") {
+		t.Fatalf("ImgBed images blocked: %s", csp)
+	}
+	if directives["script-src"] != "'self'" || directives["connect-src"] != "'self'" || directives["frame-ancestors"] != "'none'" {
+		t.Fatalf("unrelated CSP loosened: %s", csp)
+	}
+}
+
 func TestAssetsServesPages(t *testing.T) {
 	pages := map[string]string{
 		"/admin":          "Agnes 控制台",

@@ -112,6 +112,7 @@ export const STORAGE_SCRIPT = String.raw`
         state.dirty = false;
         if (tokenInput) tokenInput.value = "";
         apply(status);
+        document.dispatchEvent(new CustomEvent("agnes:storage", { detail: status }));
         A.toast("存储配置已保存");
       } catch (error) {
         var code = error && error.body && error.body.error && error.body.error.code;

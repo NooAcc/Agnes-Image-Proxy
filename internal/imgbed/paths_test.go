@@ -6,6 +6,23 @@ import (
 	"time"
 )
 
+func TestPublicFileURL(t *testing.T) {
+	ref := "agnes-image-proxy/2026-11-25/a b 中文%z.png"
+	want := "https://img.example.com/file/agnes-image-proxy/2026-11-25/a%20b%20%E4%B8%AD%E6%96%87%25z.png"
+	got, err := PublicFileURL("https://img.example.com", ref)
+	if err != nil || got != want {
+		t.Fatalf("URL = %q %v, want %q", got, err, want)
+	}
+	for _, origin := range []string{"http://img.example.com", "https://user:secret@img.example.com", "https://img.example.com/?secret=token"} {
+		if _, err := PublicFileURL(origin, ref); err == nil {
+			t.Fatalf("invalid origin accepted: %s", origin)
+		}
+	}
+	if _, err := PublicFileURL("https://img.example.com", "../secret.png"); err == nil {
+		t.Fatal("invalid ref accepted")
+	}
+}
+
 func TestUploadFolderChinaTime(t *testing.T) {
 	before := time.Date(2026, 11, 25, 15, 59, 59, 0, time.UTC)
 	after := before.Add(time.Second)
