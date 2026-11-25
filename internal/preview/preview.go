@@ -93,7 +93,7 @@ func New(options Options) (*Preview, error) {
 		cleanup()
 		return nil, fmt.Errorf("preview: open sqlite: %w", err)
 	}
-	st, err := store.New(db, options.Now, filepath.Join(dir, "data"))
+	st, err := store.New(db, store.NewOptions{Now: options.Now, DataDir: filepath.Join(dir, "data")})
 	if err != nil {
 		_ = db.Close()
 		cleanup()
@@ -122,6 +122,13 @@ func New(options Options) (*Preview, error) {
 		_ = st.Close()
 		cleanup()
 		return nil, fmt.Errorf("preview: runtime: %w", err)
+	}
+
+	if _, err := st.InitializeStorage(context.Background(), domain.StorageInit{Mode: domain.StorageLocal}); err != nil {
+		upstream.close()
+		_ = runtime.Shutdown(context.Background())
+		cleanup()
+		return nil, fmt.Errorf("preview: initialize local storage: %w", err)
 	}
 
 	seedCtx, seedCancel := context.WithTimeout(context.Background(), 15*time.Second)

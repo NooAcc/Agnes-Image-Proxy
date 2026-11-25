@@ -19,6 +19,13 @@ import (
 
 type adminProber struct{ err error }
 
+func requireLocalStorage(t *testing.T, s *store.Store) {
+	t.Helper()
+	if _, err := s.InitializeStorage(context.Background(), domain.StorageInit{Mode: domain.StorageLocal}); err != nil {
+		t.Fatalf("initialize local storage: %v", err)
+	}
+}
+
 func (p adminProber) ProbeModels(context.Context, string, string, time.Duration) error { return p.err }
 
 type noopEnricher struct{}
@@ -35,7 +42,7 @@ type adminEnv struct {
 func newAdminEnv(t *testing.T, prober service.Prober) *adminEnv {
 	t.Helper()
 	db := testutil.OpenDB(t)
-	st, constructErr := store.New(db, time.Now, t.TempDir())
+	st, constructErr := store.New(db, store.NewOptions{Now: time.Now, DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -43,6 +50,7 @@ func newAdminEnv(t *testing.T, prober service.Prober) *adminEnv {
 	if err := st.EnsureSchema(context.Background()); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
+	requireLocalStorage(t, st)
 	sessions := auth.NewSessions("secret-key", st, time.Now)
 	limiter := auth.NewLimiter(time.Now)
 	authn := httpapi.NewAuth(httpapi.AuthOptions{APIKey: "secret-key", Sessions: sessions, Limiter: limiter})
@@ -53,6 +61,7 @@ func newAdminEnv(t *testing.T, prober service.Prober) *adminEnv {
 	handler := httpapi.New(httpapi.Options{
 		Auth:     authn,
 		Store:    st,
+		Storage:  st,
 		Settings: st.ReadSettings,
 		Backfill: backfill,
 		Probe:    probe,

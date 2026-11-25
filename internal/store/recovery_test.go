@@ -13,7 +13,7 @@ import (
 
 func TestDatabaseOperationsHaveOwnDeadline(t *testing.T) {
 	db := testutil.OpenDB(t)
-	s, err := New(db, time.Now, t.TempDir())
+	s, err := New(db, NewOptions{Now: time.Now, DataDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,13 +61,16 @@ func TestDatabaseOperationsHaveOwnDeadline(t *testing.T) {
 
 func TestEnrichmentStateContainsOnlyMetadata(t *testing.T) {
 	db := testutil.OpenDB(t)
-	s, err := New(db, time.Now, t.TempDir())
+	s, err := New(db, NewOptions{Now: time.Now, DataDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	ctx := context.Background()
 	if err := s.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InitializeStorage(ctx, domain.StorageInit{Mode: domain.StorageLocal}); err != nil {
 		t.Fatal(err)
 	}
 	mime := "image/png"
@@ -85,7 +88,7 @@ func TestEnrichmentStateContainsOnlyMetadata(t *testing.T) {
 
 func TestLogKeepsSubrequestFailuresIndependentOfImages(t *testing.T) {
 	db := testutil.OpenDB(t)
-	s, err := New(db, time.Now, t.TempDir())
+	s, err := New(db, NewOptions{Now: time.Now, DataDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

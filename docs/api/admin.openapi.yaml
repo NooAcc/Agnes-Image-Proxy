@@ -7,6 +7,9 @@ info:
     `{ "error": { message, type, param, code } }`. Cookie-authenticated
     mutations require an Origin header equal to the external origin. The
     same API key is also accepted as `Authorization: Bearer`.
+    Every management endpoint except `/admin/api/session*` and
+    `/admin/api/storage` returns `503 initialization_required` until the
+    administrator has fixed the original-image storage mode.
 servers:
   - url: /
 security:
@@ -38,6 +41,51 @@ components:
       properties:
         authenticated: { type: boolean }
       required: [authenticated]
+    StorageStatus:
+      description: Redacted storage view; never contains the ImgBed token.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [initialized]
+          properties:
+            initialized: { const: false }
+        - type: object
+          additionalProperties: false
+          required: [initialized, mode]
+          properties:
+            initialized: { const: true }
+            mode: { const: local }
+        - type: object
+          additionalProperties: false
+          required: [initialized, mode, imgbedBaseUrl, hasImgbedToken]
+          properties:
+            initialized: { const: true }
+            mode: { const: imgbed }
+            imgbedBaseUrl: { type: string, format: uri }
+            hasImgbedToken: { type: boolean }
+    StorageInit:
+      description: Strict first-run request; unknown fields, explicit nulls and local/imgbed field mixing are rejected.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: { const: local }
+        - type: object
+          additionalProperties: false
+          required: [mode, imgbedBaseUrl, imgbedToken]
+          properties:
+            mode: { const: imgbed }
+            imgbedBaseUrl: { type: string, format: uri, description: HTTPS origin without path, query or credentials }
+            imgbedToken: { type: string, maxLength: 4096, description: Requires upload and delete permission }
+    StorageUpdate:
+      description: Updates ImgBed connection information only. An omitted or empty token retains the stored token; the mode cannot change.
+      type: object
+      additionalProperties: false
+      required: [imgbedBaseUrl]
+      properties:
+        imgbedBaseUrl: { type: string, format: uri }
+        imgbedToken: { type: string, maxLength: 4096 }
     AccountSummary:
       type: object
       properties:
@@ -327,6 +375,56 @@ paths:
       responses:
         "204": { $ref: "#/components/responses/NoContent" }
         "403": { $ref: "#/components/responses/Error" }
+  /admin/api/storage:
+    get:
+      summary: Read the redacted storage state
+      description: Always allowed, including before initialization.
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StorageStatus" }
+        "401": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Initialize the fixed original-image storage mode
+      description: |
+        Atomic first-run insert. A second request always returns
+        409 already_initialized and never changes the fixed configuration.
+        Local mode probes DATA_DIR; imgbed mode validates format only (no
+        remote upload or token probe).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StorageInit" }
+      responses:
+        "201":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StorageStatus" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+    put:
+      summary: Update ImgBed address and optionally the token
+      description: |
+        Only valid in imgbed mode. 409 not_initialized before setup and
+        409 storage_mode_fixed for local storage. An empty or omitted token
+        retains the stored value; null is rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StorageUpdate" }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StorageStatus" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /admin/api/accounts:
     get:
       responses:

@@ -35,7 +35,7 @@ func (f contentEnrichment) Run(ctx context.Context, job service.EnrichmentJob) e
 
 func TestHTTPWriteFailureStillEnrichesSavedIDs(t *testing.T) {
 	ctx := context.Background()
-	s, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+	s, constructErr := store.New(testutil.OpenDB(t), store.NewOptions{DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -43,6 +43,7 @@ func TestHTTPWriteFailureStillEnrichesSavedIDs(t *testing.T) {
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
+	requireLocalStorage(t, s)
 	tasks := service.NewTasks(service.TaskOptions{Workers: 1, Capacity: 2})
 	defer tasks.Drain(ctx)
 	data := testutil.PNG(t, 4, 4)
@@ -59,7 +60,7 @@ func TestHTTPWriteFailureStillEnrichesSavedIDs(t *testing.T) {
 		}
 		return nil
 	})})
-	handler := httpapi.New(httpapi.Options{Auth: httpapi.NewAuth(httpapi.AuthOptions{APIKey: "secret"}), Images: im, ImageLinks: auth.NewImageLinks("secret", nil), PublicImages: s, Settings: s.ReadSettings})
+	handler := httpapi.New(httpapi.Options{Auth: httpapi.NewAuth(httpapi.AuthOptions{APIKey: "secret"}), Images: im, Storage: initializedStorage{}, ImageLinks: auth.NewImageLinks("secret", nil), PublicImages: s, Settings: s.ReadSettings})
 	req := httptest.NewRequest("POST", "https://proxy.example/v1/images/generations", strings.NewReader(`{"model":"m","prompt":"p"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer secret")
@@ -81,7 +82,7 @@ func TestHTTPInvalidPublicOriginDoesNotGenerate(t *testing.T) {
 		generations.Add(1)
 		return agnes.Generation{}, nil
 	}})
-	handler := httpapi.New(httpapi.Options{Auth: httpapi.NewAuth(httpapi.AuthOptions{APIKey: "secret"}), Images: im, ImageLinks: auth.NewImageLinks("secret", nil), Settings: func(context.Context) (domain.Settings, error) { return domain.DefaultSettings(), nil }})
+	handler := httpapi.New(httpapi.Options{Auth: httpapi.NewAuth(httpapi.AuthOptions{APIKey: "secret"}), Images: im, Storage: initializedStorage{}, ImageLinks: auth.NewImageLinks("secret", nil), Settings: func(context.Context) (domain.Settings, error) { return domain.DefaultSettings(), nil }})
 	req := httptest.NewRequest("POST", "http://public.example/v1/images/generations", strings.NewReader(`{"model":"m","prompt":"p"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer secret")

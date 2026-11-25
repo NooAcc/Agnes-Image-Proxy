@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { errorMessage, fieldErrorFor, fieldErrors } from "@/lib/errors";
 import type { Settings } from "@/lib/schemas";
 import { useRevokeSessions } from "@/features/auth/use-session";
+import { StorageSettings } from "@/features/storage/storage-settings";
 import { useSettings, useUpdateSettings } from "./use-settings";
 
 const FIELD_LABELS: Record<string, string> = {
@@ -323,9 +324,13 @@ export function SettingsPage() {
   }
   if (!settings.data) return null;
   return (
-    <section aria-labelledby="settings-heading" className="grid gap-4">
+    <section aria-labelledby="settings-heading" className="grid gap-6">
       <h2 id="settings-heading" className="text-base font-semibold">服务设置</h2>
       <SettingsForm initial={settings.data} />
+      <section aria-labelledby="storage-settings-heading" className="grid gap-3">
+        <h2 id="storage-settings-heading" className="text-base font-semibold">原图存储</h2>
+        <StorageSettings />
+      </section>
     </section>
   );
 }

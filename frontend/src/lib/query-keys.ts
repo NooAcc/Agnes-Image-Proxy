@@ -2,6 +2,7 @@ import type { LogCategory } from "./contracts";
 
 export const queryKeys = {
   session: ["session"] as const,
+  storage: ["storage"] as const,
   accounts: ["accounts"] as const,
   settings: ["settings"] as const,
   logs: (category: LogCategory, before: number | null) => ["logs", category, before] as const,

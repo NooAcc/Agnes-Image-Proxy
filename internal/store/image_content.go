@@ -11,7 +11,7 @@ import (
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/domain"
 )
 
-const imageInfoColumns = `SELECT id, public_id, image_mime, image_bytes, image_path FROM gallery`
+const imageInfoColumns = `SELECT id, public_id, image_mime, image_bytes, original_ref FROM gallery`
 
 func (s *Store) ImageInfo(ctx context.Context, id int64) (domain.StoredImage, error) {
 	return s.imageInfo(ctx, "id", id)
@@ -19,85 +19,84 @@ func (s *Store) ImageInfo(ctx context.Context, id int64) (domain.StoredImage, er
 func (s *Store) PublicImageInfo(ctx context.Context, id string) (domain.StoredImage, error) {
 	return s.imageInfo(ctx, "public_id", id)
 }
-func (s *Store) imageMetadata(ctx context.Context, column string, value any) (domain.StoredImage, string, error) {
+
+func (s *Store) imageMetadata(ctx context.Context, column string, value any) (domain.StoredImage, error) {
+	dbCtx, cancel := s.operation(ctx)
+	defer cancel()
 	var image domain.StoredImage
-	var mime, path sql.NullString
+	var mime, ref sql.NullString
 	var size sql.NullInt64
-	err := s.db.QueryRowContext(ctx, imageInfoColumns+" WHERE "+column+" = ?", value).Scan(&image.ID, &image.PublicID, &mime, &size, &path)
+	err := s.db.QueryRowContext(dbCtx, imageInfoColumns+" WHERE "+column+" = ?", value).Scan(&image.ID, &image.PublicID, &mime, &size, &ref)
 	if errors.Is(err, sql.ErrNoRows) {
-		return image, "", galleryNotFound()
+		return image, galleryNotFound()
 	}
 	if err != nil {
-		return image, "", classifyDBError(err)
+		return image, classifyDBError(err)
 	}
-	if !validPublicID(image.PublicID) || !mime.Valid || !validStoredMIME(mime.String) || !size.Valid || size.Int64 <= 0 || !path.Valid {
-		return image, "", galleryNotFound()
+	if !originalIdentityValid(image.PublicID, ref.String, mime.String) || !size.Valid || size.Int64 <= 0 {
+		return image, galleryNotFound()
 	}
-	image.MIME, image.Bytes = mime.String, size.Int64
-	ext, err := fileExtension(image.MIME)
-	if err != nil || path.String != image.PublicID[:2]+"/"+image.PublicID+"/original."+ext {
-		return image, "", localStorageError(errors.New("invalid original identity"))
-	}
-	return image, path.String, nil
+	image.MIME, image.Bytes, image.Ref = mime.String, size.Int64, ref.String
+	return image, nil
 }
-func (s *Store) verifyOriginal(ctx context.Context, image domain.StoredImage, path string) (domain.StoredImage, error) {
-	size, err := s.files.stat(ctx, path)
+
+func (s *Store) imageInfo(ctx context.Context, column string, value any) (domain.StoredImage, error) {
+	ctx, cancel := context.WithTimeout(ctx, originalOperationBudget)
+	defer cancel()
+	backend, release, err := s.beginOriginal(ctx)
 	if err != nil {
-		return domain.StoredImage{}, localStorageError(err)
+		return domain.StoredImage{}, err
 	}
-	if size != image.Bytes {
-		return domain.StoredImage{}, localStorageError(errors.New("original length mismatch"))
+	defer release()
+	s.galleryGate.RLock()
+	defer s.galleryGate.RUnlock()
+	image, err := s.imageMetadata(ctx, column, value)
+	if err != nil {
+		return domain.StoredImage{}, err
+	}
+	unlock := s.imageLocks.lock(fmt.Sprint(image.ID))
+	defer unlock()
+	image, err = s.imageMetadata(ctx, column, value)
+	if err != nil {
+		return domain.StoredImage{}, err
+	}
+	if err := backend.Verify(ctx, image.Ref, image.MIME, image.Bytes); err != nil {
+		return domain.StoredImage{}, mapOriginalError(err)
 	}
 	return image, nil
 }
-func (s *Store) readOriginal(ctx context.Context, image domain.StoredImage, path string) ([]byte, error) {
-	data, err := s.files.read(ctx, path)
-	if err != nil {
-		return nil, localStorageError(err)
-	}
-	if int64(len(data)) != image.Bytes {
-		return nil, localStorageError(errors.New("original length mismatch"))
-	}
-	return data, nil
-}
-func (s *Store) imageInfo(ctx context.Context, column string, value any) (domain.StoredImage, error) {
-	ctx, cancel := s.operation(ctx)
-	defer cancel()
-	s.galleryGate.RLock()
-	defer s.galleryGate.RUnlock()
-	image, path, err := s.imageMetadata(ctx, column, value)
-	if err != nil {
-		return domain.StoredImage{}, err
-	}
-	unlock := s.imageLocks.lock(fmt.Sprint(image.ID))
-	defer unlock()
-	image, path, err = s.imageMetadata(ctx, column, value)
-	if err != nil {
-		return domain.StoredImage{}, err
-	}
-	return s.verifyOriginal(ctx, image, path)
-}
+
 func (s *Store) PublicImageContent(ctx context.Context, id string) ([]byte, string, error) {
-	ctx, cancel := s.operation(ctx)
+	ctx, cancel := context.WithTimeout(ctx, originalOperationBudget)
 	defer cancel()
+	backend, release, err := s.beginOriginal(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer release()
 	s.galleryGate.RLock()
 	defer s.galleryGate.RUnlock()
-	image, _, err := s.imageMetadata(ctx, "public_id", id)
+	image, err := s.imageMetadata(ctx, "public_id", id)
 	if err != nil {
 		return nil, "", err
 	}
 	unlock := s.imageLocks.lock(fmt.Sprint(image.ID))
 	defer unlock()
-	return s.originalContent(ctx, "public_id", id)
+	return s.originalContent(ctx, backend, "public_id", id)
 }
-func (s *Store) originalContent(ctx context.Context, column string, value any) ([]byte, string, error) {
-	image, path, err := s.imageMetadata(ctx, column, value)
+
+func (s *Store) originalContent(ctx context.Context, backend originalBackend, column string, value any) ([]byte, string, error) {
+	image, err := s.imageMetadata(ctx, column, value)
 	if err != nil {
 		return nil, "", err
 	}
-	data, err := s.readOriginal(ctx, image, path)
-	return data, image.MIME, err
+	data, err := backend.Read(ctx, image.Ref, image.MIME, image.Bytes)
+	if err != nil {
+		return nil, "", mapOriginalError(err)
+	}
+	return data, image.MIME, nil
 }
+
 func validThumbIdentity(id, path, mime string) bool {
 	ext, err := fileExtension(mime)
 	return validPublicID(id) && err == nil && safeImagePath(path) && strings.HasPrefix(path, id[:2]+"/"+id+"/thumb-") && strings.HasSuffix(path, "."+ext)

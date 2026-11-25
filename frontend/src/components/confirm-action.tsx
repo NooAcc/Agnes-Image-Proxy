@@ -19,6 +19,7 @@ export function ConfirmAction({
   confirmLabel = "确认",
   onConfirm,
   pending = false,
+  errorHint = "请重试。",
 }: {
   trigger: ReactNode;
   title: string;
@@ -26,6 +27,7 @@ export function ConfirmAction({
   confirmLabel?: string;
   onConfirm: () => void | Promise<unknown>;
   pending?: boolean;
+  errorHint?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -39,7 +41,7 @@ export function ConfirmAction({
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
-        {error ? <p role="alert" className="text-sm text-danger">{errorMessage(error)}；请重试。</p> : null}
+        {error ? <p role="alert" className="text-sm text-danger">{errorMessage(error)}；{errorHint}</p> : null}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
           <AlertDialogAction

@@ -10,7 +10,7 @@ import (
 
 func TestPingReportsConnectivityAndClosedStore(t *testing.T) {
 	db := testutil.OpenDB(t)
-	st, err := store.New(db, nil, t.TempDir())
+	st, err := store.New(db, store.NewOptions{DataDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

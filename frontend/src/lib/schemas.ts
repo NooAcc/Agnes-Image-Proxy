@@ -177,6 +177,43 @@ export const backfillStatusSchema = z.object({
   error: z.string().nullable(),
 });
 
+const storageUninitializedSchema = z.object({ initialized: z.literal(false) }).strict();
+const storageLocalSchema = z
+  .object({ initialized: z.literal(true), mode: z.literal("local") })
+  .strict();
+const storageImgbedSchema = z
+  .object({
+    initialized: z.literal(true),
+    mode: z.literal("imgbed"),
+    imgbedBaseUrl: z.string().url(),
+    hasImgbedToken: z.boolean(),
+  })
+  .strict();
+
+export const storageStatusSchema = z.union([
+  storageUninitializedSchema,
+  storageLocalSchema,
+  storageImgbedSchema,
+]);
+
+export const storageInitSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("local") }).strict(),
+  z
+    .object({
+      mode: z.literal("imgbed"),
+      imgbedBaseUrl: z.string().min(1),
+      imgbedToken: z.string().min(1),
+    })
+    .strict(),
+]);
+
+export const storageUpdateSchema = z
+  .object({
+    imgbedBaseUrl: z.string().min(1),
+    imgbedToken: z.string().optional(),
+  })
+  .strict();
+
 export const loginRequestSchema = z
   .object({ apiKey: z.string().min(1) })
   .strict();
@@ -219,6 +256,9 @@ export type NsfwTag = z.infer<typeof nsfwTagSchema>;
 export type NsfwScores = z.infer<typeof nsfwScoresSchema>;
 export type GalleryItem = z.infer<typeof galleryItemSchema>;
 export type BackfillStatus = z.infer<typeof backfillStatusSchema>;
+export type StorageStatus = z.infer<typeof storageStatusSchema>;
+export type StorageInit = z.infer<typeof storageInitSchema>;
+export type StorageUpdate = z.infer<typeof storageUpdateSchema>;
 
 export const adminContractSchemas = {
   session: sessionSchema,
@@ -234,4 +274,7 @@ export const adminContractSchemas = {
   galleryItem: galleryItemSchema,
   galleryPage: galleryPageSchema,
   backfillStatus: backfillStatusSchema,
+  storageUninitialized: storageStatusSchema,
+  storageLocal: storageStatusSchema,
+  storageImgbed: storageStatusSchema,
 } as const;

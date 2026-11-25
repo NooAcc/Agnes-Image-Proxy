@@ -134,3 +134,35 @@ test("200% 缩放无横向溢出，reduced-motion 近似关闭过渡", async ({ 
   const seconds = Number.parseFloat(duration);
   expect(Number.isNaN(seconds) ? 0 : seconds).toBeLessThanOrEqual(0.001);
 });
+
+test("初始化页面与只读图床设置没有 serious/critical 可访问性问题", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await login(page);
+
+  let status: unknown = { initialized: false };
+  await page.route("**/admin/api/storage", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json; charset=utf-8",
+      body: JSON.stringify(status),
+    }),
+  );
+
+  await page.goto("/admin/setup");
+  await expect(page.getByRole("heading", { name: "初始化 Agnes Image Proxy" })).toBeVisible();
+  await expectNoSeriousViolations(page);
+
+  await page.getByRole("radio", { name: /图床存储/ }).check();
+  await expect(page.getByLabel("API Token")).toBeVisible();
+  await expectNoSeriousViolations(page);
+
+  status = {
+    initialized: true,
+    mode: "imgbed",
+    imgbedBaseUrl: "https://img.example.com",
+    hasImgbedToken: true,
+  };
+  await page.goto("/admin/settings");
+  await expect(page.getByText("图床存储", { exact: true })).toBeVisible();
+  await expectNoSeriousViolations(page);
+});

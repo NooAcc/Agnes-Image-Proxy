@@ -6,6 +6,7 @@ import type {
   Page,
   RequestLog,
   Settings,
+  StorageStatus,
 } from "@/lib/contracts";
 import { errorResponse, jsonResponse, type MockHandler, type MockRequest } from "./server";
 
@@ -24,6 +25,7 @@ export interface AdminState {
   overview: Overview;
   gallery: Page<GalleryItem>;
   backfill: BackfillStatus;
+  storage: StorageStatus;
   nextID: number;
   settingsError: AdminError | null;
   probeStatus: number;
@@ -123,6 +125,7 @@ export function createAdminState(overrides: Partial<AdminState> = {}): AdminStat
       failed: 0,
       error: null,
     },
+    storage: { initialized: true, mode: "local" },
     nextID: 1,
     settingsError: null,
     probeStatus: 200,
@@ -174,6 +177,45 @@ export function adminHandlers(state: AdminState): MockHandler[] {
       if (parts[1] === "revoke" && request.method === "POST") {
         state.authenticated = false;
         return new Response(null, { status: 204 });
+      }
+      return undefined;
+    },
+    // Storage
+    (request) => {
+      const parts = segments(request);
+      if (parts[0] !== "storage" || parts.length !== 1) return undefined;
+      if (request.method === "GET") return jsonResponse(state.storage);
+      if (request.method === "POST") {
+        if (state.storage.initialized) {
+          return errorResponse(409, "storage is already initialized", null, "already_initialized");
+        }
+        const body = bodyOf<{ mode?: string; imgbedBaseUrl?: string; imgbedToken?: string }>(request);
+        state.storage =
+          body.mode === "imgbed"
+            ? {
+                initialized: true,
+                mode: "imgbed",
+                imgbedBaseUrl: body.imgbedBaseUrl ?? "",
+                hasImgbedToken: Boolean(body.imgbedToken),
+              }
+            : { initialized: true, mode: "local" };
+        return jsonResponse(state.storage, 201);
+      }
+      if (request.method === "PUT") {
+        if (!state.storage.initialized) {
+          return errorResponse(409, "storage is not initialized", null, "not_initialized");
+        }
+        if (state.storage.mode !== "imgbed") {
+          return errorResponse(409, "storage mode is fixed after initialization", null, "storage_mode_fixed");
+        }
+        const body = bodyOf<{ imgbedBaseUrl?: string; imgbedToken?: string }>(request);
+        state.storage = {
+          initialized: true,
+          mode: "imgbed",
+          imgbedBaseUrl: body.imgbedBaseUrl ?? state.storage.imgbedBaseUrl,
+          hasImgbedToken: body.imgbedToken ? true : state.storage.hasImgbedToken,
+        };
+        return jsonResponse(state.storage);
       }
       return undefined;
     },

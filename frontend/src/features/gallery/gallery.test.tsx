@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderApp } from "@/test/render";
 import { adminHandlers, createAdminState, makeLog } from "@/test/handlers";
-import { startServer, type MockServer } from "@/test/server";
+import { startServer, errorResponse, type MockServer } from "@/test/server";
 import type { GalleryItem } from "@/lib/schemas";
 import { blobCache } from "@/lib/blob-cache";
 
@@ -194,5 +194,27 @@ describe("gallery", () => {
       ).toBe(true),
     );
     expect(state.logs).toHaveLength(1);
+  });
+
+  it("explains that a failed clear is partial and retry continues", async () => {
+    const state = galleryState([galleryItem({ id: 1, prompt: "partial clear" })]);
+    server = startServer([
+      (request) =>
+        request.path === "/admin/api/gallery" && request.method === "DELETE"
+          ? errorResponse(503, "original image storage unavailable", null, "image_storage_unavailable")
+          : undefined,
+      ...adminHandlers(state),
+    ]);
+    renderApp(["/gallery"]);
+
+    await screen.findByAltText("partial clear");
+    await userEvent.click(screen.getByRole("button", { name: "清空图库" }));
+    const confirm = await screen.findByRole("alertdialog");
+    expect(within(confirm).getByText(/可能只完成一部分/)).toBeVisible();
+    await userEvent.click(within(confirm).getByRole("button", { name: "清空图库" }));
+
+    expect(
+      await within(confirm).findByText(/清空可能只完成了一部分，重试会继续清理剩余图片/),
+    ).toBeVisible();
   });
 });

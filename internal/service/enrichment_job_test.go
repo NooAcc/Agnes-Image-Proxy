@@ -106,7 +106,7 @@ func TestEdgeURLFailureLoadsOriginalOnce(t *testing.T) {
 	}
 }
 func TestEnrichmentJobOnlyUsesExistingIDs(t *testing.T) {
-	s, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+	s, constructErr := store.New(testutil.OpenDB(t), store.NewOptions{DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -115,6 +115,7 @@ func TestEnrichmentJobOnlyUsesExistingIDs(t *testing.T) {
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
+	requireLocalStorage(t, s)
 	ids := []int64{}
 	for i := 0; i < 3; i++ {
 		image, err := s.SaveGeneratedImage(ctx, domain.GalleryInsert{OutputKey: "job:" + strconv.Itoa(i), Image: testutil.PNG(t, 4, 4), ImageMIME: strPtr("image/png")})

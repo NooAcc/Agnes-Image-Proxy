@@ -93,12 +93,15 @@ func faultGallery(t *testing.T, faults *localFaults) (*Store, string) {
 	dir := t.TempDir()
 	db := sql.OpenDB(localConnector{dsn: "file:" + filepath.Join(dir, "test.db") + "?_pragma=busy_timeout(5000)", faults: faults})
 	t.Cleanup(func() { _ = db.Close() })
-	s, err := New(db, time.Now, filepath.Join(dir, "data"))
+	s, err := New(db, NewOptions{Now: time.Now, DataDir: filepath.Join(dir, "data")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	if err := s.EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InitializeStorage(context.Background(), domain.StorageInit{Mode: domain.StorageLocal}); err != nil {
 		t.Fatal(err)
 	}
 	return s, filepath.Join(dir, "data")
@@ -148,6 +151,11 @@ func TestLocalGalleryDelayedInsertCannotReviveAfterClear(t *testing.T) {
 			if err := s.db.QueryRow("SELECT count(*) FROM gallery").Scan(&count); err != nil || count != 0 {
 				t.Fatal("delayed INSERT revived cleared gallery", count, err)
 			}
+			if reset {
+				if _, err := s.InitializeStorage(ctx, domain.StorageInit{Mode: domain.StorageLocal}); err != nil {
+					t.Fatal("reinitialize after reset", err)
+				}
+			}
 			if _, err := s.SaveGeneratedImage(ctx, localInsert("new")); err != nil {
 				t.Fatal("new generation cannot save", err)
 			}
@@ -189,6 +197,9 @@ func TestLocalGalleryDelayedImageOperationCannotTouchResetID(t *testing.T) {
 			}
 			if err := s.ResetSchema(ctx, true); err != nil {
 				t.Fatal(err)
+			}
+			if _, err := s.InitializeStorage(ctx, domain.StorageInit{Mode: domain.StorageLocal}); err != nil {
+				t.Fatal("reinitialize after reset", err)
 			}
 			next, err := s.SaveGeneratedImage(ctx, localInsert("new"))
 			if err != nil {

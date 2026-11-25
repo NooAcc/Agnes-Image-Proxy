@@ -23,7 +23,7 @@ func TestDeliveryOriginalMIMEMatrix(t *testing.T) {
 		{"image/png", testutil.PNG(t, 4, 5)}, {"image/jpeg", testutil.JPEG(t, 6, 7)}, {"image/webp", testutil.WebP(8, 9)},
 	} {
 		t.Run(tc.mime, func(t *testing.T) {
-			s, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+			s, constructErr := store.New(testutil.OpenDB(t), store.NewOptions{DataDir: t.TempDir()})
 			if constructErr != nil {
 				t.Fatal(constructErr)
 			}
@@ -31,6 +31,7 @@ func TestDeliveryOriginalMIMEMatrix(t *testing.T) {
 			if err := s.EnsureSchema(context.Background()); err != nil {
 				t.Fatal(err)
 			}
+			requireLocalStorage(t, s)
 			d := service.NewDelivery(service.DeliveryOptions{Store: s, Downloader: deliveryDownloadFunc(func(context.Context, string) ([]byte, string, error) { return tc.data, tc.mime, nil })})
 			in := deliveryInput()
 			in.IncludeBase64 = true

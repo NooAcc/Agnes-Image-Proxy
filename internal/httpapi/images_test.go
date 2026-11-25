@@ -21,6 +21,20 @@ import (
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/service"
 )
 
+type initializedStorage struct{}
+
+func (initializedStorage) StorageStatus(context.Context) (domain.StorageStatus, error) {
+	return domain.StorageStatus{Initialized: true, Mode: domain.StorageLocal}, nil
+}
+
+func (initializedStorage) InitializeStorage(context.Context, domain.StorageInit) (domain.StorageStatus, error) {
+	return domain.StorageStatus{}, apierror.Coded(409, "already initialized", "invalid_request_error", "already_initialized")
+}
+
+func (initializedStorage) UpdateImgbedStorage(context.Context, domain.StorageUpdate) (domain.StorageStatus, error) {
+	return domain.StorageStatus{}, apierror.Coded(409, "fixed", "invalid_request_error", "storage_mode_fixed")
+}
+
 type imageLogs struct {
 	mu   sync.Mutex
 	logs []domain.RequestLog
@@ -81,6 +95,7 @@ func newImageHandler(t *testing.T, subrequest func(context.Context, int64) (agne
 			Auth:       authn,
 			ImageLinks: auth.NewImageLinks("secret-key", nil),
 			Images:     images,
+			Storage:    initializedStorage{},
 			Settings:   func(context.Context) (domain.Settings, error) { return domain.DefaultSettings(), nil },
 			Logs:       logs,
 		}),
@@ -258,6 +273,7 @@ func TestDeepHealthHidesDatabaseDetails(t *testing.T) {
 			APIKey: "secret-key", Sessions: newSessionsForTest(t), Limiter: authLimiter(t),
 		}),
 		Images:   service.NewImages(service.ImageOptions{Tasks: tasks, Edge: &fixedMeasurer{}, Enrichment: &imageArchiver{done: make(chan service.EnrichmentJob, 1)}, Delivery: imageDelivery{}, Logs: &imageLogs{}}),
+		Storage:  initializedStorage{},
 		Settings: func(context.Context) (domain.Settings, error) { return domain.DefaultSettings(), nil },
 		DeepCheck: func(context.Context) error {
 			return errors.New("libsql: connection refused to db.turso.io token=super-secret")

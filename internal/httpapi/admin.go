@@ -34,6 +34,18 @@ type AdminStore interface {
 func (r *router) handleAdmin(w http.ResponseWriter, req *http.Request) {
 	path := strings.TrimPrefix(req.URL.Path, "/admin/api/")
 	parts := strings.Split(path, "/")
+	if parts[0] == "storage" {
+		if len(parts) != 1 {
+			adminNotFound(w)
+			return
+		}
+		r.handleStorage(w, req)
+		return
+	}
+	if err := r.requireInitialized(req.Context()); err != nil {
+		apierror.Write(w, err)
+		return
+	}
 	switch parts[0] {
 	case "accounts":
 		r.handleAccounts(w, req, parts[1:])

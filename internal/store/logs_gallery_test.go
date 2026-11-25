@@ -38,7 +38,7 @@ func requestLog(ts time.Time, category, stage, model string, requested, images, 
 }
 
 func TestRecordRequestUsagePartial(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	ts := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
 	if err := s.RecordRequest(ctx, requestLog(ts, "request", "complete", "model-a", 5, 3, 2)); err != nil {
@@ -61,7 +61,7 @@ func TestRecordRequestUsagePartial(t *testing.T) {
 }
 
 func TestRecordRequestFullFailure(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	log := requestLog(time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC), "request", "complete", "model-a", 2, 0, 2)
 	log.OK = true // contradictory caller value must not be trusted
@@ -87,7 +87,7 @@ func TestRecordRequestFullFailure(t *testing.T) {
 }
 
 func TestRecordRequestParseWithoutModelHasNoUsage(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	if err := s.RecordRequest(ctx, requestLog(time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC), "request", "parse", "", 0, 0, 0)); err != nil {
 		t.Fatalf("record: %v", err)
@@ -103,7 +103,7 @@ func TestRecordRequestParseWithoutModelHasNoUsage(t *testing.T) {
 }
 
 func TestRecordRequestAtomicOnUsageFailure(t *testing.T) {
-	s, db := newSchemaStore(t)
+	s, db := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	if _, err := db.Exec("DROP TABLE model_usage_daily"); err != nil {
 		t.Fatalf("drop: %v", err)
@@ -122,7 +122,7 @@ func TestRecordRequestAtomicOnUsageFailure(t *testing.T) {
 }
 
 func TestRecordEnrichmentOnlyLog(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	log := requestLog(time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC), "enrich", "complete", "", 0, 0, 0)
 	log.Requested = 1
@@ -141,7 +141,7 @@ func TestRecordEnrichmentOnlyLog(t *testing.T) {
 }
 
 func TestListLogsCursorAndFilter(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	base := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
 	for i := 0; i < 5; i++ {
@@ -195,7 +195,7 @@ func TestListLogsCursorAndFilter(t *testing.T) {
 }
 
 func TestClearLogsKeepsUsage(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	if err := s.RecordRequest(ctx, requestLog(time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC), "request", "complete", "m", 1, 1, 0)); err != nil {
 		t.Fatalf("record: %v", err)
@@ -214,7 +214,7 @@ func TestClearLogsKeepsUsage(t *testing.T) {
 }
 
 func TestOverviewZeroFillAndValidation(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	day1 := time.Date(2026, 11, 20, 23, 59, 0, 0, time.UTC)
 	day2 := time.Date(2026, 11, 22, 0, 1, 0, 0, time.UTC)
@@ -265,7 +265,7 @@ func TestOverviewZeroFillAndValidation(t *testing.T) {
 }
 
 func TestOverviewAccountHealth(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	seedAccounts(t, s, 3)
 	disabled := false
@@ -285,7 +285,7 @@ func TestOverviewAccountHealth(t *testing.T) {
 }
 
 func TestGalleryInsertListContent(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	blob := []byte{0x00, 0xff, 0x10, 0x00, 0x7f}
 	id, err := s.InsertGallery(ctx, domain.GalleryInsert{
@@ -330,7 +330,7 @@ func TestGalleryInsertListContent(t *testing.T) {
 }
 
 func TestGalleryRejectsUnknownMimeBytes(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	id, err := s.InsertGallery(ctx, domain.GalleryInsert{
 		SourceURL: ptr("https://img.example/a.gif"),
@@ -351,7 +351,7 @@ func TestGalleryRejectsUnknownMimeBytes(t *testing.T) {
 }
 
 func TestGalleryCursorTagAndDelete(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	tags := []string{"safe", "porn", "safe", "hentai", "safe"}
 	var ids []int64
@@ -427,7 +427,7 @@ func TestGalleryCursorTagAndDelete(t *testing.T) {
 }
 
 func TestGallerySizeUsesActual(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	actual := "864x1152"
 	if _, err := s.InsertGallery(ctx, domain.GalleryInsert{
@@ -443,7 +443,7 @@ func TestGallerySizeUsesActual(t *testing.T) {
 }
 
 func TestGallerySourcesAndPendingEnrichment(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	mime := "image/png"
 	var ids []int64
@@ -491,7 +491,7 @@ func TestGallerySourcesAndPendingEnrichment(t *testing.T) {
 }
 
 func TestGalleryEnrichState(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	mime := "image/png"
 	id, err := s.InsertGallery(ctx, domain.GalleryInsert{
@@ -532,7 +532,7 @@ func TestGalleryEnrichState(t *testing.T) {
 }
 
 func TestSetEnrichmentThumbAndScores(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	id, err := s.InsertGallery(ctx, domain.GalleryInsert{
 		OutputKey: "thumbnail:0:0",
@@ -566,7 +566,7 @@ func TestSetEnrichmentThumbAndScores(t *testing.T) {
 }
 
 func TestGalleryCursorInvalidLimit(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	if _, err := s.ListGallery(ctx, domain.CursorQuery{Before: ptr(int64(-1))}); err == nil {
 		t.Fatal("negative cursor accepted")
@@ -578,7 +578,7 @@ func TestGalleryCursorInvalidLimit(t *testing.T) {
 }
 
 func TestRecordRequestConcurrentUsage(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	ts := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
 	var wg sync.WaitGroup

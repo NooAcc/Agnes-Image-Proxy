@@ -73,9 +73,10 @@ export function GalleryPage() {
           <ConfirmAction
             trigger={<Button variant="outline">清空图库</Button>}
             title="清空全部图库？"
-            description="所有原图、缩略图与富化结果会被删除；日志与用量不受影响。"
+            description="所有原图、缩略图与富化结果会被删除；清空可能只完成一部分，失败后重试会继续清理剩余图片。日志与用量不受影响。"
             confirmLabel="清空图库"
             pending={clear.isPending}
+            errorHint="清空可能只完成了一部分，重试会继续清理剩余图片。"
             onConfirm={() => clear.mutateAsync()}
           />
         </div>

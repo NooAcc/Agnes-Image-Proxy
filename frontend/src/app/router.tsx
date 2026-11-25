@@ -7,6 +7,8 @@ import { GalleryPage } from "@/features/gallery/page";
 import { LogsPage } from "@/features/logs/logs-page";
 import { OverviewPage } from "@/features/overview/page";
 import { SettingsPage } from "@/features/settings/settings-page";
+import { RequireInitialized, RequireUninitialized } from "@/features/storage/guards";
+import { SetupPage } from "@/features/storage/setup-page";
 
 export const routes: RouteObject[] = [
   { path: "/login", element: <LoginPage /> },
@@ -15,14 +17,23 @@ export const routes: RouteObject[] = [
     element: <RequireSession />,
     children: [
       {
-        element: <AppShell />,
+        element: <RequireUninitialized />,
+        children: [{ path: "setup", element: <SetupPage /> }],
+      },
+      {
+        element: <RequireInitialized />,
         children: [
-          { index: true, element: <Navigate to="/overview" replace /> },
-          { path: "overview", element: <OverviewPage /> },
-          { path: "gallery", element: <GalleryPage /> },
-          { path: "accounts", element: <AccountsPage /> },
-          { path: "logs", element: <LogsPage /> },
-          { path: "settings", element: <SettingsPage /> },
+          {
+            element: <AppShell />,
+            children: [
+              { index: true, element: <Navigate to="/overview" replace /> },
+              { path: "overview", element: <OverviewPage /> },
+              { path: "gallery", element: <GalleryPage /> },
+              { path: "accounts", element: <AccountsPage /> },
+              { path: "logs", element: <LogsPage /> },
+              { path: "settings", element: <SettingsPage /> },
+            ],
+          },
         ],
       },
     ],

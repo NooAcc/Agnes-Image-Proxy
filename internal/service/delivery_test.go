@@ -17,6 +17,13 @@ import (
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/testutil"
 )
 
+func requireLocalStorage(t *testing.T, s *store.Store) {
+	t.Helper()
+	if _, err := s.InitializeStorage(context.Background(), domain.StorageInit{Mode: domain.StorageLocal}); err != nil {
+		t.Fatalf("initialize local storage: %v", err)
+	}
+}
+
 type deliveryDownloadFunc func(context.Context, string) ([]byte, string, error)
 
 func (f deliveryDownloadFunc) Download(ctx context.Context, url string) ([]byte, string, error) {
@@ -72,7 +79,7 @@ func TestDeliveryPersistsBeforeReturn(t *testing.T) {
 }
 func TestDeliveryBase64MatchesOriginal(t *testing.T) {
 	data := testutil.PNG(t, 4, 4)
-	s, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+	s, constructErr := store.New(testutil.OpenDB(t), store.NewOptions{DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -80,6 +87,7 @@ func TestDeliveryBase64MatchesOriginal(t *testing.T) {
 	if err := s.EnsureSchema(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	requireLocalStorage(t, s)
 	d := service.NewDelivery(service.DeliveryOptions{Store: s, Downloader: deliveryDownloadFunc(func(context.Context, string) ([]byte, string, error) { return data, "image/png", nil })})
 	in := deliveryInput()
 	in.IncludeBase64 = true
@@ -166,7 +174,7 @@ func TestDeliveryCanceledRetry(t *testing.T) {
 func TestDeliveryCanceledAmbiguousCommitKeepsOriginal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+	s, constructErr := store.New(testutil.OpenDB(t), store.NewOptions{DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -174,6 +182,7 @@ func TestDeliveryCanceledAmbiguousCommitKeepsOriginal(t *testing.T) {
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
+	requireLocalStorage(t, s)
 	data := testutil.PNG(t, 4, 4)
 	downloads := 0
 	d := service.NewDelivery(service.DeliveryOptions{Store: deliveryAuthoritativeSave(func(ctx context.Context, in domain.GalleryInsert, includeOriginal bool) (domain.StoredImage, []byte, error) {
@@ -199,7 +208,7 @@ func TestDeliveryCanceledAmbiguousCommitKeepsOriginal(t *testing.T) {
 
 func TestDeliveryAmbiguousWriteChangedBodyUsesStoredBase64(t *testing.T) {
 	ctx := context.Background()
-	s, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+	s, constructErr := store.New(testutil.OpenDB(t), store.NewOptions{DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -207,6 +216,7 @@ func TestDeliveryAmbiguousWriteChangedBodyUsesStoredBase64(t *testing.T) {
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
+	requireLocalStorage(t, s)
 	a, b := testutil.PNG(t, 4, 4), testutil.PNG(t, 5, 5)
 	downloads, saves := 0, 0
 	d := service.NewDelivery(service.DeliveryOptions{Store: deliveryAuthoritativeSave(func(ctx context.Context, in domain.GalleryInsert, includeOriginal bool) (domain.StoredImage, []byte, error) {
@@ -245,7 +255,7 @@ func TestDeliveryAmbiguousWriteChangedBodyUsesStoredBase64(t *testing.T) {
 
 func TestDeliveryAmbiguousWriteRetryIsIdempotent(t *testing.T) {
 	db := testutil.OpenDB(t)
-	s, constructErr := store.New(db, nil, t.TempDir())
+	s, constructErr := store.New(db, store.NewOptions{DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -254,6 +264,7 @@ func TestDeliveryAmbiguousWriteRetryIsIdempotent(t *testing.T) {
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
+	requireLocalStorage(t, s)
 	calls := 0
 	var saved domain.StoredImage
 	data := testutil.PNG(t, 4, 4)

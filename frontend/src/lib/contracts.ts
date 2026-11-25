@@ -20,5 +20,8 @@ export type {
   RequestLog,
   Session,
   Settings,
+  StorageInit,
+  StorageStatus,
+  StorageUpdate,
   UsageTotals,
 } from "./schemas";

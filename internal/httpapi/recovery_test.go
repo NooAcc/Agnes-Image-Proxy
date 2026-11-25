@@ -10,7 +10,7 @@ import (
 )
 
 func TestImageRouterAllowsConfiguredCORSPreflight(t *testing.T) {
-	handler := httpapi.New(httpapi.Options{Auth: httpapi.NewAuth(httpapi.AuthOptions{APIKey: "key", AllowedOrigins: []string{"https://client.example"}}), Images: service.NewImages(service.ImageOptions{})})
+	handler := httpapi.New(httpapi.Options{Auth: httpapi.NewAuth(httpapi.AuthOptions{APIKey: "key", AllowedOrigins: []string{"https://client.example"}}), Images: service.NewImages(service.ImageOptions{}), Storage: initializedStorage{}})
 	for _, path := range []string{"/v1/images/generations", "/v1/images/edits"} {
 		req := httptest.NewRequest(http.MethodOptions, path, nil)
 		req.Header.Set("Origin", "https://client.example")

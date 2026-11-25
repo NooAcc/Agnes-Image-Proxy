@@ -36,7 +36,7 @@ func TestBackfillStoredBLOBWorksWithoutURLAndAfterURLFailure(t *testing.T) {
 	}))
 	defer server.Close()
 	ctx := context.Background()
-	s, constructErr := store.New(testutil.OpenDB(t), time.Now, t.TempDir())
+	s, constructErr := store.New(testutil.OpenDB(t), store.NewOptions{Now: time.Now, DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -44,6 +44,7 @@ func TestBackfillStoredBLOBWorksWithoutURLAndAfterURLFailure(t *testing.T) {
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
+	requireLocalStorage(t, s)
 	mime := "image/png"
 	url := "https://expired.example/image.png"
 	for i, source := range []*string{nil, &url} {

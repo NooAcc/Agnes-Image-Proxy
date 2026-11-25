@@ -37,7 +37,7 @@ func newAccountStore(t *testing.T) (*store.Store, *clock) {
 	t.Helper()
 	db := testutil.OpenDB(t)
 	c := &clock{t: time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)}
-	s, err := store.New(db, c.now, t.TempDir())
+	s, err := store.New(db, store.NewOptions{Now: c.now, DataDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

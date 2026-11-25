@@ -181,5 +181,18 @@
     "succeeded": 2,
     "failed": 1,
     "error": null
+  },
+  "storageUninitialized": {
+    "initialized": false
+  },
+  "storageLocal": {
+    "initialized": true,
+    "mode": "local"
+  },
+  "storageImgbed": {
+    "initialized": true,
+    "mode": "imgbed",
+    "imgbedBaseUrl": "https://img.example.com",
+    "hasImgbedToken": true
   }
 }

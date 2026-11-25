@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,12 +19,15 @@ import (
 func localGallery(t *testing.T) (*Store, string) {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := New(testutil.OpenDB(t), time.Now, dir)
+	s, err := New(testutil.OpenDB(t), NewOptions{Now: time.Now, DataDir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	if err := s.EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InitializeStorage(context.Background(), domain.StorageInit{Mode: domain.StorageLocal}); err != nil {
 		t.Fatal(err)
 	}
 	return s, dir
@@ -34,7 +39,7 @@ func localInsert(key string) domain.GalleryInsert {
 func originalPath(t *testing.T, s *Store, id int64) string {
 	t.Helper()
 	var p string
-	if err := s.db.QueryRow("SELECT image_path FROM gallery WHERE id=?", id).Scan(&p); err != nil {
+	if err := s.db.QueryRow("SELECT original_ref FROM gallery WHERE id=?", id).Scan(&p); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -47,13 +52,17 @@ func TestLocalGalleryReopenPersistsContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(db, time.Now, dataDir)
+	s, err := New(db, NewOptions{Now: time.Now, DataDir: dataDir})
 	if err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}
 	ctx := context.Background()
 	if err := s.EnsureSchema(ctx); err != nil {
+		_ = s.Close()
+		t.Fatal(err)
+	}
+	if _, err := s.InitializeStorage(ctx, domain.StorageInit{Mode: domain.StorageLocal}); err != nil {
 		_ = s.Close()
 		t.Fatal(err)
 	}
@@ -74,7 +83,7 @@ func TestLocalGalleryReopenPersistsContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := New(db, time.Now, dataDir)
+	reopened, err := New(db, NewOptions{Now: time.Now, DataDir: dataDir})
 	if err != nil {
 		_ = db.Close()
 		t.Fatal(err)
@@ -100,7 +109,7 @@ func TestLocalGalleryOriginalNotInDatabase(t *testing.T) {
 	if err := s.db.QueryRow("SELECT count(*) FROM pragma_table_info('gallery') WHERE name='image'").Scan(&blob); err != nil {
 		t.Fatal(err)
 	}
-	_ = s.db.QueryRow("SELECT count(*) FROM pragma_table_info('gallery') WHERE name='image_path'").Scan(&path)
+	_ = s.db.QueryRow("SELECT count(*) FROM pragma_table_info('gallery') WHERE name='original_ref'").Scan(&path)
 	if blob != 0 || path != 1 {
 		t.Fatal("original schema not local", blob, path)
 	}
@@ -172,10 +181,14 @@ func TestLocalGalleryFileFailureDoesNotPublishRow(t *testing.T) {
 	_ = dir
 }
 func TestLocalGalleryAmbiguousInsertKeepsFile(t *testing.T) {
-	s, dir := localGallery(t)
+	faults := &localFaults{}
+	s, dir := faultGallery(t, faults)
 	// A failing SQL statement must not trigger candidate cleanup, because remote errors may follow a commit.
-	if _, err := s.db.Exec("DROP TABLE gallery"); err != nil {
-		t.Fatal(err)
+	faults.afterQuery = func(q string) error {
+		if strings.Contains(q, "INSERT INTO gallery") {
+			return errors.New("commit result unknown")
+		}
+		return nil
 	}
 	if _, err := s.SaveGeneratedImage(context.Background(), localInsert("ambiguous")); err == nil {
 		t.Fatal("SQL error hidden")

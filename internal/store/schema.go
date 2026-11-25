@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/apierror"
@@ -14,7 +15,7 @@ import (
 
 const (
 	metaApplication = "agnes-go"
-	metaVersion     = "3"
+	metaVersion     = "4"
 )
 
 // appTables lists the tables this application owns. Reset only ever touches
@@ -26,6 +27,7 @@ var appTables = []string{
 	"accounts",
 	"settings",
 	"auth_state",
+	"storage_config",
 	"app_meta",
 }
 
@@ -37,6 +39,9 @@ var requiredColumns = map[string][]string{
 	},
 	"settings":   {"id", "data", "updated_at"},
 	"auth_state": {"id", "session_epoch"},
+	"storage_config": {
+		"id", "mode", "imgbed_base_url", "imgbed_token", "created_at", "updated_at",
+	},
 	"request_logs": {
 		"id", "request_id", "ts", "category", "stage", "endpoint", "path", "model",
 		"status", "ok", "requested", "images", "failed", "duration_ms",
@@ -46,7 +51,7 @@ var requiredColumns = map[string][]string{
 	"gallery": {
 		"id", "public_id", "output_key", "created_at", "request_id", "model", "prompt", "size_request", "size_actual",
 		"account_id", "account_name", "source_url", "source_mime", "source_bytes",
-		"image_path", "image_mime", "image_bytes", "archived", "thumb", "thumb_path", "thumb_mime",
+		"original_ref", "image_mime", "image_bytes", "archived", "thumb", "thumb_path", "thumb_mime",
 		"thumb_bytes", "nsfw_tag", "nsfw_scores", "enrich_status", "enrich_error", "enriched_at",
 	},
 }
@@ -80,6 +85,24 @@ var schemaStatements = []string{
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		session_epoch INTEGER NOT NULL DEFAULT 1
 	)`,
+	`CREATE TABLE storage_config (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		mode TEXT NOT NULL CHECK (mode IN ('local', 'imgbed')),
+		imgbed_base_url TEXT,
+		imgbed_token TEXT,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		CHECK (
+			(mode = 'local' AND imgbed_base_url IS NULL AND imgbed_token IS NULL) OR
+			(mode = 'imgbed' AND imgbed_base_url IS NOT NULL AND imgbed_token IS NOT NULL)
+		)
+	)`,
+	`CREATE TRIGGER storage_config_mode_immutable
+		BEFORE UPDATE OF mode ON storage_config
+		WHEN OLD.mode IS NOT NEW.mode
+		BEGIN
+			SELECT RAISE(ABORT, 'storage mode is immutable');
+		END`,
 	`CREATE TABLE request_logs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		request_id TEXT NOT NULL,
@@ -129,7 +152,7 @@ var schemaStatements = []string{
 		source_url TEXT,
 		source_mime TEXT,
 		source_bytes INTEGER,
-		image_path TEXT,
+		original_ref TEXT,
 		image_mime TEXT,
 		image_bytes INTEGER,
 		archived INTEGER NOT NULL DEFAULT 0,
@@ -243,6 +266,12 @@ func verifySchema(ctx context.Context, tx *sql.Tx) error {
 			}
 		}
 	}
+	var trigger string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='trigger' AND name='storage_config_mode_immutable'`,
+	).Scan(&trigger); err != nil || trigger == "" {
+		return incompatibleSchema()
+	}
 	return nil
 }
 
@@ -272,26 +301,98 @@ func tableColumns(ctx context.Context, tx *sql.Tx, table string) (map[string]boo
 }
 
 // ResetSchema drops only the application's own tables and recreates an empty
-// schema. It requires explicit confirmation.
+// schema. It requires explicit confirmation. On schema 4 with imgbed storage it
+// first removes every registered remote original; a failure keeps both the
+// credentials and the remaining rows.
 func (s *Store) ResetSchema(ctx context.Context, confirmed bool) error {
-	ctx, cancel := s.operation(ctx)
-	defer cancel()
 	if !confirmed {
 		return apierror.Coded(400, "reset requires explicit confirmation", "invalid_request_error", "reset_not_confirmed")
 	}
+	version, err := s.schemaVersion(ctx)
+	if err != nil {
+		return err
+	}
+	if version != metaVersion {
+		// Legacy schemas are rebuilt without interpreting their original data.
+		s.galleryGate.Lock()
+		defer s.galleryGate.Unlock()
+		return s.rebuildSchemaLocked(ctx)
+	}
+
+	storageRelease, err := s.storageGate.acquire(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer storageRelease()
 	s.galleryGate.Lock()
 	defer s.galleryGate.Unlock()
-	tx, err := s.db.BeginTx(ctx, nil)
+
+	dbCtx, cancel := s.operation(ctx)
+	config, found, err := s.readStorageConfig(dbCtx)
+	cancel()
+	if err != nil {
+		// A corrupted schema 4 configuration must never be skipped as legacy:
+		// credentials may still protect registered remote originals.
+		return err
+	}
+	if found {
+		backend, err := s.backendFor(config)
+		if err != nil {
+			return err
+		}
+		if err := s.clearGalleryLocked(ctx, backend); err != nil {
+			return err
+		}
+	} else {
+		var count int
+		dbCtx, cancel = s.operation(ctx)
+		err = s.db.QueryRowContext(dbCtx, `SELECT COUNT(*) FROM gallery`).Scan(&count)
+		cancel()
+		if err != nil {
+			return classifyDBError(err)
+		}
+		if count > 0 {
+			return apierror.Coded(500, "gallery rows exist without storage configuration", "server_error", "invalid_storage_config")
+		}
+	}
+	return s.rebuildSchemaLocked(ctx)
+}
+
+func (s *Store) schemaVersion(ctx context.Context) (string, error) {
+	dbCtx, cancel := s.operation(ctx)
+	defer cancel()
+	var version string
+	err := s.db.QueryRowContext(dbCtx, `SELECT value FROM app_meta WHERE key='schema'`).Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && version == "" {
+		return "", nil
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		// A missing app_meta table is a legacy database; other failures are real.
+		if strings.Contains(err.Error(), "no such table") {
+			return "", nil
+		}
+		return "", classifyDBError(err)
+	}
+	return version, nil
+}
+
+func (s *Store) rebuildSchemaLocked(ctx context.Context) error {
+	dbCtx, cancel := s.operation(ctx)
+	defer cancel()
+	tx, err := s.db.BeginTx(dbCtx, nil)
 	if err != nil {
 		return classifyDBError(err)
 	}
 	defer tx.Rollback()
 	for _, table := range appTables {
-		if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS "+table); err != nil {
+		if _, err := tx.ExecContext(dbCtx, "DROP TABLE IF EXISTS "+table); err != nil {
 			return classifyDBError(err)
 		}
 	}
-	if err := createSchema(ctx, tx, s.now); err != nil {
+	if err := createSchema(dbCtx, tx, s.now); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

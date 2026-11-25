@@ -176,12 +176,12 @@ func runHealthcheck(ctx context.Context, args []string, stdout, stderr io.Writer
 func runResetDB(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("reset-db", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	confirm := flags.Bool("confirm", false, "required: deletes all application tables and local image files; stop serve first")
+	confirm := flags.Bool("confirm", false, "required: deletes all application tables, local image files and every registered ImgBed original; stop serve first")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if !*confirm {
-		return errors.New("reset-db deletes all application tables and local image files; stop serve first, then pass --confirm (no database or image directory was opened)")
+		return errors.New("reset-db deletes all application tables, local image files and every registered ImgBed original; stop serve first, then pass --confirm (no database or image directory was opened)")
 	}
 
 	cfg, err := config.Load(getenv)
@@ -199,8 +199,8 @@ func runResetDB(ctx context.Context, args []string, getenv func(string) string, 
 	}
 	defer func() { _ = db.Close() }()
 	if err := db.ResetSchema(ctx, true); err != nil {
-		return err
+		return fmt.Errorf("reset-db failed; storage credentials and remaining rows were kept: %w", err)
 	}
-	_, _ = fmt.Fprintln(stdout, "database rebuilt and application image files cleared")
+	_, _ = fmt.Fprintln(stdout, "database rebuilt and local application image files cleared; registered ImgBed originals were removed (orphaned or unregistered remote files are not tracked)")
 	return nil
 }

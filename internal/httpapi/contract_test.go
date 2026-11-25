@@ -43,19 +43,24 @@ func TestAdminContractFixture(t *testing.T) {
 	}
 
 	samples := map[string]any{
-		"session":        sessionResponse{},
-		"accountSummary": domain.AccountSummary{},
-		"accountList":    accountListResponse{},
-		"importResponse": importResponse{},
-		"probeResult":    service.ProbeResult{},
-		"probeList":      probeListResponse{},
-		"settings":       domain.DefaultSettings(),
-		"requestLog":     domain.RequestLog{},
-		"logPage":        domain.Page[domain.RequestLog]{},
-		"overview":       domain.Overview{},
-		"galleryItem":    domain.GalleryItem{},
-		"galleryPage":    domain.Page[domain.GalleryItem]{},
-		"backfillStatus": service.BackfillStatus{},
+		"session":              sessionResponse{},
+		"accountSummary":       domain.AccountSummary{},
+		"accountList":          accountListResponse{},
+		"importResponse":       importResponse{},
+		"probeResult":          service.ProbeResult{},
+		"probeList":            probeListResponse{},
+		"settings":             domain.DefaultSettings(),
+		"requestLog":           domain.RequestLog{},
+		"logPage":              domain.Page[domain.RequestLog]{},
+		"overview":             domain.Overview{},
+		"galleryItem":          domain.GalleryItem{},
+		"galleryPage":          domain.Page[domain.GalleryItem]{},
+		"backfillStatus":       service.BackfillStatus{},
+		"storageUninitialized": domain.StorageStatus{},
+		"storageLocal":         domain.StorageConfig{Mode: domain.StorageLocal}.Status(),
+		"storageImgbed": domain.StorageConfig{
+			Mode: domain.StorageImgbed, ImgbedBaseURL: "https://img.example.com", ImgbedToken: "token",
+		}.Status(),
 	}
 	for name, sample := range samples {
 		entry, ok := fixture[name]

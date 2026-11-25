@@ -43,6 +43,7 @@ type StoredImage struct {
 	PublicID string
 	MIME     string
 	Bytes    int64
+	Ref      string
 }
 
 // GalleryInsert is a new archived image row.

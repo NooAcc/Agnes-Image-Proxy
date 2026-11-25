@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/apierror"
+	"github.com/NooAcc/Agnes-Image-Proxy/internal/domain"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/store"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/testutil"
 )
@@ -20,13 +21,25 @@ var fixedNow = func() time.Time {
 func newSchemaStore(t *testing.T) (*store.Store, *sql.DB) {
 	t.Helper()
 	db := testutil.OpenDB(t)
-	s, constructErr := store.New(db, fixedNow, t.TempDir())
+	s, constructErr := store.New(db, store.NewOptions{Now: fixedNow, DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	if err := s.EnsureSchema(context.Background()); err != nil {
 		t.Fatalf("ensure schema: %v", err)
+	}
+	return s, db
+}
+
+// newInitializedSchemaStore is the fixture for tests that publish or read
+// originals. The empty-schema assertions above deliberately keep using the
+// uninitialized newSchemaStore.
+func newInitializedSchemaStore(t *testing.T) (*store.Store, *sql.DB) {
+	t.Helper()
+	s, db := newSchemaStore(t)
+	if _, err := s.InitializeStorage(context.Background(), domain.StorageInit{Mode: domain.StorageLocal}); err != nil {
+		t.Fatalf("initialize local storage: %v", err)
 	}
 	return s, db
 }
@@ -41,7 +54,7 @@ func TestEnsureSchemaCreatesAndReopens(t *testing.T) {
 	if err := db.QueryRow("SELECT value FROM app_meta WHERE key='schema'").Scan(&version); err != nil {
 		t.Fatalf("read schema: %v", err)
 	}
-	if app != "agnes-go" || version != "3" {
+	if app != "agnes-go" || version != "4" {
 		t.Fatalf("unexpected meta: %q %q", app, version)
 	}
 
@@ -60,7 +73,7 @@ func TestEnsureSchemaCreatesAndReopens(t *testing.T) {
 		t.Fatalf("epoch = %d", epoch)
 	}
 
-	s, constructErr := store.New(db, fixedNow, t.TempDir())
+	s, constructErr := store.New(db, store.NewOptions{Now: fixedNow, DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -79,7 +92,7 @@ func TestEnsureSchemaRejectsNonEmptyWithoutMutation(t *testing.T) {
 		t.Fatalf("insert legacy row: %v", err)
 	}
 
-	s, constructErr := store.New(db, fixedNow, t.TempDir())
+	s, constructErr := store.New(db, store.NewOptions{Now: fixedNow, DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -115,7 +128,7 @@ func TestEnsureSchemaRejectsVersionMismatch(t *testing.T) {
 	if _, err := db.Exec("UPDATE app_meta SET value='1' WHERE key='schema'"); err != nil {
 		t.Fatalf("bump version: %v", err)
 	}
-	s, constructErr := store.New(db, fixedNow, t.TempDir())
+	s, constructErr := store.New(db, store.NewOptions{Now: fixedNow, DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -140,7 +153,7 @@ func TestEnsureSchemaRejectsIncompleteSchema(t *testing.T) {
 	if _, err := db.Exec(`CREATE TABLE accounts (id INTEGER PRIMARY KEY)`); err != nil {
 		t.Fatalf("create partial accounts: %v", err)
 	}
-	s, constructErr := store.New(db, fixedNow, t.TempDir())
+	s, constructErr := store.New(db, store.NewOptions{Now: fixedNow, DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -214,7 +227,7 @@ func TestResetSchemaRequiresConfirmation(t *testing.T) {
 
 func TestEnsureSchemaHonorsCancellation(t *testing.T) {
 	db := testutil.OpenDB(t)
-	s, constructErr := store.New(db, fixedNow, t.TempDir())
+	s, constructErr := store.New(db, store.NewOptions{Now: fixedNow, DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}

@@ -31,7 +31,9 @@ func TestPublicInfoDoesNotSelectBlob(t *testing.T) {
 	// A metadata-only SQL boundary: selecting image would fail because the column
 	// does not exist. This verifies both public and numeric HEAD queries.
 	db := testutil.OpenDB(t)
-	_, err := db.Exec(`CREATE TABLE gallery (id INTEGER PRIMARY KEY, public_id TEXT, image_mime TEXT, image_bytes INTEGER, image_path TEXT);
+	_, err := db.Exec(`CREATE TABLE gallery (id INTEGER PRIMARY KEY, public_id TEXT, image_mime TEXT, image_bytes INTEGER, original_ref TEXT);
+		CREATE TABLE storage_config (id INTEGER PRIMARY KEY, mode TEXT NOT NULL, imgbed_base_url TEXT, imgbed_token TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+		INSERT INTO storage_config VALUES (1, 'local', NULL, NULL, 'now', 'now');
 		INSERT INTO gallery VALUES (1, '0123456789abcdef0123456789abcdef', 'image/png', 68, '01/0123456789abcdef0123456789abcdef/original.png')`)
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +46,7 @@ func TestPublicInfoDoesNotSelectBlob(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(pictureDir, "original.png"), make([]byte, 68), 0640); err != nil {
 		t.Fatal(err)
 	}
-	s, constructErr := store.New(db, nil, dir)
+	s, constructErr := store.New(db, store.NewOptions{DataDir: dir})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -63,7 +65,7 @@ func TestPublicInfoDoesNotSelectBlob(t *testing.T) {
 }
 
 func TestPublicImageIdentity(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	in := generatedInsert(t, "request:0:0")
 	saved, err := s.SaveGeneratedImage(ctx, in)
@@ -90,7 +92,7 @@ func TestPublicImageIdentity(t *testing.T) {
 	}
 }
 func TestSaveGeneratedImageIdempotent(t *testing.T) {
-	s, db := newSchemaStore(t)
+	s, db := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	in := generatedInsert(t, "request:0:0")
 	first, err := s.SaveGeneratedImage(ctx, in)
@@ -112,7 +114,7 @@ func TestSaveGeneratedImageIdempotent(t *testing.T) {
 	}
 }
 func TestSaveGeneratedImageConcurrent(t *testing.T) {
-	s, db := newSchemaStore(t)
+	s, db := newInitializedSchemaStore(t)
 	in := generatedInsert(t, "request:0:0")
 	var wg sync.WaitGroup
 	results := make(chan domain.StoredImage, 8)
@@ -143,7 +145,7 @@ func TestSaveGeneratedImageConcurrent(t *testing.T) {
 	}
 }
 func TestPublicIDAfterClearAndNumericIDReuse(t *testing.T) {
-	s, db := newSchemaStore(t)
+	s, db := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	old, err := s.SaveGeneratedImage(ctx, generatedInsert(t, "request:0:0"))
 	if err != nil {
@@ -168,7 +170,7 @@ func TestPublicIDAfterClearAndNumericIDReuse(t *testing.T) {
 	}
 }
 func TestSaveGeneratedImageRejectsInvalid(t *testing.T) {
-	s, db := newSchemaStore(t)
+	s, db := newInitializedSchemaStore(t)
 	for _, mutate := range []func(*domain.GalleryInsert){func(in *domain.GalleryInsert) { in.OutputKey = "" }, func(in *domain.GalleryInsert) { in.Image = nil }, func(in *domain.GalleryInsert) { in.ImageMIME = ptr("image/gif") }} {
 		in := generatedInsert(t, "request:0:0")
 		mutate(&in)
@@ -182,7 +184,7 @@ func TestSaveGeneratedImageRejectsInvalid(t *testing.T) {
 	}
 }
 func TestDeliveryLogRoundTripAndPartialUsage(t *testing.T) {
-	s, _ := newSchemaStore(t)
+	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
 	log := domain.RequestLog{RequestID: "req", Category: "request", Stage: "complete", Model: "m", Status: 200, Requested: 1, Images: 2, Partial: true, DeliveryFailures: []domain.DeliveryFailure{{SubrequestIndex: 0, ImageIndex: 1, Stage: "persist", Status: 503, Code: "image_persist_failed"}}}
 	if err := s.RecordRequest(ctx, log); err != nil {

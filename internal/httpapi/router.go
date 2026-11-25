@@ -29,6 +29,7 @@ type Options struct {
 	PublicImages PublicImageStore
 	Images       *service.Images
 	Store        AdminStore
+	Storage      StorageStore
 	Backfill     *service.Backfill
 	Probe        *service.Probe
 	Settings     func(context.Context) (domain.Settings, error)
@@ -163,6 +164,10 @@ func (r *router) handleModels(w http.ResponseWriter, req *http.Request) {
 func (r *router) handleImageRequest(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 	requestID := w.Header().Get("X-Request-Id")
+	if err := r.requireInitialized(ctx); err != nil {
+		apierror.Write(w, err)
+		return
+	}
 	if r.options.Settings == nil {
 		apierror.Write(w, apierror.Coded(http.StatusServiceUnavailable, "settings are unavailable", "server_error", "service_unavailable"))
 		return

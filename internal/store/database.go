@@ -12,6 +12,7 @@ import (
 	"github.com/tursodatabase/libsql-client-go/libsql"
 
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/apierror"
+	"github.com/NooAcc/Agnes-Image-Proxy/internal/imgbed"
 )
 
 // DefaultTimeout bounds every database operation.
@@ -23,30 +24,45 @@ type Options struct {
 	AuthToken string
 	Timeout   time.Duration
 	DataDir   string
+	Imgbed    imgbed.Options
+}
+
+// NewOptions configures a Store over an existing database handle.
+type NewOptions struct {
+	Now     func() time.Time
+	DataDir string
+	Imgbed  imgbed.Options
 }
 
 // Store is the single database/sql-backed storage implementation.
 type Store struct {
-	db          *sql.DB
-	now         func() time.Time
-	timeout     time.Duration
-	files       *localFiles
-	galleryGate sync.RWMutex
-	outputLocks operationLocks
-	imageLocks  operationLocks
+	db            *sql.DB
+	now           func() time.Time
+	timeout       time.Duration
+	files         *localFiles
+	imgbedOptions imgbed.Options
+	storageGate   storageGate
+	galleryGate   sync.RWMutex
+	outputLocks   operationLocks
+	imageLocks    operationLocks
 }
 
 // New wraps an existing database handle. Tests and preview use this with a
 // local SQLite database; production uses Open.
-func New(db *sql.DB, now func() time.Time, dataDir string) (*Store, error) {
+func New(db *sql.DB, opts NewOptions) (*Store, error) {
+	now := opts.Now
 	if now == nil {
 		now = time.Now
 	}
-	files, err := newLocalFiles(dataDir)
+	files, err := newLocalFiles(opts.DataDir)
 	if err != nil {
 		return nil, err
 	}
-	return &Store{db: db, now: now, timeout: DefaultTimeout, files: files}, nil
+	imgbedOptions := opts.Imgbed
+	if imgbedOptions.Now == nil {
+		imgbedOptions.Now = now
+	}
+	return &Store{db: db, now: now, timeout: DefaultTimeout, files: files, imgbedOptions: imgbedOptions}, nil
 }
 
 // operation bounds the whole storage operation, including row consumption and
@@ -95,7 +111,7 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 	if dataDir == "" {
 		dataDir = "/data"
 	}
-	s, err := New(db, time.Now, dataDir)
+	s, err := New(db, NewOptions{Now: time.Now, DataDir: dataDir, Imgbed: opts.Imgbed})
 	if err != nil {
 		_ = db.Close()
 		return nil, err

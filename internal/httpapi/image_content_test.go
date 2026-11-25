@@ -109,7 +109,7 @@ func (d contentDownload) Download(context.Context, string) ([]byte, string, erro
 	return []byte(d), "image/png", nil
 }
 func TestHTTPDeliveryURLBase64Equality(t *testing.T) {
-	s, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+	s, constructErr := store.New(testutil.OpenDB(t), store.NewOptions{DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
@@ -118,6 +118,7 @@ func TestHTTPDeliveryURLBase64Equality(t *testing.T) {
 	if err := s.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
+	requireLocalStorage(t, s)
 	data := testutil.PNG(t, 4, 4)
 	tasks := service.NewTasks(service.TaskOptions{Workers: 1, Capacity: 8})
 	defer tasks.Drain(ctx)
@@ -127,7 +128,7 @@ func TestHTTPDeliveryURLBase64Equality(t *testing.T) {
 	}})
 	guard := httpapi.NewAuth(httpapi.AuthOptions{APIKey: "secret"})
 	signer := auth.NewImageLinks("secret", nil)
-	handler := httpapi.New(httpapi.Options{Auth: guard, Images: im, ImageLinks: signer, PublicImages: s, Settings: s.ReadSettings})
+	handler := httpapi.New(httpapi.Options{Auth: guard, Images: im, Storage: initializedStorage{}, ImageLinks: signer, PublicImages: s, Settings: s.ReadSettings})
 	for _, format := range []string{"url", "b64_json"} {
 		request := httptest.NewRequest("POST", "https://proxy.example/v1/images/generations", strings.NewReader(`{"model":"m","prompt":"p","response_format":"`+format+`"}`))
 		request.Header.Set("Content-Type", "application/json")

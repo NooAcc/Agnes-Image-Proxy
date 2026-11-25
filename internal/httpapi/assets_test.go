@@ -31,7 +31,7 @@ func serve(t *testing.T, method, target string) *httptest.ResponseRecorder {
 }
 
 func TestAssetsServesPages(t *testing.T) {
-	for _, path := range []string{"/admin", "/admin/", "/admin/overview", "/admin/gallery", "/admin/accounts", "/admin/logs", "/admin/settings", "/admin/login"} {
+	for _, path := range []string{"/admin", "/admin/", "/admin/overview", "/admin/gallery", "/admin/accounts", "/admin/logs", "/admin/settings", "/admin/setup", "/admin/login"} {
 		rec := serve(t, http.MethodGet, path)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s status = %d", path, rec.Code)

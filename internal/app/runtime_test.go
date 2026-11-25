@@ -11,19 +11,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/NooAcc/Agnes-Image-Proxy/internal/domain"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/service"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/store"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/testutil"
 )
 
+func requireLocalStorage(t *testing.T, st *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	if err := st.EnsureSchema(ctx); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	if _, err := st.InitializeStorage(ctx, domain.StorageInit{Mode: domain.StorageLocal}); err != nil {
+		t.Fatalf("initialize local storage: %v", err)
+	}
+}
+
 func newTestRuntime(t *testing.T, options Options) (*Runtime, *store.Store) {
 	t.Helper()
-	st, constructErr := store.New(testutil.OpenDB(t), nil, t.TempDir())
+	st, constructErr := store.New(testutil.OpenDB(t), store.NewOptions{DataDir: t.TempDir()})
 	if constructErr != nil {
 		t.Fatal(constructErr)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	options.Store = st
+	requireLocalStorage(t, st)
 	if options.APIKey == "" {
 		options.APIKey = "test-admin-key"
 	}

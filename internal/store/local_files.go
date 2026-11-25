@@ -126,6 +126,21 @@ func safeImagePath(path string) bool {
 	stem := name[:dot]
 	return stem == "original" || strings.HasPrefix(stem, "thumb-") && validPublicID(strings.TrimPrefix(stem, "thumb-"))
 }
+func (f *localFiles) probe(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	name, err := randomFileName(".probe-")
+	if err != nil {
+		return err
+	}
+	probe, err := f.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0640)
+	if err != nil {
+		return err
+	}
+	return errors.Join(probe.Sync(), probe.Close(), f.root.Remove(name))
+}
+
 func (f *localFiles) writeOriginal(ctx context.Context, id, mime string, data []byte) (string, error) {
 	return f.write(ctx, id, mime, data, false)
 }

@@ -169,6 +169,7 @@ func NewRuntime(options Options) (*Runtime, error) {
 		PublicImages: options.Store,
 		Images:       orchestrator,
 		Store:        options.Store,
+		Storage:      options.Store,
 		Backfill:     backfill,
 		Probe:        probe,
 		Settings:     options.Store.ReadSettings,

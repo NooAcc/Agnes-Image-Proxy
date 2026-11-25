@@ -4,10 +4,11 @@ info:
   version: "2"
   description: |
     Agnes always returns source URLs. Every successful output is downloaded, validated and persisted
-    before responding. Originals are local files in DATA_DIR; database schema 3 stores metadata only.
-    Missing originals never fall back to upstream or legacy BLOBs. DATA_DIR is not a static public directory.
-    Edge dimensions are best-effort; originals are never resized or transcoded.
-    URL links authorize only one saved original, not any administration operation.
+    before responding. Originals use the fixed storage mode chosen at first run: local files in
+    DATA_DIR or registered CloudFlare ImgBed files; database schema 4 stores only original_ref metadata.
+    Missing originals never fall back to upstream, legacy BLOBs or a second storage mode.
+    DATA_DIR is not a static public directory. Edge dimensions are best-effort; originals are never
+    resized or transcoded. URL links authorize only one saved original, not any administration operation.
 paths:
   /v1/images/generations:
     post:
@@ -185,6 +186,9 @@ components:
         OpenAI envelope. Download errors: 502 image_download_failed, 504 image_download_timeout.
         Persistence errors: 503 image_persist_failed. All-failure priority: 429 > 504 > 502 > 503.
         Origin errors are 400 invalid_image_origin before generation. Format aliases are 400 unsupported_parameter.
+        Before storage initialization, generation and edits return 503 initialization_required before any
+        upstream, reference read or capacity reservation. Original storage unavailability (including ImgBed
+        permission or network failures) is 503 image_storage_unavailable, never 404.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -197,7 +201,7 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
           example: { error: { message: "image not found", type: invalid_request_error, param: null, code: not_found } }
     ContentUnavailable:
-      description: Generic 503, no internal database details
+      description: Generic 503, no internal database details; ImgBed permission, network, MIME or length failures map here, not to 404
       headers:
         Cache-Control: { schema: { type: string, const: no-store } }
       content:

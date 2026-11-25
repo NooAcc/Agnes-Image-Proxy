@@ -22,6 +22,7 @@ var pageRoutes = map[string]bool{
 	"/admin/accounts": true,
 	"/admin/logs":     true,
 	"/admin/settings": true,
+	"/admin/setup":    true,
 	"/admin/login":    true,
 }
 
