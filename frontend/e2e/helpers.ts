@@ -21,6 +21,7 @@ export interface Section {
 
 export const SECTIONS: Section[] = [
   { id: "overview", heading: "当日概览" },
+  { id: "generate", heading: "创建生图" },
   { id: "gallery", heading: "图片时间线" },
   { id: "accounts", heading: "Key 池" },
   { id: "logs", heading: "请求日志" },

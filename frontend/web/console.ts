@@ -1,5 +1,6 @@
 import { BRAND_MARK, icon } from "./icons.ts";
 import { RUNTIME_SCRIPT } from "./runtime.ts";
+import { GENERATION_HTML, GENERATION_DIALOGS, GENERATION_SCRIPT } from "./generation.ts";
 import { BOOTSTRAP_SCRIPT } from "./bootstrap.ts";
 import { ACCOUNTS_DIALOGS, ACCOUNTS_HTML, ACCOUNTS_SCRIPT } from "./sections/accounts.ts";
 import { LOGS_DIALOGS, LOGS_HTML, LOGS_SCRIPT } from "./sections/logs.ts";
@@ -10,6 +11,7 @@ import { GALLERY_DIALOGS, GALLERY_HTML, GALLERY_SCRIPT } from "./gallery.ts";
 
 const NAV = [
   { id: "overview", label: "总览" },
+  { id: "generate", label: "生图" },
   { id: "gallery", label: "图片" },
   { id: "accounts", label: "账号" },
   { id: "logs", label: "日志" },
@@ -48,7 +50,7 @@ const SHELL_SCRIPT = String.raw`
   );
   var titleNode = document.querySelector('[data-role="page-title"]');
   var titles = {};
-  var known = { overview: true, gallery: true, accounts: true, logs: true, settings: true };
+  var known = { overview: true, generate: true, gallery: true, accounts: true, logs: true, settings: true };
 
   for (var i = 0; i < sectionNodes.length; i++) {
     var node = sectionNodes[i];
@@ -123,6 +125,7 @@ const SHELL_SCRIPT = String.raw`
     setSection((location.hash || "#overview").slice(1));
   });
 
+  A.navigate = navigate;
   A.syncThemeUi();
   document.addEventListener("agnes:settings", function (event) {
     var settings = event.detail;
@@ -150,6 +153,7 @@ const CONSOLE_SCRIPTS = [
   RUNTIME_SCRIPT,
   BOOTSTRAP_SCRIPT,
   OVERVIEW_SCRIPT,
+  GENERATION_SCRIPT,
   GALLERY_SCRIPT,
   ACCOUNTS_SCRIPT,
   LOGS_SCRIPT,
@@ -208,6 +212,7 @@ export function renderConsole(): string {
         <button class="btn primary" type="button" data-action="boot-retry">重试</button>
       </div>
       ${OVERVIEW_HTML}
+      ${GENERATION_HTML}
       ${GALLERY_HTML}
       ${ACCOUNTS_HTML}
       ${LOGS_HTML}
@@ -219,6 +224,7 @@ export function renderConsole(): string {
 ${CONFIRM_DIALOG}
 ${ACCOUNTS_DIALOGS}
 ${GALLERY_DIALOGS}
+${GENERATION_DIALOGS}
 ${LOGS_DIALOGS}
 <div class="toast-stack" data-role="toast-stack" role="status" aria-live="polite" aria-atomic="false"></div>
 ${CONSOLE_SCRIPTS.map((script) => `<script>${script}</script>`).join("\n")}`;

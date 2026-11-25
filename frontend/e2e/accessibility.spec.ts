@@ -47,6 +47,7 @@ test("375/768/1024/1440 与浅色/深色截图且无整页横向溢出", async (
 
   const pages = [
     { id: "overview", name: "overview" },
+    { id: "generate", name: "generate" },
     { id: "gallery", name: "gallery" },
     { id: "accounts", name: "accounts" },
     { id: "settings", name: "settings" },

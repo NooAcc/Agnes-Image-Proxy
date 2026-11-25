@@ -47,6 +47,20 @@ func (r *router) handleAdmin(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	switch parts[0] {
+	case "images":
+		if len(parts) != 2 || parts[1] != "generations" {
+			adminNotFound(w)
+			return
+		}
+		if req.Method != http.MethodPost {
+			methodNotAllowed(w, "POST")
+			return
+		}
+		if r.options.Images == nil {
+			unavailable(w, "image service is unavailable")
+			return
+		}
+		r.handleImageRequest(w, req)
 	case "accounts":
 		r.handleAccounts(w, req, parts[1:])
 	case "settings":

@@ -101,6 +101,7 @@ export function overviewRanges(day) {
 export function safeAdminDestination(raw) {
   const sections = {
     overview: true,
+    generate: true,
     gallery: true,
     accounts: true,
     logs: true,

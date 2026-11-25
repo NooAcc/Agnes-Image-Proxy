@@ -613,7 +613,8 @@ dialog[open] { animation: dialog-in 180ms var(--ease); }
 }
 .lightbox-prompt-toggle:hover { text-decoration: underline; }
 .lightbox-meta { font-size: 11.5px; color: var(--faint); }
-.lightbox-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.lightbox-actions { display: grid; grid-template-columns: repeat(2, max-content); gap: 8px; flex: none; }
+.lightbox-actions .btn { justify-content: center; }
 
 /* ---------- Toast ---------- */
 .toast-stack { position: fixed; right: 18px; bottom: 18px; z-index: 80; display: flex; flex-direction: column; gap: 8px; width: min(370px, calc(100vw - 36px)); pointer-events: none; }
@@ -636,7 +637,7 @@ dialog[open] { animation: dialog-in 180ms var(--ease); }
   .sidebar { display: none; }
   .content { padding-bottom: 96px; }
   .bottom-nav {
-    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
     padding: 5px 6px calc(5px + env(safe-area-inset-bottom));
     background: color-mix(in srgb, var(--surface) 88%, transparent);

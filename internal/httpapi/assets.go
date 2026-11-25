@@ -20,6 +20,7 @@ var pageDocuments = map[string]string{
 	"/admin":          "index.html",
 	"/admin/":         "index.html",
 	"/admin/overview": "index.html",
+	"/admin/generate": "index.html",
 	"/admin/gallery":  "index.html",
 	"/admin/accounts": "index.html",
 	"/admin/logs":     "index.html",

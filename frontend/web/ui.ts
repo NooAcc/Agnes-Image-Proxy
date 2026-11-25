@@ -1,6 +1,7 @@
 import { FAVICON_URI, ICON_SPRITE } from "./icons.ts";
 import { renderConsole } from "./console.ts";
 import { BASE_STYLE } from "./styles.ts";
+import { GENERATION_STYLE } from "./generation-style.ts";
 import { THEME_INIT_SCRIPT } from "./theme.ts";
 
 export { renderSetupPage } from "./setup.ts";
@@ -16,7 +17,7 @@ export function renderAdminPage(): string {
 <link rel="icon" href="${FAVICON_URI}">
 <title>总览 · Agnes 图像控制台</title>
 <script>${THEME_INIT_SCRIPT}</script>
-<style>${BASE_STYLE}</style>
+<style>${BASE_STYLE}\n${GENERATION_STYLE}</style>
 </head>
 <body class="is-booting">
 ${ICON_SPRITE}

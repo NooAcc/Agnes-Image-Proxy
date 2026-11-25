@@ -8,6 +8,7 @@ const PATHS: Record<string, string> = {
   logs: '<rect x="4.5" y="3.5" width="15" height="17" rx="2.2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
   settings:
     '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/>',
+  generate: '<path d="M13 3L5 14h5.5l-1 7L18 10h-5.5z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   upload: '<path d="M12 16V5M7.5 9.5L12 5l4.5 4.5"/><path d="M5 19h14"/>',
   bolt: '<path d="M13 3L5 14h5.5l-1 7L18 10h-5.5z"/>',

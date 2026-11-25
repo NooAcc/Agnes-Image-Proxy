@@ -102,6 +102,7 @@ export const GALLERY_DIALOGS = `
         <button class="btn small" type="button" data-action="gallery-copy">${
   icon("copy")
 }复制提示词</button>
+        <button class="btn small" type="button" data-action="gallery-reference">${icon("plus")}作为参考图</button>
         <a class="btn small" data-role="gallery-download">${icon("download")}下载</a>
         <button class="btn small danger" type="button" data-action="gallery-delete">${
   icon("trash")
@@ -705,6 +706,26 @@ export const GALLERY_SCRIPT = String.raw`
       });
       return;
     }
+    var reference = event.target.closest('[data-action="gallery-reference"]');
+    if (reference) {
+      var currentReference = state.visible[state.current];
+      if (!currentReference || !A.generation || A.generation.isBusy()) return;
+      var snapshot = Object.assign({}, currentReference);
+      var referenceToken = state.imageToken;
+      A.setBusy(reference, true, "正在添加…");
+      A.generation.addGalleryImage(snapshot).then(function () {
+        var currentDialog = node("gallery-dialog");
+        if (currentDialog && currentDialog.open && state.imageToken === referenceToken &&
+            section.classList.contains("is-active")) {
+          currentDialog.close();
+          A.navigate("generate");
+        }
+        A.toast("已加入参考图，原有配置已保留");
+      }).catch(function (error) {
+        A.toast(error.message, "error");
+      }).finally(function () { A.setBusy(reference, false); });
+      return;
+    }
     var remove = event.target.closest('[data-action="gallery-delete"]');
     if (remove) {
       var item = state.visible[state.current];
@@ -712,6 +733,10 @@ export const GALLERY_SCRIPT = String.raw`
     }
   });
 
+  document.addEventListener("agnes:generation-busy", function (event) {
+    var reference = document.querySelector('[data-action="gallery-reference"]');
+    if (reference) reference.disabled = Boolean(event.detail.busy);
+  });
   var dialog = node("gallery-dialog");
   if (dialog) {
     dialog.addEventListener("keydown", function (event) {

@@ -31,8 +31,11 @@ export const RUNTIME_SCRIPT = String.raw`
 
   async function api(path, options) {
     var init = Object.assign({ credentials: "same-origin" }, options || {});
+    var responseType = init.responseType;
+    delete init.responseType;
     var response = await fetch(path, init);
     if (response.status === 204) return null;
+    if (response.ok && responseType === "blob") return response.blob();
     var body = null;
     try { body = await response.json(); } catch (error) { body = null; }
     if (!response.ok) {

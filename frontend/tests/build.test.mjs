@@ -12,7 +12,7 @@ import { renderAdminPage } from "../web/ui.ts";
 import { renderLoginPage } from "../web/login.ts";
 import { BASE_STYLE } from "../web/styles.ts";
 
-const SECTIONS = ["overview", "gallery", "accounts", "logs", "settings"];
+const SECTIONS = ["overview", "generate", "gallery", "accounts", "logs", "settings"];
 
 function countMatches(source, pattern) {
   return [...source.matchAll(pattern)].length;
@@ -53,8 +53,8 @@ test("console document restores the five sections and both navigations", () => {
   for (const id of SECTIONS) {
     assert.match(html, new RegExp(`data-section="${id}"`), `missing data-section ${id}`);
   }
-  assert.equal(countMatches(html, /data-nav="/g), 5, "desktop navigation links");
-  assert.equal(countMatches(html, /data-bottom-nav="/g), 5, "bottom navigation links");
+  assert.equal(countMatches(html, /data-nav="/g), SECTIONS.length, "desktop navigation links");
+  assert.equal(countMatches(html, /data-bottom-nav="/g), SECTIONS.length, "bottom navigation links");
 });
 
 test("console styles keep the original green accent and light theme", () => {

@@ -124,6 +124,9 @@ export function runBootstrap(win, safeAdminDestination) {
     if (A.autoRefresh && typeof A.autoRefresh.refreshNow === "function") {
       A.autoRefresh.refreshNow();
     }
+    if (typeof doc.dispatchEvent === "function" && typeof win.CustomEvent === "function") {
+      doc.dispatchEvent(new win.CustomEvent("agnes:ready"));
+    }
   }
 
   function check() {
