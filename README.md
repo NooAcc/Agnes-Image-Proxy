@@ -1,8 +1,9 @@
-# Agnes Image Proxy（Go + React）
+# Agnes Image Proxy（Go + 原生控制台）
 
 把 Agnes 图像 API 包装成 OpenAI Images API 兼容层。服务使用 Go 1.26 单体运行，
-管理控制台使用 React/TypeScript/Vite/Tailwind/shadcn/TanStack Query，构建产物通过
-`go:embed` 打进同一个二进制；生产运行不需要 Node、Deno 或前端构建工具。
+管理控制台使用 HTML/CSS/原生浏览器 JavaScript，由 Node 24 的内置 TypeScript 支持
+渲染并生成内容哈希资源，构建产物通过 `go:embed` 打进同一个二进制；生产运行不需要
+Node、Deno 或前端构建工具。
 
 本项目面向**个人自用、自托管**，不提供多用户权限隔离。`PROXY_API_KEY` 同时拥有图片 API
 和管理 API 权限，请勿将其作为“仅生成图片”的密钥分享给不受信任的人。
@@ -17,11 +18,11 @@
 
 ### 离线预览（不消耗真实额度）
 
-首次运行前必须构建前端，生成 Go 编译时嵌入的 `internal/webassets/dist/`：
+首次运行前必须构建前端，生成 Go 编译时嵌入的 `internal/webassets/dist/`。构建只需要
+Node 24，不需要安装任何 npm 依赖：
 
 ```bash
-npm --prefix frontend ci
-npm --prefix frontend run build
+node frontend/scripts/build.mjs   # 或 npm --prefix frontend run build
 go run ./cmd/agnes-proxy preview --port 8001
 ```
 
@@ -34,14 +35,12 @@ go run ./cmd/agnes-proxy preview --port 8001
 先构建一次前端，Go 才能嵌入 `internal/webassets/dist/`（没有空白占位回退）：
 
 ```bash
-npm --prefix frontend ci
-npm --prefix frontend run build
+node frontend/scripts/build.mjs   # 或 npm --prefix frontend run build
 go run ./cmd/agnes-proxy preview --port 8000
 ```
 
-Vite 开发服务器（`npm --prefix frontend run dev`，端口 5173）会把 `/admin/api`、`/v1`
-与 `/health` 代理到 `http://127.0.0.1:8000`，因此可以在另一个终端用上面的 preview
-作为后端。生产模式需要真实环境变量：
+控制台没有开发服务器：修改 `frontend/web/` 后重新构建并重启 preview 即可。生产模式
+需要真实环境变量：
 
 ```bash
 PROXY_API_KEY=... TURSO_DATABASE_URL=libsql://... TURSO_AUTH_TOKEN=... DATA_DIR="$PWD/.data" \
@@ -293,31 +292,31 @@ Cookie 变更请求校验 Origin，登录失败限速。
 ## 管理控制台
 
 `/admin/login` 输入 `PROXY_API_KEY` 登录。会话 Cookie 30 天有效，剩余不足 7 天时管理
-API 会自动续期，总寿命不超过 90 天；设置页可撤销全部会话。深链接、刷新与前进/后退
-均可用，筛选条件保存在 URL。
+API 会自动续期，总寿命不超过 90 天；设置页可撤销全部会话。旧版 hash 导航（如
+`/admin#gallery`）和直接路径（如 `/admin/gallery`）都会打开对应板块。
 
-- 总览：UTC 日期范围、请求/成功/部分成功/失败/图片统计、两张单系列折线与逐日数据表、模型用量、账号健康。
-- 图库：按 UTC 日期分组、24 项游标分页、tag 筛选、懒加载缩略图、原图弹窗/下载/删除/清空、补齐状态。
+- 总览：UTC 日期、所选日指标与 14 天趋势（两个区间请求）、模型用量、账号健康。
+- 图库：按 UTC 日期分组、24 项游标分页、tag 筛选、懒加载缩略图、原图灯箱/下载/删除/清空、后台补齐状态。
 - 账号：脱敏 Key、启用/停用、探测、冷却重置、导入（同名 Key 不叠加额度）、删除。
-- 日志：request/enrich 分类、逐账号尝试与 download/persist 交付失败详情、清空确认。
-- 设置：上游与尺寸、超时/重试、图片服务参数、链接TTL/公开origin、撤销全部会话。
+- 日志：request/enrich 分类、50 条游标分页、逐账号尝试与 download/persist 交付失败详情、清空确认。
+- 设置：上游与尺寸、超时/重试、图片服务参数、链接 TTL/公开 origin，以及只读存储方式与 ImgBed 更新。
 
 ## 测试与验收
 
-Go 检查同样需要嵌入前端产物；新 clone 或清理构建目录后，先安装依赖并构建前端：
+Go 检查同样需要嵌入前端产物；新 clone 或清理构建目录后，先构建前端：
 
 ```bash
-npm --prefix frontend ci
-npm --prefix frontend run build
+node frontend/scripts/build.mjs   # 或 npm --prefix frontend run build
 
 gofmt -l internal cmd
 go vet ./...
-go test ./...                 # 离线；不访问真实 Turso/Agnes
+go test -p 1 ./...            # 离线；不访问真实 Turso/Agnes
 go test -race ./...           # 工具链支持时
 
-npm --prefix frontend run typecheck
-npm --prefix frontend run lint
-npm --prefix frontend run test -- --run
+npm --prefix frontend test    # Node 内置测试，无需安装依赖
+
+# E2E 需要一次性的开发依赖（Playwright/axe），生产构建不需要
+npm --prefix frontend ci
 npm --prefix frontend run test:e2e
 ```
 

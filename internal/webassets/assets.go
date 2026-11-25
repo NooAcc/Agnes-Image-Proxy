@@ -11,7 +11,7 @@ import (
 //go:embed all:dist
 var embedded embed.FS
 
-// FS returns the embedded single-page application rooted at dist.
+// FS returns the embedded console documents rooted at dist.
 func FS() (fs.FS, error) {
 	sub, err := fs.Sub(embedded, "dist")
 	if err != nil {

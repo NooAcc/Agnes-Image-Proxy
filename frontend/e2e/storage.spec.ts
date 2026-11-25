@@ -39,7 +39,7 @@ async function mockStorage(page: Page, state: { status: StorageStatus; posted?: 
         initialized: true,
         mode: "imgbed",
         imgbedBaseUrl: body.imgbedBaseUrl,
-        hasImgbedToken: Boolean(body.imgbedToken) || true,
+        hasImgbedToken: true,
       };
       await fulfill(route, 200, state.status);
       return;
@@ -54,28 +54,30 @@ test("setup requires an explicit choice, is keyboard operable and fits 375px", a
   const state: { status: StorageStatus; posted?: unknown } = { status: { initialized: false } };
   await mockStorage(page, state);
 
-  await page.goto("/admin/settings");
-  await expect(page.getByRole("heading", { name: "初始化 Agnes Image Proxy" })).toBeVisible();
+  await page.goto("/admin/setup");
+  await expect(page.getByRole("heading", { name: "选择原图存储方式" })).toBeVisible();
   await expect(page).toHaveURL(/\/admin\/setup$/);
   const local = page.getByRole("radio", { name: /本地存储/ });
-  const imgbed = page.getByRole("radio", { name: /图床存储/ });
+  const imgbed = page.getByRole("radio", { name: /ImgBed 图床/ });
   await expect(local).not.toBeChecked();
-  await expect(page.getByRole("button", { name: "完成初始化" })).toBeDisabled();
+  await expect(imgbed).not.toBeChecked();
+  const submit = page.getByRole("button", { name: "初始化存储" });
+  await expect(submit).toBeDisabled();
 
   await local.focus();
   await page.keyboard.press("ArrowDown");
   await expect(imgbed).toBeChecked();
-  await page.getByLabel("图床站点地址").fill("https://img.example.com");
-  await page.getByLabel("API Token").fill("secret-token");
-  await expect(page.getByRole("button", { name: "完成初始化" })).toBeEnabled();
+  await page.getByLabel("ImgBed 地址").fill("https://img.example.com");
+  await page.getByLabel("ImgBed Token").fill("secret-token");
+  await expect(submit).toBeEnabled();
 
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth > window.innerWidth + 1,
   );
   expect(overflow).toBe(false);
 
-  await page.getByRole("button", { name: "完成初始化" }).click();
-  await expect(page).toHaveURL(/\/admin\/overview$/);
+  await submit.click();
+  await expect(page).toHaveURL(/\/admin#overview$/);
   expect(state.posted).toEqual({
     mode: "imgbed",
     imgbedBaseUrl: "https://img.example.com",
@@ -105,19 +107,19 @@ test("initialization conflict refetches the fixed status", async ({ page }) => {
 
   await page.goto("/admin/setup");
   await page.getByRole("radio", { name: /本地存储/ }).check();
-  await page.getByRole("button", { name: "完成初始化" }).click();
-  await expect(page).toHaveURL(/\/admin\/overview$/);
-  await expect(page.getByRole("heading", { level: 2, name: "总览" })).toBeVisible();
+  await page.getByRole("button", { name: "初始化存储" }).click();
+  await expect(page).toHaveURL(/\/admin#overview$/);
+  await expect(page.getByRole("heading", { level: 2, name: "当日概览" })).toBeVisible();
 });
 
 test("settings keeps the fixed mode read only and never echoes the token", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 800 });
   await login(page);
+  await page.goto("/admin/settings");
 
   // The preview itself is initialized in local mode.
-  await page.goto("/admin/settings");
-  await expect(page.getByText("本地存储", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("更新 API Token")).toHaveCount(0);
+  await expect(page.getByText("本地文件", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("新 Token")).not.toBeVisible();
 
   const status: StorageStatus = {
     initialized: true,
@@ -127,13 +129,14 @@ test("settings keeps the fixed mode read only and never echoes the token", async
   };
   await page.route("**/admin/api/storage", (route) => fulfill(route, 200, status));
   await page.reload();
-  await expect(page.getByText("图床存储", { exact: true })).toBeVisible();
-  await expect(page.getByText(/已配置/)).toBeVisible();
-  await expect(page.getByLabel("更新 API Token")).toHaveValue("");
-  await expect(page.getByRole("radio")).toHaveCount(0);
+  await expect(page.getByText("ImgBed 图床", { exact: true })).toBeVisible();
+  await expect(page.getByText("已配置", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("新 Token")).toHaveValue("");
+  await expect(
+    page.locator('[data-role="storage-card"]').getByRole("radio"),
+  ).toHaveCount(0);
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth > window.innerWidth + 1,
   );
   expect(overflow).toBe(false);
-  expect(status.mode).toBe("imgbed");
 });

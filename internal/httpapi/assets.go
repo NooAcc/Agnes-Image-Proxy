@@ -14,16 +14,18 @@ const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 
 	"connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; " +
 	"frame-ancestors 'none'"
 
-var pageRoutes = map[string]bool{
-	"/admin":          true,
-	"/admin/":         true,
-	"/admin/overview": true,
-	"/admin/gallery":  true,
-	"/admin/accounts": true,
-	"/admin/logs":     true,
-	"/admin/settings": true,
-	"/admin/setup":    true,
-	"/admin/login":    true,
+// pageDocuments maps each known console route to its HTML document. Every other
+// path is treated as a static file and must exist.
+var pageDocuments = map[string]string{
+	"/admin":          "index.html",
+	"/admin/":         "index.html",
+	"/admin/overview": "index.html",
+	"/admin/gallery":  "index.html",
+	"/admin/accounts": "index.html",
+	"/admin/logs":     "index.html",
+	"/admin/settings": "index.html",
+	"/admin/setup":    "setup.html",
+	"/admin/login":    "login.html",
 }
 
 var hashedAsset = regexp.MustCompile(`[-.][A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$`)
@@ -32,8 +34,9 @@ type assetsHandler struct {
 	fsys fs.FS
 }
 
-// NewAssets serves the admin SPA and its static assets. Only known page routes
-// fall back to index.html; missing files and unknown pages return JSON 404s.
+// NewAssets serves the built admin console documents and their static assets.
+// Only known page routes map to a document; missing files and unknown pages
+// return JSON 404s.
 func NewAssets(fsys fs.FS) http.Handler {
 	return &assetsHandler{fsys: fsys}
 }
@@ -59,8 +62,8 @@ func (h *assetsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if pageRoutes[cleaned] {
-		h.serveIndex(w, r)
+	if document, ok := pageDocuments[cleaned]; ok {
+		h.serveDocument(w, r, document)
 		return
 	}
 
@@ -72,8 +75,8 @@ func (h *assetsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.serveFile(w, r, file)
 }
 
-func (h *assetsHandler) serveIndex(w http.ResponseWriter, r *http.Request) {
-	data, err := fs.ReadFile(h.fsys, "index.html")
+func (h *assetsHandler) serveDocument(w http.ResponseWriter, r *http.Request, document string) {
+	data, err := fs.ReadFile(h.fsys, document)
 	if err != nil {
 		writeJSON(w, r, http.StatusInternalServerError, "console build missing")
 		return

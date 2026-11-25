@@ -1,14 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
+# The console is plain HTML/CSS/JavaScript rendered by a dependency-free Node
+# build. No npm installation is required for the production asset build.
 FROM node:24-bookworm-slim AS frontend
-WORKDIR /src/frontend
-COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
-COPY frontend/ ./
-# Frontend typechecking validates the shared Go response fixture.
-COPY internal/httpapi/testdata/ ../internal/httpapi/testdata/
-# Vite writes to ../internal/webassets/dist, which the Go stage embeds.
-RUN npm run build
+WORKDIR /src
+COPY frontend ./frontend
+RUN node frontend/scripts/build.mjs
 
 FROM golang:1.26-bookworm AS build
 WORKDIR /src

@@ -9,29 +9,42 @@ export interface GalleryItem {
   enrichStatus: string;
   archived: boolean;
   sourceUrl: string | null;
+  createdAt: string;
 }
 
-export async function login(page: Page): Promise<void> {
+export interface Section {
+  id: string;
+  heading: string;
+}
+
+export const SECTIONS: Section[] = [
+  { id: "overview", heading: "当日概览" },
+  { id: "gallery", heading: "图片时间线" },
+  { id: "accounts", heading: "Key 池" },
+  { id: "logs", heading: "请求日志" },
+  { id: "settings", heading: "运行设置" },
+];
+
+export function section(page: Page, id: string) {
+  return page.locator(`[data-section="${id}"]`);
+}
+
+export async function login(page: Page, next = "/admin#overview"): Promise<void> {
   await page.goto("/admin/login");
-  await page.getByLabel("管理密钥").fill(ADMIN_KEY);
+  await page.getByLabel("访问密钥").fill(ADMIN_KEY);
   await page.getByRole("button", { name: "登录" }).click();
-  await expect(page).toHaveURL(/\/admin\/overview$/);
-  await expect(page.getByRole("heading", { level: 2, name: "总览" })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`${next.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
+  await expect(section(page, "overview")).toHaveClass(/is-active/);
 }
 
 export function mainNav(page: Page) {
-  return page.getByRole("navigation", { name: "主导航" });
+  return page.locator(".sidebar nav");
 }
 
-export async function gotoPage(
-  page: Page,
-  label: string,
-  path: string,
-  heading: string,
-): Promise<void> {
-  await mainNav(page).getByRole("link", { name: label }).click();
-  await expect(page).toHaveURL(new RegExp(`${path.replaceAll("/", "\\/")}$`));
-  await expect(page.getByRole("heading", { level: 2, name: heading })).toBeVisible();
+export async function gotoSection(page: Page, id: string): Promise<void> {
+  await page.locator(`.sidebar [data-nav="${id}"]`).click();
+  await expect(page).toHaveURL(new RegExp(`/admin#${id}$`));
+  await expect(section(page, id)).toHaveClass(/is-active/);
 }
 
 export async function generateImages(page: Page, prompt: string, n: number): Promise<void> {

@@ -35,7 +35,11 @@ func newUninitializedHandler(t *testing.T, storage httpapi.StorageStore) (http.H
 		Settings: func(context.Context) (domain.Settings, error) { settingsCalls++; return domain.DefaultSettings(), nil },
 		Images:   service.NewImages(service.ImageOptions{}),
 		Logs:     st,
-		Assets:   httpapi.NewAssets(fstest.MapFS{"index.html": {Data: []byte("<html>setup</html>")}}),
+		Assets: httpapi.NewAssets(fstest.MapFS{
+			"index.html": {Data: []byte("<html>console</html>")},
+			"login.html": {Data: []byte("<html>login</html>")},
+			"setup.html": {Data: []byte("<html>setup</html>")},
+		}),
 	})
 	t.Cleanup(func() {
 		if settingsCalls != 0 {
@@ -141,7 +145,11 @@ func buildUninitialized(t *testing.T) http.Handler {
 		Settings: func(context.Context) (domain.Settings, error) { settingsCalls++; return domain.DefaultSettings(), nil },
 		Images:   service.NewImages(service.ImageOptions{}),
 		Logs:     s,
-		Assets:   httpapi.NewAssets(fstest.MapFS{"index.html": {Data: []byte("<html>setup</html>")}}),
+		Assets: httpapi.NewAssets(fstest.MapFS{
+			"index.html": {Data: []byte("<html>console</html>")},
+			"login.html": {Data: []byte("<html>login</html>")},
+			"setup.html": {Data: []byte("<html>setup</html>")},
+		}),
 	})
 	t.Cleanup(func() {
 		if settingsCalls != 0 {

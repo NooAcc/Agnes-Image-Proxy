@@ -14,6 +14,8 @@ import (
 func assetsFS() fstest.MapFS {
 	return fstest.MapFS{
 		"index.html":               &fstest.MapFile{Data: []byte("<!doctype html><title>Agnes 控制台</title>")},
+		"login.html":               &fstest.MapFile{Data: []byte("<!doctype html><title>Agnes 登录页</title>")},
+		"setup.html":               &fstest.MapFile{Data: []byte("<!doctype html><title>Agnes 初始化</title>")},
 		"assets/index-DiwrgTda.js": &fstest.MapFile{Data: []byte("console.log(1)")},
 		"assets/index-Bj4xY8mP.css": &fstest.MapFile{
 			Data: []byte("body{}"),
@@ -24,20 +26,35 @@ func assetsFS() fstest.MapFS {
 
 func serve(t *testing.T, method, target string) *httptest.ResponseRecorder {
 	t.Helper()
-	handler := httpapi.NewAssets(assetsFS())
+	return serveFS(t, assetsFS(), method, target)
+}
+
+func serveFS(t *testing.T, fsys fstest.MapFS, method, target string) *httptest.ResponseRecorder {
+	t.Helper()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(method, target, nil))
+	httpapi.NewAssets(fsys).ServeHTTP(rec, httptest.NewRequest(method, target, nil))
 	return rec
 }
 
 func TestAssetsServesPages(t *testing.T) {
-	for _, path := range []string{"/admin", "/admin/", "/admin/overview", "/admin/gallery", "/admin/accounts", "/admin/logs", "/admin/settings", "/admin/setup", "/admin/login"} {
+	pages := map[string]string{
+		"/admin":          "Agnes 控制台",
+		"/admin/":         "Agnes 控制台",
+		"/admin/overview": "Agnes 控制台",
+		"/admin/gallery":  "Agnes 控制台",
+		"/admin/accounts": "Agnes 控制台",
+		"/admin/logs":     "Agnes 控制台",
+		"/admin/settings": "Agnes 控制台",
+		"/admin/login":    "Agnes 登录页",
+		"/admin/setup":    "Agnes 初始化",
+	}
+	for path, marker := range pages {
 		rec := serve(t, http.MethodGet, path)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s status = %d", path, rec.Code)
 		}
-		if !strings.Contains(rec.Body.String(), "Agnes 控制台") {
-			t.Fatalf("%s did not return index", path)
+		if !strings.Contains(rec.Body.String(), marker) {
+			t.Fatalf("%s did not return %q", path, marker)
 		}
 		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 			t.Fatalf("%s content type = %q", path, ct)
@@ -54,6 +71,48 @@ func TestAssetsServesPages(t *testing.T) {
 		}
 		if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
 			t.Fatalf("%s missing nosniff", path)
+		}
+	}
+}
+
+func TestAssetsServesDistinctDocuments(t *testing.T) {
+	for _, tc := range []struct{ path, marker string }{
+		{"/admin/login", "Agnes 登录页"},
+		{"/admin/setup", "Agnes 初始化"},
+		{"/admin/settings", "Agnes 控制台"},
+	} {
+		body := serve(t, http.MethodGet, tc.path).Body.String()
+		if !strings.Contains(body, tc.marker) {
+			t.Fatalf("%s did not serve %q: %q", tc.path, tc.marker, body)
+		}
+		for _, other := range []string{"Agnes 控制台", "Agnes 登录页", "Agnes 初始化"} {
+			if other != tc.marker && strings.Contains(body, other) {
+				t.Fatalf("%s served the wrong document %q", tc.path, other)
+			}
+		}
+	}
+}
+
+func TestAssetsMissingPageDocumentIs500(t *testing.T) {
+	fsys := assetsFS()
+	delete(fsys, "login.html")
+	rec := serveFS(t, fsys, http.MethodGet, "/admin/login")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "<!doctype") {
+		t.Fatal("missing login document fabricated HTML")
+	}
+}
+
+func TestAssetsPageHeadHasNoBody(t *testing.T) {
+	for _, path := range []string{"/admin", "/admin/login", "/admin/setup"} {
+		rec := serve(t, http.MethodHead, path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s HEAD status = %d", path, rec.Code)
+		}
+		if rec.Body.Len() != 0 {
+			t.Fatalf("%s HEAD body = %q", path, rec.Body.String())
 		}
 	}
 }
