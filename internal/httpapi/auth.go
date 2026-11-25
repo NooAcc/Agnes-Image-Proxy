@@ -9,6 +9,7 @@ import (
 
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/apierror"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/auth"
+	"github.com/NooAcc/Agnes-Image-Proxy/internal/domain"
 )
 
 // SessionCookieName is the admin session cookie.
@@ -23,7 +24,10 @@ type AuthOptions struct {
 	Limiter        *auth.Limiter
 	AllowedOrigins []string
 	TrustedProxies []*net.IPNet
-	Now            func() time.Time
+	// PublicOrigin, when set, is the only origin the admin plane accepts for
+	// cookie mutations. It removes the dependency on trusted proxy headers.
+	PublicOrigin string
+	Now          func() time.Time
 }
 
 // Auth guards the data plane with Bearer keys and the admin plane with a
@@ -34,6 +38,8 @@ type Auth struct {
 	limiter        *auth.Limiter
 	allowedOrigins map[string]bool
 	trustedProxies []*net.IPNet
+	publicOrigin   string
+	publicScheme   string
 	now            func() time.Time
 }
 
@@ -49,12 +55,16 @@ func NewAuth(options AuthOptions) *Auth {
 			origins[normalized] = true
 		}
 	}
+	publicOrigin, _ := domain.NormalizePublicOrigin(options.PublicOrigin)
+	publicScheme, _, _ := strings.Cut(publicOrigin, "://")
 	return &Auth{
 		apiKey:         options.APIKey,
 		sessions:       options.Sessions,
 		limiter:        options.Limiter,
 		allowedOrigins: origins,
 		trustedProxies: options.TrustedProxies,
+		publicOrigin:   publicOrigin,
+		publicScheme:   publicScheme,
 		now:            now,
 	}
 }

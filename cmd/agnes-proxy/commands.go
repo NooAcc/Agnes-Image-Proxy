@@ -82,6 +82,7 @@ func runServe(ctx context.Context, args []string, getenv func(string) string, st
 		APIKey:             cfg.ProxyAPIKey,
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
 		TrustedProxies:     cfg.TrustedProxyCIDRs,
+		PublicOrigin:       cfg.PublicOrigin,
 		MaxInFlight:        cfg.MaxInFlight,
 		ArchiveWorkers:     cfg.ArchiveWorkers,
 		ArchiveCapacity:    cfg.ArchiveCapacity,

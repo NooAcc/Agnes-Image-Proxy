@@ -26,8 +26,12 @@ func (a *Auth) isTrustedProxy(r *http.Request) bool {
 	return false
 }
 
-// externalScheme derives the scheme the browser used.
+// externalScheme derives the scheme the browser used. A configured public
+// origin is authoritative and makes forwarded headers irrelevant.
 func (a *Auth) externalScheme(r *http.Request) string {
+	if a.publicScheme != "" {
+		return a.publicScheme
+	}
 	if r.TLS != nil {
 		return "https"
 	}
@@ -51,6 +55,9 @@ func (a *Auth) externalHost(r *http.Request) string {
 
 // externalOrigin is the exact origin a same-site mutation must present.
 func (a *Auth) externalOrigin(r *http.Request) string {
+	if a.publicOrigin != "" {
+		return a.publicOrigin
+	}
 	return a.externalScheme(r) + "://" + strings.ToLower(a.externalHost(r))
 }
 

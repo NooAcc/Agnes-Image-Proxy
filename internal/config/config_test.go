@@ -168,3 +168,29 @@ func TestConfigTrimsSecrets(t *testing.T) {
 		t.Fatalf("key not trimmed: %q", cfg.ProxyAPIKey)
 	}
 }
+
+func TestConfigPublicOrigin(t *testing.T) {
+	m := validEnv()
+	cfg, err := config.Load(env(m))
+	if err != nil || cfg.PublicOrigin != "" {
+		t.Fatalf("default public origin = %q, err %v", cfg.PublicOrigin, err)
+	}
+
+	m = validEnv()
+	m["PUBLIC_ORIGIN"] = "https://Admin.Example.com/"
+	cfg, err = config.Load(env(m))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.PublicOrigin != "https://admin.example.com" {
+		t.Fatalf("public origin = %q", cfg.PublicOrigin)
+	}
+
+	m = validEnv()
+	m["PUBLIC_ORIGIN"] = "http://admin.example.com"
+	if _, err := config.Load(env(m)); err == nil {
+		t.Fatal("non-loopback http PUBLIC_ORIGIN accepted")
+	} else if !strings.Contains(err.Error(), "PUBLIC_ORIGIN") {
+		t.Fatalf("error %q does not name PUBLIC_ORIGIN", err)
+	}
+}

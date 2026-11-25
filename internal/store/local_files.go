@@ -23,7 +23,7 @@ func newLocalFiles(dataDir string) (*localFiles, error) {
 		return nil, fmt.Errorf("DATA_DIR must be a non-empty absolute directory")
 	}
 	if err := os.MkdirAll(dataDir, 0750); err != nil {
-		return nil, fmt.Errorf("DATA_DIR cannot be created: %w", err)
+		return nil, fmt.Errorf("DATA_DIR cannot be created: %w", dataDirHint(err))
 	}
 	base, err := os.OpenRoot(dataDir)
 	if err != nil {
@@ -31,7 +31,7 @@ func newLocalFiles(dataDir string) (*localFiles, error) {
 	}
 	defer base.Close()
 	if err := base.MkdirAll("images", 0750); err != nil {
-		return nil, fmt.Errorf("DATA_DIR images cannot be created: %w", err)
+		return nil, fmt.Errorf("DATA_DIR images cannot be created: %w", dataDirHint(err))
 	}
 	info, err := base.Lstat("images")
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
@@ -57,7 +57,7 @@ func newLocalFiles(dataDir string) (*localFiles, error) {
 	}
 	if err != nil {
 		_ = root.Close()
-		return nil, fmt.Errorf("DATA_DIR images must be writable: %w", err)
+		return nil, fmt.Errorf("DATA_DIR images must be writable: %w", dataDirHint(err))
 	}
 	return f, nil
 }
@@ -75,6 +75,15 @@ func openCheckedNamespace(base *os.Root, expected os.FileInfo) (*os.Root, error)
 		return nil, errors.New("image namespace changed during initialization")
 	}
 	return root, nil
+}
+
+// dataDirHint names the container user in permission failures so a bind-mount
+// ownership problem is self-explanatory at startup.
+func dataDirHint(err error) error {
+	if errors.Is(err, os.ErrPermission) {
+		return fmt.Errorf("%w (the container runs as uid 65532; make DATA_DIR writable by that user)", err)
+	}
+	return err
 }
 
 func randomFileName(prefix string) (string, error) {

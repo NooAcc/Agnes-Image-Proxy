@@ -477,3 +477,61 @@ func TestCORSAllowlist(t *testing.T) {
 		t.Fatalf("preflight headers = %v", rec.Header())
 	}
 }
+
+func newPublicOriginEnv(t *testing.T, origin string) *testEnv {
+	t.Helper()
+	env := newTestEnv(t)
+	env.auth = httpapi.NewAuth(httpapi.AuthOptions{
+		APIKey:         "secret-key",
+		Sessions:       env.sessions,
+		Limiter:        env.limiter,
+		AllowedOrigins: []string{"https://app.example"},
+		TrustedProxies: mustCIDRs(t, "10.0.0.0/8"),
+		PublicOrigin:   origin,
+	})
+	return env
+}
+
+func TestPublicOriginOverridesProxyDerivation(t *testing.T) {
+	env := newPublicOriginEnv(t, "https://admin.example.com")
+	cookie := env.loginCookie(t)
+	handler := env.auth.Admin(okHandler())
+
+	// The fixed public origin authenticates even from an untrusted peer with
+	// hostile forwarding headers.
+	req := request(http.MethodPatch, "/admin/api/accounts/1", []byte("{}"))
+	req.AddCookie(cookie)
+	req.RemoteAddr = "203.0.113.9:1234"
+	req.Header.Set("Origin", "https://admin.example.com")
+	req.Header.Set("X-Forwarded-Proto", "http")
+	req.Header.Set("X-Forwarded-Host", "evil.example")
+	if rec := call(handler, req); rec.Code != http.StatusOK {
+		t.Fatalf("fixed public origin status = %d", rec.Code)
+	}
+
+	// The request-derived origin is no longer accepted.
+	req = request(http.MethodPatch, "/admin/api/accounts/1", []byte("{}"))
+	req.AddCookie(cookie)
+	req.Header.Set("Origin", "http://internal:8080")
+	if rec := call(handler, req); rec.Code != http.StatusForbidden {
+		t.Fatalf("derived origin status = %d", rec.Code)
+	}
+
+	req = request(http.MethodPatch, "/admin/api/accounts/1", []byte("{}"))
+	req.AddCookie(cookie)
+	req.Header.Set("Origin", "https://evil.example")
+	if rec := call(handler, req); rec.Code != http.StatusForbidden {
+		t.Fatalf("cross origin status = %d", rec.Code)
+	}
+}
+
+func TestPublicOriginCookieSecure(t *testing.T) {
+	env := newPublicOriginEnv(t, "https://admin.example.com")
+	resp := env.login(t, "secret-key")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login status = %d", resp.StatusCode)
+	}
+	if cookie := resp.Cookies()[0]; !cookie.Secure {
+		t.Fatalf("cookie = %+v", cookie)
+	}
+}

@@ -40,6 +40,7 @@ type Options struct {
 	APIKey             string
 	CORSAllowedOrigins []string
 	TrustedProxies     []*net.IPNet
+	PublicOrigin       string
 	MaxInFlight        int
 	ArchiveWorkers     int
 	ArchiveCapacity    int
@@ -157,6 +158,7 @@ func NewRuntime(options Options) (*Runtime, error) {
 		Limiter:        limiter,
 		AllowedOrigins: options.CORSAllowedOrigins,
 		TrustedProxies: options.TrustedProxies,
+		PublicOrigin:   options.PublicOrigin,
 		Now:            now,
 	})
 	var assets http.Handler

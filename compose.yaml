@@ -2,6 +2,9 @@ services:
   agnes-proxy:
     image: ghcr.io/nooacc/agnes-image-proxy:latest
     restart: unless-stopped
+    depends_on:
+      data-permissions:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
     environment:
@@ -9,7 +12,21 @@ services:
       PROXY_API_KEY: "replace-with-a-long-random-key"
       TURSO_DATABASE_URL: "libsql://your-database.turso.io"
       TURSO_AUTH_TOKEN: "replace-with-a-turso-token"
+      # 可选：固定公网 origin。设置后管理面写操作不再依赖 TRUSTED_PROXY_CIDRS。
+      # PUBLIC_ORIGIN: "https://agnes.example.com"
     volumes:
       - ./data:/data
     # 优雅退出宽限时间，超时后 Docker 强制结束。
     stop_grace_period: 60s
+
+  # ./data 不存在时由 Docker 以 root 创建，而应用以 uid 65532 运行。
+  # 在应用启动前一次性修正归属，首次部署无需手工 chown。
+  data-permissions:
+    image: busybox:1.36
+    user: "0:0"
+    restart: "no"
+    network_mode: none
+    volumes:
+      - ./data:/data
+    command: ["sh", "-c", "chown 65532:65532 /data"]
+

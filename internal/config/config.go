@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/NooAcc/Agnes-Image-Proxy/internal/domain"
 )
 
 // Config is the validated process configuration.
@@ -21,6 +23,7 @@ type Config struct {
 	Port               int
 	CORSAllowedOrigins []string
 	TrustedProxyCIDRs  []*net.IPNet
+	PublicOrigin       string
 	MaxInFlight        int
 	ArchiveWorkers     int
 	ArchiveCapacity    int
@@ -84,6 +87,12 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.TrustedProxyCIDRs = proxies
+
+	publicOrigin, err := domain.NormalizePublicOrigin(getenv("PUBLIC_ORIGIN"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.PublicOrigin = publicOrigin
 
 	if cfg.MaxInFlight, err = positiveInt(getenv, "MAX_IN_FLIGHT", defaultMaxInFlight); err != nil {
 		return Config{}, err

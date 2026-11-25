@@ -83,3 +83,20 @@ func TestImageOriginRejectsAmbiguousAuthority(t *testing.T) {
 		}
 	}
 }
+
+func TestImageOriginUsesPublicOrigin(t *testing.T) {
+	guard := httpapi.NewAuth(httpapi.AuthOptions{PublicOrigin: "https://images.example.com/"})
+	req := httptest.NewRequest("POST", "http://internal:8080/", nil)
+	req.Host = "internal:8080"
+	got, err := guard.ImageOrigin(req, domain.DefaultSettings())
+	if err != nil || got != "https://images.example.com" {
+		t.Fatalf("public origin = %q, err %v", got, err)
+	}
+
+	settings := domain.DefaultSettings()
+	settings.ImagePublicBaseURL = "https://configured.example.com"
+	got, err = guard.ImageOrigin(req, settings)
+	if err != nil || got != "https://configured.example.com" {
+		t.Fatalf("configured origin = %q, err %v", got, err)
+	}
+}

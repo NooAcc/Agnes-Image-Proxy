@@ -22,6 +22,9 @@ func (a *Auth) ImageOrigin(req *http.Request, settings domain.Settings) (string,
 		}
 		return origin, nil
 	}
+	if a.publicOrigin != "" {
+		return a.publicOrigin, nil
+	}
 	host := req.Host
 	if !validForwardedHost(host) {
 		return invalid()

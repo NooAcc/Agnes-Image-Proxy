@@ -60,9 +60,10 @@ docker compose up -d
 
 Compose 直接拉取 `ghcr.io/nooacc/agnes-image-proxy:latest`，不再本地构建；更新镜像用
 `docker compose pull && docker compose up -d`。数据以 `./data:/data` 绑定挂载，容器以
-UID/GID 65532 运行，Linux 主机需先创建目录并确保归属该用户（`mkdir -p data &&
-sudo chown -R 65532:65532 data`）。`restart: unless-stopped` 与 `stop_grace_period: 60s`
-保留，后者是优雅退出宽限。根文件系统只读、健康检查等由镜像自身提供。
+UID/GID 65532 运行。Compose 内置一次性的 `data-permissions` 服务（root busybox），在应用
+启动前把 `./data` 归属改为 65532，因此首次部署无需手工 chown；手工创建目录时仍应保持该
+归属。`restart: unless-stopped` 与 `stop_grace_period: 60s` 保留，后者是优雅退出宽限。
+根文件系统只读、健康检查等由镜像自身提供。
 
 ### GHCR 镜像与自动构建
 
@@ -103,7 +104,8 @@ docker run -d --name agnes-proxy --restart unless-stopped \
 | `DATA_DIR` | 否 | `/data` | 可写绝对目录；所有应用图片存于 `images/` 子目录，启动检查可写性，配置为空白时报错。Compose 固定 `/data` 并绑定挂载 `./data`。 |
 | `PORT` | 否 | `8000` | HTTP 监听端口。 |
 | `CORS_ALLOWED_ORIGINS` | 否 | 空 | 逗号分隔的完整 origin，用于数据面 CORS。 |
-| `TRUSTED_PROXY_CIDRS` | 否 | 空 | 可信反代网段。为空时完全忽略 `X-Forwarded-*`；仅可信来源的单值 `X-Forwarded-Proto/Host` 可用于推导 Cookie Secure 与同源判断。 |
+| `TRUSTED_PROXY_CIDRS` | 否 | 空 | 可信反代网段。为空时完全忽略 `X-Forwarded-*`；仅可信来源的单值 `X-Forwarded-Proto/Host` 可用于推导 Cookie Secure 与同源判断。设置 `PUBLIC_ORIGIN` 后管理面不再需要此项。 |
+| `PUBLIC_ORIGIN` | 否 | 空 | 固定公网 origin（如 `https://agnes.example.com`）。设置后管理面 Cookie 写操作只接受该 Origin，Cookie `Secure` 与图片链接默认地址也以它为准；管理面只能通过该 origin 访问。仅回环地址允许 http。 |
 | `MAX_IN_FLIGHT` | 否 | `8` | 生成 → 下载 → 保存的全局在途子请求上限。 |
 | `ARCHIVE_WORKERS` | 否 | `4` | 后台富化 worker 数量（变量名沿用）。 |
 | `ARCHIVE_CAPACITY` | 否 | `32` | 请求级后台任务容量，必须 ≥ workers；满时新请求等待容量。 |
@@ -215,9 +217,11 @@ Cookie 变更请求校验 Origin，登录失败限速。
 - 设置“图片链接有效期（小时）” `imageUrlTtlHours` 默认 24，整数范围 1–720（最多30天）。
   TTL 从 HTTP 签发时开始，仅影响新链接；旧 expires 不会因设置改变而失效或延长。过期不删除原图。
 - `imagePublicBaseUrl` 默认空，建议正式部署设置为 `https://images.example.com`。只接受外部 origin，
-  不含路径、query、fragment 或凭据；仅 localhost/127.0.0.1/::1 允许 HTTP。
-- 留空时根据请求 TLS 或可信反代的单值 X-Forwarded-Proto/Host 推导；未受信任的头不使用，
-  多值/逗号/非法 authority 拒绝。无法推导合法 HTTPS origin 时，生成前即400，不消耗 Agnes 额度。
+  不含路径、query、fragment 或凭据；仅 localhost/127.0.0.1/::1 允许 HTTP。设置后优先于
+  `PUBLIC_ORIGIN`。
+- 留空时优先使用 `PUBLIC_ORIGIN`，再根据请求 TLS 或可信反代的单值 X-Forwarded-Proto/Host
+  推导；未受信任的头不使用，多值/逗号/非法 authority 拒绝。无法推导合法 HTTPS origin 时，
+  生成前即400，不消耗 Agnes 额度。
 - 例如 Docker 反代在 `10.20.0.0/24`，设置 `TRUSTED_PROXY_CIDRS=10.20.0.0/24`，代理发送
   `X-Forwarded-Proto: https`、`X-Forwarded-Host: images.example.com`；不要信任所有来源。
 - 链接形如 `/v1/images/content/<32位随机publicID>?expires=<Unix秒>&signature=<base64url>`，

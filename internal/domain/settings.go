@@ -178,7 +178,15 @@ func normalizeServiceURL(raw, field string, allowPath bool) (string, error) {
 
 // NormalizeImageOrigin accepts an empty setting or a strict external origin.
 func NormalizeImageOrigin(raw string) (string, error) {
-	field := "imagePublicBaseUrl"
+	return normalizeExternalOrigin(raw, "imagePublicBaseUrl")
+}
+
+// NormalizePublicOrigin accepts an empty value or the PUBLIC_ORIGIN env.
+func NormalizePublicOrigin(raw string) (string, error) {
+	return normalizeExternalOrigin(raw, "PUBLIC_ORIGIN")
+}
+
+func normalizeExternalOrigin(raw, field string) (string, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		return "", nil
