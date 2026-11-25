@@ -52,17 +52,17 @@ PROXY_API_KEY=... TURSO_DATABASE_URL=libsql://... TURSO_AUTH_TOKEN=... DATA_DIR=
 
 ### Docker Compose
 
+在 `compose.yaml` 的 `environment` 中填好三个必填值后运行：
+
 ```bash
-cp .env.example .env      # 填入三个必填值
-docker compose up -d --build
+docker compose up -d
 ```
 
-镜像为多阶段构建：Node 24 构建前端 → Go 1.26 以 `CGO_ENABLED=0` 编译 Linux 二进制 →
-distroless 非 root 运行镜像（UID/GID 65532，预建可写 `/data`）。Compose 只启动
-`agnes-proxy`，映射 `8000`，`restart: unless-stopped`、`stop_grace_period: 120s`、只读根文件系统、
-健康检查调用二进制自带的 `healthcheck`。命名卷 `image-data` 挂载到 `/data`，固定
-`DATA_DIR=/data`；容器重建保留图片，无需 SQLite sidecar。不要执行 `docker compose down -v`
-除非明确要删除图片卷。使用已有卷或 bind mount 时，须确保 UID/GID 65532 拥有写权限。
+Compose 直接拉取 `ghcr.io/nooacc/agnes-image-proxy:latest`，不再本地构建；更新镜像用
+`docker compose pull && docker compose up -d`。数据以 `./data:/data` 绑定挂载，容器以
+UID/GID 65532 运行，Linux 主机需先创建目录并确保归属该用户（`mkdir -p data &&
+sudo chown -R 65532:65532 data`）。`restart: unless-stopped` 与 `stop_grace_period: 60s`
+保留，后者是优雅退出宽限。根文件系统只读、健康检查等由镜像自身提供。
 
 ### GHCR 镜像与自动构建
 
@@ -91,7 +91,7 @@ docker run -d --name agnes-proxy --restart unless-stopped \
   ghcr.io/nooacc/agnes-image-proxy:latest
 ```
 
-原有 `compose.yaml` 仍用于本地构建，不会自动拉取 GHCR 镜像。
+`compose.yaml` 直接使用上述 GHCR 镜像；本地构建请改用 `docker build -t agnes-image-proxy:local .`。
 
 ## 配置
 
@@ -100,7 +100,7 @@ docker run -d --name agnes-proxy --restart unless-stopped \
 | `PROXY_API_KEY` | 是 | — | 同时作为数据面 Bearer 密钥与管理页登录密钥；只做恒定时间比较，不持久化明文以外的地方。 |
 | `TURSO_DATABASE_URL` | 是 | — | `libsql://` 或 `https://`，不得带路径/查询/凭据。 |
 | `TURSO_AUTH_TOKEN` | 是 | — | Turso token。 |
-| `DATA_DIR` | 否 | `/data` | 可写绝对目录；所有应用图片存于 `images/` 子目录，启动检查可写性，配置为空白时报错。Compose 固定 `/data` 并挂载持久化卷。 |
+| `DATA_DIR` | 否 | `/data` | 可写绝对目录；所有应用图片存于 `images/` 子目录，启动检查可写性，配置为空白时报错。Compose 固定 `/data` 并绑定挂载 `./data`。 |
 | `PORT` | 否 | `8000` | HTTP 监听端口。 |
 | `CORS_ALLOWED_ORIGINS` | 否 | 空 | 逗号分隔的完整 origin，用于数据面 CORS。 |
 | `TRUSTED_PROXY_CIDRS` | 否 | 空 | 可信反代网段。为空时完全忽略 `X-Forwarded-*`；仅可信来源的单值 `X-Forwarded-Proto/Host` 可用于推导 Cookie Secure 与同源判断。 |

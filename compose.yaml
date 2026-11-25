@@ -1,32 +1,15 @@
 services:
   agnes-proxy:
-    build: .
-    image: agnes-image-proxy:local
+    image: ghcr.io/nooacc/agnes-image-proxy:latest
     restart: unless-stopped
     ports:
       - "8000:8000"
-    env_file:
-      - .env
     environment:
-      PORT: "8000"
-      DATA_DIR: /data
+      # 替换为真实值；填好后不要把真实密钥提交到 git。
+      PROXY_API_KEY: "replace-with-a-long-random-key"
+      TURSO_DATABASE_URL: "libsql://your-database.turso.io"
+      TURSO_AUTH_TOKEN: "replace-with-a-turso-token"
     volumes:
-      - image-data:/data
-    stop_grace_period: 120s
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    healthcheck:
-      test: ["CMD", "/agnes-proxy", "healthcheck", "--url", "http://127.0.0.1:8000/health"]
-      interval: 30s
-      timeout: 5s
-      start_period: 10s
-      retries: 3
-    # Optional host-level limits; compose does not use swarm `deploy` blocks.
-    # mem_limit: 1g
-    # cpus: 2.0
-
-volumes:
-  image-data:
+      - ./data:/data
+    # 优雅退出宽限时间，超时后 Docker 强制结束。
+    stop_grace_period: 60s
