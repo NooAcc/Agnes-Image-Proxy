@@ -3,7 +3,7 @@ import { gotoSection, login, mainNav, SECTIONS, section } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
-test("登录后浏览五个板块，直接路径与 hash 刷新都保持同一板块", async ({ page }) => {
+test("登录后浏览全部板块，直接路径与 hash 刷新都保持同一板块", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await login(page);
 
@@ -104,7 +104,7 @@ test("日志分类、详情与清空取消", async ({ page }) => {
 
   await page.getByRole("button", { name: "查看请求详情" }).first().click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog).toContainText("preview-enrich");
+  await expect(dialog).toContainText("enrichment");
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 

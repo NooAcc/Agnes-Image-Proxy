@@ -6,7 +6,8 @@ info:
     Management console contract. Errors always use the OpenAI envelope
     `{ "error": { message, type, param, code } }`. Cookie-authenticated
     mutations require an Origin header equal to the external origin. The
-    same API key is also accepted as `Authorization: Bearer`.
+    configured administrator key (`PROXY_API_KEY`) is also accepted as
+    `Authorization: Bearer`; distributed `sk-agnes-` keys are never accepted here.
     Every management endpoint except `/admin/api/session*` and
     `/admin/api/storage` returns `503 initialization_required` until the
     administrator has fixed the original-image storage mode.
@@ -36,6 +37,14 @@ components:
             param: { type: [string, "null"] }
             code: { type: [string, "null"] }
       required: [error]
+    GenerationKeySummary:
+      type: object
+      required: [id, name, keyHint, createdAt]
+      properties:
+        id: { type: integer, minimum: 1 }
+        name: { type: string }
+        keyHint: { type: string }
+        createdAt: { type: string, format: date-time }
     Session:
       type: object
       properties:
@@ -468,6 +477,68 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /admin/api/api-keys:
+    get:
+      summary: List active generation keys without revealing their values
+      responses:
+        "200":
+          description: Active keys, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/GenerationKeySummary" }
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Create a generation-only key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        "201":
+          description: Created key metadata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GenerationKeySummary" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+  /admin/api/api-keys/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    get:
+      summary: Retrieve a generation key for copying (no-store)
+      responses:
+        "200":
+          description: Full Bearer credential; do not log or cache
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [apiKey]
+                properties:
+                  apiKey: { type: string, pattern: '^sk-agnes-' }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Revoke a generation key immediately for new requests
+      responses:
+        "204": { description: Revoked }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /admin/api/accounts:
     get:
       responses:

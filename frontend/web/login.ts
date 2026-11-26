@@ -130,7 +130,7 @@ ${ICON_SPRITE}
     <button type="submit">登录</button>
     <p class="error" data-role="login-error" role="alert"></p>
   </form>
-  <p class="foot">密钥同时是数据面的 Bearer 令牌；轮换 PROXY_API_KEY 会作废全部会话。</p>
+  <p class="foot">生图 API 密钥不能登录后台。请勿将管理员密钥分发给客户端。</p>
 </main>
 <script>${LOGIN_SCRIPT}</script>
 </body>

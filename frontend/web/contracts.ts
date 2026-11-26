@@ -99,14 +99,7 @@ export function overviewRanges(day) {
  * @returns {string}
  */
 export function safeAdminDestination(raw) {
-  const sections = {
-    overview: true,
-    generate: true,
-    gallery: true,
-    accounts: true,
-    logs: true,
-    settings: true,
-  };
+  const sections = ["overview", "generate", "gallery", "accounts", "api-keys", "logs", "settings"];
   const fallback = "/admin#overview";
   if (typeof raw !== "string") return fallback;
   const value = raw.trim();
@@ -114,7 +107,7 @@ export function safeAdminDestination(raw) {
   if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(value)) return fallback;
   if (value.charAt(0) === "#") {
     const hashOnly = value.slice(1);
-    return sections[hashOnly] ? "/admin#" + hashOnly : fallback;
+    return sections.includes(hashOnly) ? "/admin#" + hashOnly : fallback;
   }
   if (value.charAt(0) !== "/") return fallback;
   const hashAt = value.indexOf("#");
@@ -124,11 +117,11 @@ export function safeAdminDestination(raw) {
   if (pathPart === "/admin" || pathPart === "/admin/") {
     pathSection = null;
   } else {
-    const match = /^\/admin\/([a-z]+)\/?$/.exec(pathPart);
-    if (!match || !sections[match[1]]) return fallback;
+    const match = /^\/admin\/([a-z-]+)\/?$/.exec(pathPart);
+    if (!match || !sections.includes(match[1])) return fallback;
     pathSection = match[1];
   }
-  const hashSection = sections[hashPart] ? hashPart : null;
+  const hashSection = sections.includes(hashPart) ? hashPart : null;
   return "/admin#" + (hashSection || pathSection || "overview");
 }
 

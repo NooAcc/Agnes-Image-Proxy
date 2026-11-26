@@ -5,13 +5,13 @@
 渲染并生成内容哈希资源，构建产物通过 `go:embed` 打进同一个二进制；生产运行不需要
 Node、Deno 或前端构建工具。
 
-本项目面向**个人自用、自托管**，不提供多用户权限隔离。`PROXY_API_KEY` 同时拥有图片 API
-和管理 API 权限，请勿将其作为“仅生成图片”的密钥分享给不受信任的人。
+本项目面向**自托管**。请在管理控制台的「API 密钥」页创建以 `sk-agnes-` 开头的生图密钥来分发，
+不要分享 `PROXY_API_KEY` 管理员密钥。生图密钥不提供独立配额、图库隔离或后台访问权限。
 
 - 上游账号池：原子领取、失败冷却、成功 CAS 回写、逐账号尝试记录。
 - 图片交付：生成后受控下载并同步保存原图到本地 `/data/images`；成功才返回本程序限时签名 URL 或原图 base64。
 - 元数据富化：可选 Edge-Images `/api/batch` 服务，自动测量尺寸、生成缩略图并做五类 NSFW 分类；支持手动补齐。
-- 控制台：总览、生图、图库、账号、日志、设置六个页面，中文界面、深浅主题、键盘可访问。
+- 控制台：总览、生图、图库、账号、API 密钥、日志、设置，中文界面、深浅主题、键盘可访问。
 - 单库：远程 Turso（libSQL）；数据库 schema 固定版本，不迁移旧库。
 
 ## 快速开始
@@ -97,7 +97,7 @@ docker run -d --name agnes-proxy --restart unless-stopped \
 
 | 变量 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `PROXY_API_KEY` | 是 | — | 同时作为数据面 Bearer 密钥与管理页登录密钥；只做恒定时间比较，不持久化明文以外的地方。 |
+| `PROXY_API_KEY` | 是 | — | 管理员密钥：用于登录及管理 API，也可调用生图 API。不要分发；不能使用保留前缀 `sk-agnes-`。 |
 | `TURSO_DATABASE_URL` | 是 | — | `libsql://` 或 `https://`，不得带路径/查询/凭据。 |
 | `TURSO_AUTH_TOKEN` | 是 | — | Turso token。 |
 | `DATA_DIR` | 否 | `/data` | 可写绝对目录；所有应用图片存于 `images/` 子目录，启动检查可写性，配置为空白时报错。Compose 固定 `/data` 并绑定挂载 `./data`。 |
@@ -110,13 +110,43 @@ docker run -d --name agnes-proxy --restart unless-stopped \
 | `ARCHIVE_CAPACITY` | 否 | `32` | 请求级后台任务容量，必须 ≥ workers；满时新请求等待容量。 |
 | `SHUTDOWN_TIMEOUT_SECONDS` | 否 | `120` | SIGTERM/SIGINT 优雅退出预算。 |
 
-`PROXY_API_KEY` 轮换会让旧管理会话和旧图片签名链接失效；撤销管理会话不影响图片链接。密钥不会出现在日志、管理列表或错误响应中。
+轮换 `PROXY_API_KEY` 会使旧管理会话、旧图片签名链接和已分发生图密钥失效。密钥列表保留，
+从「API 密钥」页重新复制并分发即可。撤销管理会话不影响图片链接和生图密钥。
+数据库不保存完整的生图密钥，只保存用于结合管理员密钥重新派生的材料。请为 `PROXY_API_KEY` 设置高强度随机值。
 
 ## 数据库与图片存储
 
-当前 schema 为 **4**，不兼容 schema 1/2/3 和旧 Deno 数据；没有迁移或原图字段回退。
-升级须使用空库，或**先停服**后显式重建。普通启动遇到非空旧库、版本不符时拒绝启动，
-不会自动删除真实数据。首次启动空库会自动建表并写入 schema 标识，但**不会自动选择原图存储方式**。
+当前 schema 为 **5**。程序不自动迁移旧库，普通启动遇到非空旧库或版本不符时会拒绝启动，不会自动删除数据。
+已有 **Agnes Go schema 4** 的部署可以按下述 SQL 手动升级并保留数据。
+其他旧版本请改用空库和独立的 `DATA_DIR`，或**先停服并备份**后执行 `reset-db --confirm`。
+首次启动空库会自动建表，但**不会自动选择原图存储方式**。
+
+### 手动升级 schema 4 → 5（保留数据）
+
+先停止代理并备份 Turso 数据库及图片存储，再用 `turso db shell <数据库名>` 连接正确的数据库。
+先确认 `SELECT key, value FROM app_meta WHERE key IN ('application', 'schema');` 返回 `agnes-go` 和 `4`。
+在同一个 SQL 会话执行以下语句。若任何语句报错，执行 `ROLLBACK;`，不要提交；确认 `rows_updated` 为 `1` 后再执行 `COMMIT;`。
+
+```sql
+BEGIN IMMEDIATE;
+
+CREATE TABLE generation_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    public_id TEXT NOT NULL UNIQUE CHECK (length(public_id) = 22),
+    secret_salt TEXT NOT NULL CHECK (length(secret_salt) = 43),
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+UPDATE app_meta
+SET value = '5'
+WHERE key = 'schema' AND value = '4'
+  AND EXISTS (SELECT 1 FROM app_meta WHERE key = 'application' AND value = 'agnes-go');
+
+SELECT changes() AS rows_updated;
+```
+
+提交后检查 `SELECT value FROM app_meta WHERE key = 'schema';` 返回 `5`，再启动新版。保留原有的 Turso 连接、`DATA_DIR`、图床配置与 `PROXY_API_KEY`。这条升级路径**不要执行 `reset-db`**。
 
 ### 首次初始化
 
@@ -178,8 +208,8 @@ ImgBed 直链的缓存响应头由图床/CDN 自己配置，本程序无法替�
   清空是部分完成语义，UI 会提示可能只删除了部分图库。
   不删除 DATA_DIR 根目录里的无关文件，也不删除未登记的远端文件。
 
-重建会清空**账号、设置、日志、图库、存储配置、本地应用图片文件，以及已登记的图床原图**
-（破坏性，无旧图迁移）。schema 4 且已选 imgbed 时，先按数据库记录删除远端原图；任一删除
+重建会清空**账号、生图 API 密钥、设置、日志、图库、存储配置和本地应用图片文件**。
+当前 schema（5）且已选 imgbed 时，先按数据库记录删除已登记的远端原图；任一删除
 失败则命令失败，保留存储凭据与剩余记录，便于重试。重建后回到未初始化状态，可重新选择方式。
 未被图库登记的远端孤立文件不会被追踪或删除，命令也不会声称已清理整个图床目录。
 
@@ -208,11 +238,21 @@ DATA_DIR="$PWD/.data" go run ./cmd/agnes-proxy reset-db --confirm
 | GET | `/health`、`/health?deep=1` | 存活 / 数据库就绪。 |
 | GET | `/` | 302 到 `/admin`。 |
 
-生成/编辑只接受 `Authorization: Bearer <PROXY_API_KEY>`，Cookie 不能调用生成 API。图片内容端点只接受 expires/signature，不接受 Bearer/Cookie 绕过签名。图片协议见
+生成/编辑接受 `Authorization: Bearer <生图密钥>` 或管理员 Bearer，Cookie 不能调用生成 API。
+图片内容端点只接受 expires/signature，不接受 Bearer/Cookie 绕过签名。图片协议见
 [`docs/api/images.openapi.yaml`](docs/api/images.openapi.yaml)。
-管理 API 位于 `/admin/api/*`，接受会话 Cookie 或同一个 Bearer；文档见
+管理 API 位于 `/admin/api/*`，只接受管理员会话 Cookie 或 `PROXY_API_KEY` Bearer；文档见
 [`docs/api/admin.openapi.yaml`](docs/api/admin.openapi.yaml)。管理面响应 `no-store`，
 Cookie 变更请求校验 Origin，登录失败限速。
+
+### 分发生图密钥
+
+1. 用 `PROXY_API_KEY` 登录，在「API 密钥」页点击「新建密钥」，填写便于识别的名称。
+2. 点击「复制密钥」。列表只显示部分字符，管理员可随时重新复制完整的 `sk-agnes-…` 密钥。
+3. 在 OpenAI 兼容客户端配置代理的 API 地址（如 `https://agnes.example.com/v1`）和该密钥。
+
+密钥只授权生图与编辑；模型目录本身公开。所有密钥共用服务的上游账号池和资源限制。
+点击「撤销」立即拒绝该密钥发起的新请求，不会取消已通过鉴权的请求或撤回已交付的图片。
 
 请求规则摘要：
 
@@ -317,6 +357,7 @@ API 会自动续期，总寿命不超过 90 天；设置页可撤销全部会话
 - 生图：提示词、模型、数量、档位/比例/参考图跟随尺寸；上传/拖拽/粘贴、URL 与图库原图参考；右侧完整大图与数字切换。使用管理员会话同步提交，无需额外输入 Key，无独立任务记录。
 - 图库：按 UTC 日期分组、24 项游标分页、tag 筛选、懒加载缩略图、原图灯箱/下载/删除/清空、后台补齐状态；详情“复制提示词”旁可将原图追加为生图参考并跳转，已有配置保持不变。
 - 账号：脱敏 Key、启用/停用、探测、冷却重置、导入（同名 Key 不叠加额度）、删除。
+- API 密钥：新建、随时复制或撤销仅用于生成和编辑的分发密钥。
 - 日志：request/enrich 分类、50 条游标分页、逐账号尝试与 download/persist 交付失败详情、清空确认。
 - 设置：上游与尺寸、超时/重试、图片服务参数、链接 TTL/公开 origin，以及只读存储方式与 ImgBed 更新。
 
@@ -347,7 +388,7 @@ npm --prefix frontend run test:e2e
 ```
 
 E2E 会构建前端与 Go 二进制并启动 `preview --port 8123`，使用系统 Chrome
-（Playwright `channel: "chrome"`）执行登录、六页面、CRUD、控制台生图/参考图、模拟生成/编辑、下载、
+（Playwright `channel: "chrome"`）执行登录、页面导航、密钥与账号管理、控制台生图/参考图、模拟生成/编辑、下载、
 补齐轮询、会话撤销与 axe 扫描；如本机没有 Chrome，请安装 Chrome 或按需调整
 `frontend/playwright.config.ts`。截图输出在 `frontend/test-results/screenshots/`。
 

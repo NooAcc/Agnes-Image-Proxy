@@ -15,7 +15,7 @@ import (
 
 const (
 	metaApplication = "agnes-go"
-	metaVersion     = "4"
+	metaVersion     = "5"
 )
 
 // appTables lists the tables this application owns. Reset only ever touches
@@ -25,6 +25,7 @@ var appTables = []string{
 	"model_usage_daily",
 	"gallery",
 	"accounts",
+	"generation_keys",
 	"settings",
 	"auth_state",
 	"storage_config",
@@ -37,8 +38,9 @@ var requiredColumns = map[string][]string{
 		"id", "name", "api_key", "enabled", "status", "cooldown_until", "fail_count",
 		"use_seq", "last_used_at", "upstream_requests", "upstream_images", "created_at",
 	},
-	"settings":   {"id", "data", "updated_at"},
-	"auth_state": {"id", "session_epoch"},
+	"generation_keys": {"id", "public_id", "secret_salt", "name", "created_at"},
+	"settings":        {"id", "data", "updated_at"},
+	"auth_state":      {"id", "session_epoch"},
 	"storage_config": {
 		"id", "mode", "imgbed_base_url", "imgbed_token", "created_at", "updated_at",
 	},
@@ -76,6 +78,13 @@ var schemaStatements = []string{
 		created_at TEXT NOT NULL
 	)`,
 	`CREATE INDEX idx_accounts_selection ON accounts (enabled, use_seq, id)`,
+	`CREATE TABLE generation_keys (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		public_id TEXT NOT NULL UNIQUE CHECK (length(public_id) = 22),
+		secret_salt TEXT NOT NULL CHECK (length(secret_salt) = 43),
+		name TEXT NOT NULL,
+		created_at TEXT NOT NULL
+	)`,
 	`CREATE TABLE settings (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		data TEXT NOT NULL,
@@ -301,7 +310,7 @@ func tableColumns(ctx context.Context, tx *sql.Tx, table string) (map[string]boo
 }
 
 // ResetSchema drops only the application's own tables and recreates an empty
-// schema. It requires explicit confirmation. On schema 4 with imgbed storage it
+// schema. It requires explicit confirmation. On the current schema with imgbed storage it
 // first removes every registered remote original; a failure keeps both the
 // credentials and the remaining rows.
 func (s *Store) ResetSchema(ctx context.Context, confirmed bool) error {
@@ -331,7 +340,7 @@ func (s *Store) ResetSchema(ctx context.Context, confirmed bool) error {
 	config, found, err := s.readStorageConfig(dbCtx)
 	cancel()
 	if err != nil {
-		// A corrupted schema 4 configuration must never be skipped as legacy:
+		// A corrupted current storage configuration must never be treated as legacy:
 		// credentials may still protect registered remote originals.
 		return err
 	}

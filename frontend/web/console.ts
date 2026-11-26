@@ -3,6 +3,7 @@ import { RUNTIME_SCRIPT } from "./runtime.ts";
 import { GENERATION_HTML, GENERATION_DIALOGS, GENERATION_SCRIPT } from "./generation.ts";
 import { BOOTSTRAP_SCRIPT } from "./bootstrap.ts";
 import { ACCOUNTS_DIALOGS, ACCOUNTS_HTML, ACCOUNTS_SCRIPT } from "./sections/accounts.ts";
+import { API_KEYS_DIALOG, API_KEYS_HTML, API_KEYS_SCRIPT } from "./sections/api-keys.ts";
 import { LOGS_DIALOGS, LOGS_HTML, LOGS_SCRIPT } from "./sections/logs.ts";
 import { OVERVIEW_HTML, OVERVIEW_SCRIPT } from "./sections/overview.ts";
 import { SETTINGS_HTML, SETTINGS_SCRIPT } from "./sections/settings.ts";
@@ -14,16 +15,18 @@ const NAV = [
   { id: "generate", label: "生图" },
   { id: "gallery", label: "图片" },
   { id: "accounts", label: "账号" },
+  { id: "api-keys", label: "API 密钥", icon: "key", shortLabel: "密钥" },
   { id: "logs", label: "日志" },
   { id: "settings", label: "设置" },
 ];
 
 function navLinks(attribute: string): string {
-  return NAV.map((item) =>
-    `<a class="nav-item" ${attribute}="${item.id}" href="#${item.id}">${
-      icon(item.id)
-    }<span>${item.label}</span></a>`
-  ).join("");
+  return NAV.map((item) => {
+    const label = attribute === "data-bottom-nav" && item.shortLabel ? item.shortLabel : item.label;
+    return `<a class="nav-item" ${attribute}="${item.id}" href="#${item.id}" aria-label="${item.label}">${
+      icon(item.icon || item.id)
+    }<span>${label}</span></a>`;
+  }).join("");
 }
 
 const CONFIRM_DIALOG = `
@@ -49,8 +52,7 @@ const SHELL_SCRIPT = String.raw`
     document.querySelectorAll("[data-nav], [data-bottom-nav]"),
   );
   var titleNode = document.querySelector('[data-role="page-title"]');
-  var titles = {};
-  var known = { overview: true, generate: true, gallery: true, accounts: true, logs: true, settings: true };
+  var titles = Object.create(null);
 
   for (var i = 0; i < sectionNodes.length; i++) {
     var node = sectionNodes[i];
@@ -60,9 +62,9 @@ const SHELL_SCRIPT = String.raw`
 
   function initialSection() {
     var hash = (location.hash || "").replace(/^#/, "");
-    if (known[hash]) return hash;
-    var match = /^\/admin\/([a-z]+)\/?$/.exec(location.pathname);
-    if (match && known[match[1]]) return match[1];
+    if (titles[hash]) return hash;
+    var match = /^\/admin\/([a-z-]+)\/?$/.exec(location.pathname);
+    if (match && titles[match[1]]) return match[1];
     return "overview";
   }
 
@@ -156,6 +158,7 @@ const CONSOLE_SCRIPTS = [
   GENERATION_SCRIPT,
   GALLERY_SCRIPT,
   ACCOUNTS_SCRIPT,
+  API_KEYS_SCRIPT,
   LOGS_SCRIPT,
   SETTINGS_SCRIPT,
   STORAGE_SCRIPT,
@@ -215,6 +218,7 @@ export function renderConsole(): string {
       ${GENERATION_HTML}
       ${GALLERY_HTML}
       ${ACCOUNTS_HTML}
+      ${API_KEYS_HTML}
       ${LOGS_HTML}
       ${SETTINGS_HTML}
     </main>
@@ -223,6 +227,7 @@ export function renderConsole(): string {
 <nav class="bottom-nav" aria-label="主导航">${navLinks("data-bottom-nav")}</nav>
 ${CONFIRM_DIALOG}
 ${ACCOUNTS_DIALOGS}
+${API_KEYS_DIALOG}
 ${GALLERY_DIALOGS}
 ${GENERATION_DIALOGS}
 ${LOGS_DIALOGS}

@@ -37,8 +37,7 @@ import (
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/store"
 )
 
-// AdminAPIKey is the only credential the preview accepts, for both the admin
-// console and the data plane. It is intentionally public.
+// AdminAPIKey is the preview's intentionally public administrator credential.
 const AdminAPIKey = "preview"
 
 const (

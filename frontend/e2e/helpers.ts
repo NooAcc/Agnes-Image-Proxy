@@ -24,6 +24,7 @@ export const SECTIONS: Section[] = [
   { id: "generate", heading: "创建生图" },
   { id: "gallery", heading: "图片时间线" },
   { id: "accounts", heading: "Key 池" },
+  { id: "api-keys", heading: "生图 API 密钥" },
   { id: "logs", heading: "请求日志" },
   { id: "settings", heading: "运行设置" },
 ];

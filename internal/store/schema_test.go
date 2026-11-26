@@ -54,11 +54,11 @@ func TestEnsureSchemaCreatesAndReopens(t *testing.T) {
 	if err := db.QueryRow("SELECT value FROM app_meta WHERE key='schema'").Scan(&version); err != nil {
 		t.Fatalf("read schema: %v", err)
 	}
-	if app != "agnes-go" || version != "4" {
+	if app != "agnes-go" || version != "5" {
 		t.Fatalf("unexpected meta: %q %q", app, version)
 	}
 
-	for _, table := range []string{"accounts", "settings", "auth_state", "request_logs", "model_usage_daily", "gallery"} {
+	for _, table := range []string{"accounts", "generation_keys", "settings", "auth_state", "request_logs", "model_usage_daily", "gallery"} {
 		var name string
 		if err := db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name); err != nil {
 			t.Fatalf("missing table %s: %v", table, err)
@@ -213,8 +213,15 @@ func TestResetSchemaRequiresConfirmation(t *testing.T) {
 		t.Fatalf("reset without confirmation changed data: count=%d err=%v", count, err)
 	}
 
-	if err := s.ResetSchema(context.Background(), true); err != nil {
+	ctx := context.Background()
+	if _, err := s.CreateGenerationKey(ctx, "client"); err != nil {
+		t.Fatalf("create generation key: %v", err)
+	}
+	if err := s.ResetSchema(ctx, true); err != nil {
 		t.Fatalf("confirmed reset: %v", err)
+	}
+	if items, err := s.ListGenerationKeys(ctx); err != nil || len(items) != 0 {
+		t.Fatalf("reset did not clear generation keys: count=%d err=%v", len(items), err)
 	}
 	if err := db.QueryRow("SELECT COUNT(*) FROM accounts").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("reset did not clear accounts: count=%d err=%v", count, err)

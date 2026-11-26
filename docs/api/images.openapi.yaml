@@ -5,7 +5,8 @@ info:
   description: |
     Agnes always returns source URLs. Every successful output is downloaded, validated and persisted
     before responding. Originals use the fixed storage mode chosen at first run: local files in
-    DATA_DIR or registered CloudFlare ImgBed files; database schema 4 stores only original_ref metadata.
+    DATA_DIR or registered CloudFlare ImgBed files; database schema 5 stores original_ref metadata.
+    Generation and edit endpoints accept provisioned sk-agnes- Bearer keys or the administrator Bearer.
     Missing originals never fall back to upstream, legacy BLOBs or a second storage mode.
     DATA_DIR is not a static public directory. Edge dimensions are best-effort; originals are never
     resized or transcoded. URL links authorize only one saved original, not any administration operation.

@@ -73,6 +73,9 @@ func NewRuntime(options Options) (*Runtime, error) {
 	if strings.TrimSpace(options.APIKey) == "" {
 		return nil, errors.New("runtime: API key is required")
 	}
+	if strings.HasPrefix(options.APIKey, auth.GenerationKeyPrefix) {
+		return nil, errors.New("runtime: administrator API key must not start with " + auth.GenerationKeyPrefix)
+	}
 	now := options.Now
 	if now == nil {
 		now = time.Now
@@ -153,13 +156,14 @@ func NewRuntime(options Options) (*Runtime, error) {
 	sessions := auth.NewSessions(options.APIKey, options.Store, now)
 	limiter := auth.NewLimiter(now)
 	authz := httpapi.NewAuth(httpapi.AuthOptions{
-		APIKey:         options.APIKey,
-		Sessions:       sessions,
-		Limiter:        limiter,
-		AllowedOrigins: options.CORSAllowedOrigins,
-		TrustedProxies: options.TrustedProxies,
-		PublicOrigin:   options.PublicOrigin,
-		Now:            now,
+		APIKey:            options.APIKey,
+		GenerationKeySalt: options.Store.GenerationKeySalt,
+		Sessions:          sessions,
+		Limiter:           limiter,
+		AllowedOrigins:    options.CORSAllowedOrigins,
+		TrustedProxies:    options.TrustedProxies,
+		PublicOrigin:      options.PublicOrigin,
+		Now:               now,
 	})
 	var assets http.Handler
 	if options.Assets != nil {

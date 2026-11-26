@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -19,28 +20,31 @@ const maxAdminJSONBytes = 1 << 20
 
 // AuthOptions wires the authentication boundaries.
 type AuthOptions struct {
-	APIKey         string
-	Sessions       *auth.Sessions
-	Limiter        *auth.Limiter
-	AllowedOrigins []string
-	TrustedProxies []*net.IPNet
+	APIKey            string
+	GenerationKeySalt func(context.Context, string) (string, error)
+	Sessions          *auth.Sessions
+	Limiter           *auth.Limiter
+	AllowedOrigins    []string
+	TrustedProxies    []*net.IPNet
 	// PublicOrigin, when set, is the only origin the admin plane accepts for
 	// cookie mutations. It removes the dependency on trusted proxy headers.
 	PublicOrigin string
 	Now          func() time.Time
 }
 
-// Auth guards the data plane with Bearer keys and the admin plane with a
-// signed cookie or the same Bearer key.
+// Auth accepts scoped generation keys only on the data plane. Admin access
+// requires the configured administrator key or a signed session cookie.
 type Auth struct {
-	apiKey         string
-	sessions       *auth.Sessions
-	limiter        *auth.Limiter
-	allowedOrigins map[string]bool
-	trustedProxies []*net.IPNet
-	publicOrigin   string
-	publicScheme   string
-	now            func() time.Time
+	apiKey            string
+	generationKeys    auth.GenerationKeys
+	generationKeySalt func(context.Context, string) (string, error)
+	sessions          *auth.Sessions
+	limiter           *auth.Limiter
+	allowedOrigins    map[string]bool
+	trustedProxies    []*net.IPNet
+	publicOrigin      string
+	publicScheme      string
+	now               func() time.Time
 }
 
 // NewAuth builds the authentication middleware set.
@@ -58,14 +62,16 @@ func NewAuth(options AuthOptions) *Auth {
 	publicOrigin, _ := domain.NormalizePublicOrigin(options.PublicOrigin)
 	publicScheme, _, _ := strings.Cut(publicOrigin, "://")
 	return &Auth{
-		apiKey:         options.APIKey,
-		sessions:       options.Sessions,
-		limiter:        options.Limiter,
-		allowedOrigins: origins,
-		trustedProxies: options.TrustedProxies,
-		publicOrigin:   publicOrigin,
-		publicScheme:   publicScheme,
-		now:            now,
+		apiKey:            options.APIKey,
+		generationKeys:    auth.NewGenerationKeys(options.APIKey),
+		generationKeySalt: options.GenerationKeySalt,
+		sessions:          options.Sessions,
+		limiter:           options.Limiter,
+		allowedOrigins:    origins,
+		trustedProxies:    options.TrustedProxies,
+		publicOrigin:      publicOrigin,
+		publicScheme:      publicScheme,
+		now:               now,
 	}
 }
 
@@ -81,7 +87,19 @@ func (a *Auth) Data(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if !a.bearerValid(r) {
+		key := bearerKey(r)
+		valid := a.adminKeyValid(key)
+		if !valid && a.generationKeySalt != nil {
+			if id, ok := auth.GenerationKeyID(key); ok {
+				salt, err := a.generationKeySalt(r.Context(), id)
+				if err != nil {
+					apierror.Write(w, err)
+					return
+				}
+				valid = a.generationKeys.Verify(key, id, salt)
+			}
+		}
+		if !valid {
 			apierror.Write(w, apierror.Coded(http.StatusUnauthorized, "invalid API key", "invalid_request_error", "invalid_api_key").
 				WithHeader("WWW-Authenticate", "Bearer"))
 			return
@@ -97,7 +115,7 @@ func (a *Auth) Admin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Header.Get("Authorization") != "" {
-			if !a.bearerValid(r) {
+			if !a.adminKeyValid(bearerKey(r)) {
 				apierror.Write(w, apierror.Coded(http.StatusUnauthorized, "invalid API key", "invalid_request_error", "invalid_api_key"))
 				return
 			}
@@ -149,7 +167,7 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		apierror.Write(w, apierror.Invalid("apiKey", "request body must be JSON with apiKey", "invalid_value"))
 		return
 	}
-	if !auth.EqualSecret(body.APIKey, a.apiKey) {
+	if !a.adminKeyValid(body.APIKey) {
 		a.limiter.Failed()
 		apierror.Write(w, apierror.Coded(http.StatusUnauthorized, "invalid API key", "invalid_request_error", "invalid_api_key"))
 		return
@@ -167,7 +185,7 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (a *Auth) handleSessionRead(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Header.Get("Authorization") != "" {
-		if !a.bearerValid(r) {
+		if !a.adminKeyValid(bearerKey(r)) {
 			apierror.Write(w, apierror.Coded(http.StatusUnauthorized, "invalid API key", "invalid_request_error", "invalid_api_key"))
 			return
 		}
@@ -200,7 +218,7 @@ func (a *Auth) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	viaCookie := false
 	if r.Header.Get("Authorization") != "" {
-		if !a.bearerValid(r) {
+		if !a.adminKeyValid(bearerKey(r)) {
 			apierror.Write(w, apierror.Coded(http.StatusUnauthorized, "invalid API key", "invalid_request_error", "invalid_api_key"))
 			return
 		}
@@ -229,12 +247,16 @@ func (a *Auth) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *Auth) bearerValid(r *http.Request) bool {
-	parts := strings.Fields(r.Header.Get("Authorization"))
+func bearerKey(r *http.Request) string {
+	parts := strings.Fields(singleHeaderValue(r, "Authorization"))
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		return false
+		return ""
 	}
-	return auth.EqualSecret(parts[1], a.apiKey)
+	return parts[1]
+}
+
+func (a *Auth) adminKeyValid(key string) bool {
+	return !strings.HasPrefix(key, auth.GenerationKeyPrefix) && auth.EqualSecret(key, a.apiKey)
 }
 
 // corsHeaders reflects only explicitly allowed origins and never enables

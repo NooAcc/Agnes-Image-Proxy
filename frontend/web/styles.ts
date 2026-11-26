@@ -438,6 +438,9 @@ code, .mono { font-family: var(--font-mono); font-size: 0.92em; font-variant-num
 }
 .account-card:hover { border-color: var(--border-strong); }
 .account-card.is-off { background: var(--surface-2); }
+.api-key-card .account-name, [data-role="api-key-base-url"] { overflow-wrap: anywhere; }
+[data-section="api-keys"] .btn, [data-role="create-api-key-dialog"] .btn,
+[data-role="copy-api-key-dialog"] .btn { min-height: 44px; }
 .account-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .account-id { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .account-name { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 650; }
@@ -638,7 +641,7 @@ dialog[open] { animation: dialog-in 180ms var(--ease); }
   .sidebar { display: none; }
   .content { padding-bottom: 96px; }
   .bottom-nav {
-    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr);
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
     padding: 5px 6px calc(5px + env(safe-area-inset-bottom));
     background: color-mix(in srgb, var(--surface) 88%, transparent);

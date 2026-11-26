@@ -14,6 +14,10 @@ import (
 
 // AdminStore is the persistence boundary for the management API.
 type AdminStore interface {
+	ListGenerationKeys(ctx context.Context) ([]domain.GenerationKey, error)
+	CreateGenerationKey(ctx context.Context, name string) (domain.GenerationKey, error)
+	GetGenerationKey(ctx context.Context, id int64) (domain.GenerationKey, error)
+	RevokeGenerationKey(ctx context.Context, id int64) error
 	ListAccounts(ctx context.Context) ([]domain.AccountSummary, error)
 	GetAccount(ctx context.Context, id int64) (domain.Account, error)
 	CreateAccount(ctx context.Context, name, apiKey string) (domain.AccountSummary, error)
@@ -63,6 +67,8 @@ func (r *router) handleAdmin(w http.ResponseWriter, req *http.Request) {
 		r.handleImageRequest(w, req)
 	case "accounts":
 		r.handleAccounts(w, req, parts[1:])
+	case "api-keys":
+		r.handleGenerationKeys(w, req, parts[1:])
 	case "settings":
 		if len(parts) != 1 {
 			adminNotFound(w)

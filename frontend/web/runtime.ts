@@ -204,19 +204,19 @@ export const RUNTIME_SCRIPT = String.raw`
         return true;
       }
     } catch (error) { /* fall through to the legacy path */ }
+    var area = document.createElement("textarea");
     try {
-      var area = document.createElement("textarea");
       area.value = text;
       area.setAttribute("readonly", "");
       area.style.position = "fixed";
       area.style.opacity = "0";
       document.body.appendChild(area);
       area.select();
-      var ok = document.execCommand("copy");
-      area.remove();
-      return ok;
+      return document.execCommand("copy");
     } catch (error) {
       return false;
+    } finally {
+      area.remove();
     }
   }
 

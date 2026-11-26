@@ -14,7 +14,7 @@ async function expectNoSeriousViolations(page: import("@playwright/test").Page) 
   expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
 }
 
-test("登录页、初始化页与五个板块没有 serious/critical 可访问性问题", async ({ page }) => {
+test("登录页、初始化页与各个板块没有 serious/critical 可访问性问题", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/admin/login");
   await expectNoSeriousViolations(page);
@@ -50,6 +50,7 @@ test("375/768/1024/1440 与浅色/深色截图且无整页横向溢出", async (
     { id: "generate", name: "generate" },
     { id: "gallery", name: "gallery" },
     { id: "accounts", name: "accounts" },
+    { id: "api-keys", name: "api-keys" },
     { id: "settings", name: "settings" },
   ];
   for (const width of [375, 768, 1024, 1440]) {

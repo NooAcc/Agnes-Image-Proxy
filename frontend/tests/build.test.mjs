@@ -12,7 +12,7 @@ import { renderAdminPage } from "../web/ui.ts";
 import { renderLoginPage } from "../web/login.ts";
 import { BASE_STYLE } from "../web/styles.ts";
 
-const SECTIONS = ["overview", "generate", "gallery", "accounts", "logs", "settings"];
+const SECTIONS = ["overview", "generate", "gallery", "accounts", "api-keys", "logs", "settings"];
 
 function countMatches(source, pattern) {
   return [...source.matchAll(pattern)].length;
@@ -48,7 +48,7 @@ async function tempDir(name) {
   return mkdtemp(path.join(tmpdir(), `agnes-${name}-`));
 }
 
-test("console document restores the five sections and both navigations", () => {
+test("console document includes every section in both navigations", () => {
   const html = renderAdminPage();
   for (const id of SECTIONS) {
     assert.match(html, new RegExp(`data-section="${id}"`), `missing data-section ${id}`);
