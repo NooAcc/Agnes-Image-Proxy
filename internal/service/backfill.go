@@ -141,6 +141,7 @@ func (b *Backfill) Stop(ctx context.Context) error {
 }
 
 func (b *Backfill) run(ctx context.Context, ceiling *int64, settings domain.Settings, done chan struct{}) {
+	started := time.Now()
 	defer func() {
 		finished := time.Now().UTC()
 		b.mu.Lock()
@@ -182,13 +183,14 @@ func (b *Backfill) run(ctx context.Context, ceiling *int64, settings domain.Sett
 		return
 	}
 	log := domain.RequestLog{
-		TS:        time.Now().UTC(),
-		Category:  "enrich",
-		Stage:     "backfill",
-		Status:    200,
-		Requested: processed,
-		Images:    succeeded,
-		Failed:    failed,
+		TS:         time.Now().UTC(),
+		Category:   "enrich",
+		Stage:      "backfill",
+		Status:     200,
+		Requested:  processed,
+		Images:     succeeded,
+		Failed:     failed,
+		DurationMS: time.Since(started).Milliseconds(),
 	}
 	if err := b.store.RecordEnrichment(context.WithoutCancel(ctx), log); err != nil {
 		b.setError(err)

@@ -35,6 +35,7 @@ func (j *EnrichmentJobs) Run(ctx context.Context, job EnrichmentJob) error {
 	if job.Settings.ImageServiceBaseURL == "" || j.options.Enricher == nil {
 		return nil
 	}
+	started := j.options.Now()
 	var combined EnrichReport
 	var errs []error
 	for _, id := range job.IDs {
@@ -64,7 +65,20 @@ func (j *EnrichmentJobs) Run(ctx context.Context, job EnrichmentJob) error {
 	if combined.Processed > 0 {
 		logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), logRecordTimeout)
 		defer cancel()
-		err := j.options.Store.RecordEnrichment(logCtx, domain.RequestLog{RequestID: job.RequestID, Endpoint: job.Endpoint, Model: job.Model, TS: j.options.Now().UTC(), Category: "enrich", Stage: "enrichment", Status: 200, Requested: combined.Processed, Images: combined.Succeeded, Failed: combined.Failed})
+		finished := j.options.Now()
+		err := j.options.Store.RecordEnrichment(logCtx, domain.RequestLog{
+			RequestID:  job.RequestID,
+			Endpoint:   job.Endpoint,
+			Model:      job.Model,
+			TS:         finished.UTC(),
+			Category:   "enrich",
+			Stage:      "enrichment",
+			Status:     200,
+			Requested:  combined.Processed,
+			Images:     combined.Succeeded,
+			Failed:     combined.Failed,
+			DurationMS: finished.Sub(started).Milliseconds(),
+		})
 		if err != nil {
 			errs = append(errs, err)
 		}
