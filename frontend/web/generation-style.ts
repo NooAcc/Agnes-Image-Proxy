@@ -20,15 +20,15 @@ export const GENERATION_STYLE = `
 .generation-size-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
 .generation-hint { color: var(--muted); font-size: 12px; line-height: 1.55; margin: 0; }
 .generation-reference-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
-.generation-reference-head label { font-weight: 600; font-size: 13px; }
+.generation-reference-label { font-weight: 600; font-size: 13px; }
 .generation-reference-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
-.generation-reference-head .generation-follow-size { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; font-weight: 400; cursor: pointer; }
+.generation-reference-head .generation-follow-size { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; font-size: 13px; cursor: pointer; }
 .generation-follow-size input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
 .generation-reference-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .generation-reference-actions .btn, .generation-reference-controls .btn { min-height: 36px; }
-.generation-drop { display: grid; gap: 8px; padding: 12px; border: 1px dashed var(--border-strong); border-radius: 10px; background: var(--surface-2); }
-.generation-drop input { width: 100%; max-width: 100%; min-width: 0; min-height: 44px; padding: 5px; }
-.generation-drop input::file-selector-button { padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; margin-right: 10px; cursor: pointer; }
+.generation-drop { display: grid; place-content: center; gap: 4px; width: 100%; min-height: 72px; padding: 12px; border: 1px dashed var(--border-strong); border-radius: 10px; background: var(--surface-2); text-align: center; }
+.generation-drop:not(:disabled):hover { border-color: var(--accent); background: var(--accent-soft); }
+.generation-drop:disabled { cursor: not-allowed; opacity: .6; }
 .generation-references { display: grid; grid-template-columns: repeat(auto-fill, minmax(125px, 1fr)); gap: 12px; }
 .generation-reference { min-width: 0; }
 .generation-reference-thumb { display: grid; place-items: center; width: 100%; aspect-ratio: 1; padding: 0; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); overflow: hidden; cursor: pointer; }

@@ -20,11 +20,12 @@ export const GENERATION_HTML = `
             <div class="generation-field generation-resolution"><label id="generation-resolution-label" for="generation-tier" data-role="generation-resolution-label">分辨率</label><div class="generation-resolution-controls"><div class="generation-resolution-input"><select class="input" id="generation-tier" name="tier" aria-labelledby="generation-resolution-label">${["1K","2K","3K","4K"].map((value) => `<option>${value}</option>`).join("")}</select><input class="input" id="generation-dimensions" name="dimensions" type="text" value="1536x1024" placeholder="1536x1024" aria-labelledby="generation-resolution-label" aria-describedby="generation-size-hint" hidden disabled></div><label class="generation-size-toggle"><input type="checkbox" name="customSize" aria-controls="generation-dimensions" aria-describedby="generation-size-hint">自定义尺寸</label></div></div>
           </div>
           <p class="generation-hint" id="generation-size-hint" data-role="generation-size-hint"></p>
-          <div class="generation-reference-head"><div class="generation-reference-title"><label for="generation-files">参考图 <span class="generation-hint">可选</span></label><label class="generation-follow-size"><input type="checkbox" name="followReferenceSize" aria-describedby="generation-size-hint">跟随第一张参考图</label></div><div class="generation-reference-actions">
+          <div class="generation-reference-head"><div class="generation-reference-title"><span class="generation-reference-label">参考图 <span class="generation-hint">可选</span></span><label class="generation-follow-size"><input type="checkbox" name="followReferenceSize" aria-describedby="generation-size-hint">跟随第一张参考图</label></div><div class="generation-reference-actions">
             <button class="btn small" type="button" data-action="generation-gallery">${icon("image")}从图库选择</button>
             <button class="btn small" type="button" data-action="generation-url">${icon("plus")}添加图片 URL</button>
           </div></div>
-          <div class="generation-drop" data-role="generation-drop"><input class="input" id="generation-files" type="file" accept="image/png,image/jpeg,image/webp" multiple aria-describedby="generation-reference-hint"><span class="generation-hint">可拖拽或粘贴图片到本页</span></div>
+          <button class="generation-drop" data-role="generation-drop" type="button" aria-labelledby="generation-drop-label" aria-describedby="generation-paste-hint generation-reference-hint"><strong id="generation-drop-label">点击或拖拽上传参考图</strong><span class="generation-hint" id="generation-paste-hint">也可在本页按 Ctrl+V 粘贴图片</span></button>
+          <input id="generation-files" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
           <p class="generation-hint" id="generation-reference-hint">PNG / JPEG / WebP · 最多 16 张 · 单张 20 MiB · 完整请求 32 MiB</p>
           <div class="generation-references" data-role="generation-references"></div>
           <p class="generation-hint" data-role="generation-reference-count">未添加参考图</p>
@@ -127,15 +128,28 @@ export function mountGeneration(win, helpers) {
   formNode.addEventListener("input", updateForm);
   formNode.addEventListener("change", updateForm);
   formNode.addEventListener("submit", (event) => { event.preventDefault(); run(() => controller.submit()); });
-  find("generation-drop").addEventListener("dragover", (event) => { event.preventDefault(); });
-  find("generation-drop").addEventListener("drop", (event) => { event.preventDefault(); if (event.dataTransfer.files.length) run(() => controller.addFiles(event.dataTransfer.files)); });
-  doc.getElementById("generation-files").addEventListener("change", (event) => { const files = Array.from(event.target.files); event.target.value = ""; if (files.length) run(() => controller.addFiles(files)); });
-  section.addEventListener("paste", (event) => { const files = Array.from(event.clipboardData && event.clipboardData.items || []).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean); if (files.length) { event.preventDefault(); run(() => controller.addFiles(files)); } });
+  const drop = find("generation-drop"), fileInput = doc.getElementById("generation-files");
+  drop.addEventListener("click", () => fileInput.click());
+  drop.addEventListener("dragover", (event) => { event.preventDefault(); });
+  drop.addEventListener("drop", (event) => { event.preventDefault(); if (event.dataTransfer.files.length) run(() => controller.addFiles(event.dataTransfer.files)); });
+  fileInput.addEventListener("change", () => { const files = Array.from(fileInput.files); fileInput.value = ""; if (files.length) run(() => controller.addFiles(files)); });
+  // With no focused control, the paste event targets the document body, not the panel.
+  doc.addEventListener("paste", (event) => {
+    const clipboard = event.clipboardData;
+    if (!clipboard || event.defaultPrevented || !section.classList.contains("is-active") || doc.querySelector("dialog[open]")) return;
+    let files = Array.from(clipboard.items || [])
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile()).filter(Boolean);
+    if (!files.length) files = Array.from(clipboard.files || []).filter((file) => file.type.startsWith("image/"));
+    if (!files.length) return;
+    event.preventDefault();
+    run(() => controller.addFiles(files));
+  });
   image.addEventListener("error", () => { find("generation-preview-error").hidden = !controller.snapshot().results.length; });
   section.querySelector('[data-action="generation-clear"]').addEventListener("click", () => {
     if (controller.isBusy()) return;
     controller.clearPreview();
-    doc.getElementById("generation-files").value = "";
+    fileInput.value = "";
     doc.getElementById("generation-url-input").value = "";
     picker.querySelector("input").value = "";
   });

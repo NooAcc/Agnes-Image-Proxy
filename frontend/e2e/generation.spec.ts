@@ -60,15 +60,32 @@ test('gallery reference failure keeps detail open and form untouched',async({pag
 test('upload, drag, paste, URL and reference ordering form one accepted image request',async({page})=>{
  const pageErrors: string[] = []; page.on('pageerror', error => pageErrors.push(error.message));
  await login(page);const {bytes,mime}=await original(page);await gotoSection(page,'generate');
- await generate(page).getByLabel('提示词',{exact:true}).fill('references browser test');
- await page.locator('#generation-files').setInputFiles({name:'upload.png',mimeType:mime,buffer:bytes});
+ const panel=generate(page),prompt=panel.getByLabel('提示词',{exact:true});
+ await prompt.fill('references browser test');
+ const drop=panel.getByRole('button',{name:/点击或拖拽上传参考图/});
+ await expect(page.locator('#generation-files')).toBeHidden();
+ const [chooser]=await Promise.all([page.waitForEvent('filechooser'),drop.click({position:{x:8,y:8}})]);
+ await chooser.setFiles({name:'upload.png',mimeType:mime,buffer:bytes});
  await expect(page.locator('[data-role="generation-reference-count"]')).toHaveText('已添加 1 张参考图');
- await page.locator('[data-role="generation-drop"]').evaluate((node,{encoded,mime})=>{
+ await drop.evaluate((node,{encoded,mime})=>{
   const binary=atob(encoded);const data=Uint8Array.from(binary,c=>c.charCodeAt(0));const transfer=new DataTransfer();transfer.items.add(new File([data],'dropped.png',{type:mime}));node.dispatchEvent(new DragEvent('drop',{bubbles:true,dataTransfer:transfer}));
  },{encoded:bytes.toString('base64'),mime});
  await expect(page.locator('[data-role="generation-reference-count"]')).toHaveText('已添加 2 张参考图');
- await generate(page).evaluate((node,{encoded,mime})=>{const data=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));const transfer=new DataTransfer();transfer.items.add(new File([data],'pasted.png',{type:mime}));node.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,clipboardData:transfer}));},{encoded:bytes.toString('base64'),mime});
+ const pasteImage=()=>page.evaluate(({encoded,mime})=>{
+  const data=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));const transfer=new DataTransfer();transfer.items.add(new File([data],'pasted.png',{type:mime}));
+  return document.body.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer}));
+ },{encoded:bytes.toString('base64'),mime});
+ await gotoSection(page,'overview');
+ expect(await pasteImage()).toBe(true);
+ await gotoSection(page,'generate');
+ await expect(page.locator('[data-role="generation-reference-count"]')).toHaveText('已添加 2 张参考图');
+ expect(await pasteImage()).toBe(false);
  await expect(page.locator('[data-role="generation-reference-count"]')).toHaveText('已添加 3 张参考图');
+ await expect(prompt).toHaveValue('references browser test');
+ expect(await prompt.evaluate(node=>{
+  const transfer=new DataTransfer();transfer.setData('text/plain','plain text');
+  return node.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer}));
+ })).toBe(true);
  await generate(page).getByRole('button',{name:'添加图片 URL'}).click();const dialog=page.locator('[data-role="generation-url-dialog"]');
  await dialog.getByLabel('HTTP(S) 图片地址').fill('https://example.com/reference.png');await dialog.getByRole('button',{name:'添加参考图',exact:true}).click();
  await expect.poll(() => pageErrors).toEqual([]);
@@ -115,7 +132,9 @@ test('reference size checkbox overrides dimensions and clear preview resets the 
  await follow.check();await expect(custom).toBeDisabled();await expect(dimensions).toBeDisabled();await expect(ratio).toBeDisabled();
  await panel.getByRole('button',{name:'开始生成',exact:true}).click();await expect(page.locator('[data-role="generation-error"]')).toContainText('至少一张参考图');
  await follow.uncheck();await expect(custom).toBeEnabled();await expect(custom).toBeChecked();await expect(dimensions).toHaveValue('2048x1024');
- await page.locator('#generation-files').setInputFiles({name:'reference.png',mimeType:mime,buffer:bytes});await expect(page.locator('[data-role="generation-reference-count"]')).toHaveText('已添加 1 张参考图');
+ const drop=panel.getByRole('button',{name:'点击或拖拽上传参考图',exact:true});
+ const [chooser]=await Promise.all([page.waitForEvent('filechooser'),drop.press('Enter')]);
+ await chooser.setFiles({name:'reference.png',mimeType:mime,buffer:bytes});await expect(page.locator('[data-role="generation-reference-count"]')).toHaveText('已添加 1 张参考图');
  let payload;
  await page.route('**/admin/api/images/generations',async route=>{payload=route.request().postDataJSON();await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({data:[{b64_json:bytes.toString('base64')}]})})});
  await panel.getByRole('button',{name:'开始生成',exact:true}).click();await expect(preview(page)).toBeVisible();expect(payload.size).toBe('2048x1024');expect(payload.ratio).toBeUndefined();
