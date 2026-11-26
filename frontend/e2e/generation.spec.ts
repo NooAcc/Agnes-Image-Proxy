@@ -74,7 +74,7 @@ test('upload, drag, paste, URL and reference ordering form one accepted image re
  await expect.poll(() => pageErrors).toEqual([]);
  await expect(dialog).toBeHidden();await expect(page.locator('[data-role="generation-reference-count"]')).toHaveText('已添加 4 张参考图');
  await page.getByRole('button',{name:'向前参考图 4',exact:true}).click();
- await generate(page).locator('summary').click();await generate(page).getByLabel('尺寸模式').selectOption('auto');
+ await generate(page).getByRole('checkbox',{name:'跟随第一张参考图',exact:true}).check();
  let payload;
  await page.route('**/admin/api/images/generations',async route=>{payload=route.request().postDataJSON();await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({created:1,size:'64x64',data:[{b64_json:bytes.toString('base64'),revised_prompt:null}]})})});
  await generate(page).getByRole('button',{name:'开始生成',exact:true}).click();await expect(preview(page)).toBeVisible();
@@ -95,6 +95,55 @@ test('busy feedback stays in submit button and failed regeneration preserves pre
  await expect(page.locator('[data-role="generation-error"]')).toContainText('upstream unavailable');await expect(submit).toBeEnabled();await expect(preview(page)).toHaveAttribute('src',old!);await expect(page.getByRole('button',{name:'显示第 2 张图片'})).toHaveAttribute('aria-pressed','true');
  mode='success';await submit.click();await expect(page.getByRole('button',{name:'显示第 1 张图片'})).toHaveAttribute('aria-pressed','true');
  await generate(page).getByRole('button',{name:'清空预览'}).click();await expect(preview(page)).toBeHidden();
+});
+
+test('reference size checkbox overrides dimensions and clear preview resets the entire console',async({page})=>{
+ await login(page);const {bytes,mime}=await original(page);await gotoSection(page,'generate');
+ const panel=generate(page),follow=panel.getByRole('checkbox',{name:'跟随第一张参考图',exact:true});
+ const tier=panel.getByRole('combobox',{name:'分辨率',exact:true}),dimensions=panel.getByRole('textbox',{name:'分辨率',exact:true}),ratio=panel.getByLabel('宽高比',{exact:true}),model=panel.getByLabel('模型',{exact:true});
+ await expect(model).toHaveValue('agnes-image-2.5-flash');const defaultTier=await tier.inputValue(),defaultModel=await model.inputValue();
+ await expect(panel.locator('.generation-reference-head').getByRole('checkbox')).toBeVisible();await expect(follow).not.toBeChecked();
+ await panel.getByLabel('提示词',{exact:true}).fill('reset console');await panel.getByLabel('数量',{exact:true}).fill('2');
+ await tier.selectOption('4K');await ratio.selectOption('16:9');
+ const custom=panel.getByRole('checkbox',{name:'自定义尺寸',exact:true});await expect(panel.getByLabel('尺寸模式')).toHaveCount(0);await expect(panel.locator('.generation-resolution').getByRole('checkbox')).toBeVisible();
+ await expect(custom).not.toBeChecked();await expect(dimensions).toBeHidden();const initialBox=await tier.boundingBox();
+ await custom.check();await expect(tier).toBeHidden();await expect(ratio).toBeDisabled();const customBox=await dimensions.boundingBox();expect(customBox!.x).toBe(initialBox!.x);expect(customBox!.width).toBe(initialBox!.width);expect(customBox!.height).toBe(initialBox!.height);
+ await expect(panel.getByLabel('宽度',{exact:true})).toHaveCount(0);await expect(panel.getByLabel('高度',{exact:true})).toHaveCount(0);
+ await dimensions.fill('2048x1024');
+ await custom.uncheck();await expect(tier).toBeEnabled();await expect(tier).toHaveValue('4K');await expect(ratio).toHaveValue('16:9');await expect(dimensions).toBeHidden();
+ await custom.check();await expect(dimensions).toHaveValue('2048x1024');
+ await follow.check();await expect(custom).toBeDisabled();await expect(dimensions).toBeDisabled();await expect(ratio).toBeDisabled();
+ await panel.getByRole('button',{name:'开始生成',exact:true}).click();await expect(page.locator('[data-role="generation-error"]')).toContainText('至少一张参考图');
+ await follow.uncheck();await expect(custom).toBeEnabled();await expect(custom).toBeChecked();await expect(dimensions).toHaveValue('2048x1024');
+ await page.locator('#generation-files').setInputFiles({name:'reference.png',mimeType:mime,buffer:bytes});await expect(page.locator('[data-role="generation-reference-count"]')).toHaveText('已添加 1 张参考图');
+ let payload;
+ await page.route('**/admin/api/images/generations',async route=>{payload=route.request().postDataJSON();await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({data:[{b64_json:bytes.toString('base64')}]})})});
+ await panel.getByRole('button',{name:'开始生成',exact:true}).click();await expect(preview(page)).toBeVisible();expect(payload.size).toBe('2048x1024');expect(payload.ratio).toBeUndefined();
+ await follow.check();
+ await panel.getByRole('button',{name:'开始生成',exact:true}).click();await expect(panel.getByRole('button',{name:'开始生成',exact:true})).toBeEnabled();expect(payload.size).toBe('auto');expect(payload.ratio).toBeUndefined();
+ await panel.getByRole('button',{name:'添加图片 URL'}).click();await page.locator('#generation-url-input').fill('https://example.com/draft.png');await page.keyboard.press('Escape');
+ await panel.getByRole('button',{name:'清空预览'}).click();await expect(preview(page)).toBeHidden();await expect(preview(page)).not.toHaveAttribute('src');
+ await expect(panel.getByLabel('提示词',{exact:true})).toHaveValue('');await expect(panel.getByLabel('数量',{exact:true})).toHaveValue('1');await expect(model).toHaveValue(defaultModel);
+ await expect(tier).toHaveValue(defaultTier);await expect(ratio).toHaveValue('1:1');await expect(tier).toBeEnabled();await expect(ratio).toBeEnabled();await expect(follow).not.toBeChecked();
+ await expect(custom).not.toBeChecked();await expect(custom).toBeEnabled();await expect(page.locator('[data-role="generation-reference-count"]')).toHaveText('未添加参考图');await expect(panel.locator('.generation-reference')).toHaveCount(0);await expect(page.locator('[data-role="generation-error"]')).toBeHidden();
+ await expect(dimensions).toBeHidden();await expect(page.locator('#generation-url-input')).toHaveValue('');
+ await custom.check();await expect(dimensions).toHaveValue('1536x1024');
+ await page.setViewportSize({width:375,height:812});await expect(follow).toBeVisible();await expect(custom).toBeVisible();
+ expect(await panel.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+ await page.setViewportSize({width:812,height:375});await expect(follow).toBeVisible();
+ expect(await panel.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+});
+
+test('scrollbar visibility does not resize the console or its generation controls',async({page})=>{
+ await page.setViewportSize({width:1440,height:1100});await login(page);await gotoSection(page,'generate');
+ const panel=generate(page),custom=panel.getByRole('checkbox',{name:'自定义尺寸',exact:true});
+ const measure=()=>panel.locator('.generation-parameters').evaluate(node=>{const rect=node.getBoundingClientRect();return {x:rect.x,width:rect.width,height:rect.height};});
+ await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.documentElement).scrollbarGutter)).toBe('stable');
+ const before=await measure();await custom.check();expect(await measure()).toEqual(before);await custom.uncheck();expect(await measure()).toEqual(before);
+ await page.evaluate(()=>{const spacer=document.createElement('div');spacer.id='scrollbar-test-spacer';spacer.style.height='2000px';document.querySelector('.main')!.append(spacer);});
+ expect(await page.evaluate(()=>document.documentElement.scrollHeight>window.innerHeight)).toBe(true);expect(await measure()).toEqual(before);
+ await page.evaluate(()=>{document.getElementById('scrollbar-test-spacer')!.remove();document.documentElement.style.overflowY='hidden';});
+ expect(await measure()).toEqual(before);await page.evaluate(()=>document.documentElement.style.removeProperty('overflow-y'));
 });
 
 test('bootstrap failure followed by retry restores a usable generation page',async({page})=>{

@@ -17,17 +17,10 @@ export const GENERATION_HTML = `
             <div class="generation-field"><label for="generation-model">模型</label><select class="input" id="generation-model" name="model" required><option value="">正在读取模型…</option></select></div>
             <div class="generation-field"><label for="generation-count">数量</label><input class="input" id="generation-count" name="n" type="number" min="1" step="1" value="1" required></div>
             <div class="generation-field"><label for="generation-ratio">宽高比</label><select class="input" id="generation-ratio" name="ratio">${["1:1","3:4","4:3","16:9","9:16","2:3","3:2","21:9"].map((value) => `<option>${value}</option>`).join("")}</select></div>
-            <div class="generation-field"><label for="generation-tier">分辨率</label><select class="input" id="generation-tier" name="tier">${["1K","2K","3K","4K"].map((value) => `<option>${value}</option>`).join("")}</select></div>
+            <div class="generation-field generation-resolution"><label id="generation-resolution-label" for="generation-tier" data-role="generation-resolution-label">分辨率</label><div class="generation-resolution-controls"><div class="generation-resolution-input"><select class="input" id="generation-tier" name="tier" aria-labelledby="generation-resolution-label">${["1K","2K","3K","4K"].map((value) => `<option>${value}</option>`).join("")}</select><input class="input" id="generation-dimensions" name="dimensions" type="text" value="1536x1024" placeholder="1536x1024" aria-labelledby="generation-resolution-label" aria-describedby="generation-size-hint" hidden disabled></div><label class="generation-size-toggle"><input type="checkbox" name="customSize" aria-controls="generation-dimensions" aria-describedby="generation-size-hint">自定义尺寸</label></div></div>
           </div>
-          <p class="generation-hint" data-role="generation-size-hint"></p>
-          <details class="generation-more"><summary>更多尺寸设置</summary>
-            <div class="generation-custom-row">
-              <div class="generation-field"><label for="generation-mode">尺寸模式</label><select class="input" id="generation-mode" name="sizeMode"><option value="tier">档位与比例</option><option value="auto">跟随第一张参考图</option><option value="custom">自定义尺寸</option></select></div>
-              <div class="generation-field" data-role="generation-custom" hidden><label for="generation-width">宽度</label><input class="input" id="generation-width" name="width" type="number" min="1" max="999999" step="1" value="1536"></div>
-              <div class="generation-field" data-role="generation-custom" hidden><label for="generation-height">高度</label><input class="input" id="generation-height" name="height" type="number" min="1" max="999999" step="1" value="1024"></div>
-            </div>
-          </details>
-          <div class="generation-reference-head"><label for="generation-files">参考图 <span class="generation-hint">可选</span></label><div class="generation-reference-actions">
+          <p class="generation-hint" id="generation-size-hint" data-role="generation-size-hint"></p>
+          <div class="generation-reference-head"><div class="generation-reference-title"><label for="generation-files">参考图 <span class="generation-hint">可选</span></label><label class="generation-follow-size"><input type="checkbox" name="followReferenceSize" aria-describedby="generation-size-hint">跟随第一张参考图</label></div><div class="generation-reference-actions">
             <button class="btn small" type="button" data-action="generation-gallery">${icon("image")}从图库选择</button>
             <button class="btn small" type="button" data-action="generation-url">${icon("plus")}添加图片 URL</button>
           </div></div>
@@ -41,7 +34,7 @@ export const GENERATION_HTML = `
       </form>
     </div>
     <div class="card generation-result" data-role="generation-result">
-      <div class="generation-heading"><h2>生成图片</h2><button class="btn small" type="button" data-action="generation-clear">清空预览</button></div>
+      <div class="generation-heading"><h2>生成图片</h2><button class="btn small" type="button" data-action="generation-clear" title="清空提示词、参考图和预览，并恢复默认生图参数">清空预览</button></div>
       <div class="generation-preview-body">
         <div class="generation-empty" data-role="generation-empty">${icon("image")}<strong>生成的图片将在这里显示</strong><span>多张图片可通过下方数字按钮切换。</span></div>
         <div class="generation-preview" data-role="generation-preview" hidden><img data-role="generation-image" alt="生成图片"></div>
@@ -70,7 +63,8 @@ export function mountGeneration(win, helpers) {
   function render(state) {
     for (const key of Object.keys(state.form)) {
       const input = formNode.elements.namedItem(key);
-      if (input && input.value !== String(state.form[key])) input.value = state.form[key];
+      if (input && input.type === "checkbox") input.checked = Boolean(state.form[key]);
+      else if (input && input.value !== String(state.form[key])) input.value = state.form[key];
     }
     const modelsKey = JSON.stringify(state.models);
     if (modelsKey !== previousModels) {
@@ -84,13 +78,16 @@ export function mountGeneration(win, helpers) {
     if (state.busy !== wasBusy) { A.setBusy(submit, state.busy, "生成中…"); wasBusy = state.busy; }
     submit.disabled = state.busy || !state.initialized || !state.form.model;
     errorBox.textContent = state.error; errorBox.hidden = !state.error;
-    const mode = state.form.sizeMode;
-    formNode.elements.namedItem("tier").disabled = mode !== "tier";
+    const mode = state.form.followReferenceSize ? "auto" : state.form.customSize ? "custom" : "tier";
+    formNode.elements.namedItem("customSize").disabled = state.form.followReferenceSize;
+    section.querySelector('[data-action="generation-clear"]').disabled = state.busy;
+    const tier = formNode.elements.namedItem("tier"), dimensions = formNode.elements.namedItem("dimensions");
+    tier.disabled = mode !== "tier"; tier.hidden = state.form.customSize;
+    dimensions.disabled = mode !== "custom"; dimensions.hidden = !state.form.customSize;
+    find("generation-resolution-label").htmlFor = state.form.customSize ? dimensions.id : tier.id;
     formNode.elements.namedItem("ratio").disabled = mode !== "tier";
-    for (const key of ["width", "height"]) formNode.elements.namedItem(key).disabled = mode !== "custom";
-    section.querySelectorAll('[data-role="generation-custom"]').forEach((node) => { node.hidden = mode !== "custom"; });
     const pixels = helpers.expectedGenerationSize(state.form.tier, state.form.ratio);
-    find("generation-size-hint").textContent = mode === "auto" ? "使用第一张参考图尺寸，需要至少一张参考图。" : mode === "custom" ? "自定义尺寸归一化到最近支持的档位与比例，实际尺寸以上游为准。" : (pixels ? "预计尺寸 " + pixels.width + " × " + pixels.height + " px，实际输出以上游为准。" : "");
+    find("generation-size-hint").textContent = mode === "auto" ? "使用第一张参考图尺寸，需要至少一张参考图。" : mode === "custom" ? "输入宽×高，例如 1536x1024；尺寸归一化到最近支持的档位与比例，实际尺寸以上游为准。" : (pixels ? "预计尺寸 " + pixels.width + " × " + pixels.height + " px，实际输出以上游为准。" : "");
     const key = state.references.map((item) => item.id).join(",") + state.busy;
     if (referenceKey !== key) {
       referenceKey = key; refsNode.replaceChildren();
@@ -113,7 +110,7 @@ export function mountGeneration(win, helpers) {
     numbers.hidden = state.results.length < 2;
     const current = state.results[state.selected];
     if (current && image.getAttribute("src") !== current.url) { image.src = current.url; image.alt = "第 " + (state.selected + 1) + " 张生成图片"; find("generation-preview-error").hidden = true; }
-    else if (!current) image.removeAttribute("src");
+    else if (!current) { image.removeAttribute("src"); find("generation-preview-error").hidden = true; }
     const nextKey = state.results.map((item) => item.url).join(",") + ":" + state.selected;
     if (resultKey !== nextKey) {
       resultKey = nextKey; numbers.replaceChildren();
@@ -123,15 +120,25 @@ export function mountGeneration(win, helpers) {
   }
   function failure(error) { if (errorBox.hidden) A.toast(error.message || "操作失败", "error"); else errorBox.focus(); }
   function run(work) { return work().catch(failure); }
-  formNode.addEventListener("input", (event) => { if (event.target.name) controller.setForm({ [event.target.name]: event.target.value }); });
-  formNode.addEventListener("change", (event) => { if (event.target.name) controller.setForm({ [event.target.name]: event.target.value }); });
+  function updateForm(event) {
+    const input = event.target;
+    if (input.name) controller.setForm({ [input.name]: input.type === "checkbox" ? input.checked : input.value });
+  }
+  formNode.addEventListener("input", updateForm);
+  formNode.addEventListener("change", updateForm);
   formNode.addEventListener("submit", (event) => { event.preventDefault(); run(() => controller.submit()); });
   find("generation-drop").addEventListener("dragover", (event) => { event.preventDefault(); });
   find("generation-drop").addEventListener("drop", (event) => { event.preventDefault(); if (event.dataTransfer.files.length) run(() => controller.addFiles(event.dataTransfer.files)); });
   doc.getElementById("generation-files").addEventListener("change", (event) => { const files = Array.from(event.target.files); event.target.value = ""; if (files.length) run(() => controller.addFiles(files)); });
   section.addEventListener("paste", (event) => { const files = Array.from(event.clipboardData && event.clipboardData.items || []).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean); if (files.length) { event.preventDefault(); run(() => controller.addFiles(files)); } });
   image.addEventListener("error", () => { find("generation-preview-error").hidden = !controller.snapshot().results.length; });
-  section.querySelector('[data-action="generation-clear"]').addEventListener("click", () => controller.clearPreview());
+  section.querySelector('[data-action="generation-clear"]').addEventListener("click", () => {
+    if (controller.isBusy()) return;
+    controller.clearPreview();
+    doc.getElementById("generation-files").value = "";
+    doc.getElementById("generation-url-input").value = "";
+    picker.querySelector("input").value = "";
+  });
   const urlDialog = doc.querySelector('[data-role="generation-url-dialog"]');
   section.querySelector('[data-action="generation-url"]').addEventListener("click", () => { if (!controller.isBusy()) urlDialog.showModal(); });
   urlDialog.querySelector("form").addEventListener("submit", (event) => { event.preventDefault(); const input = doc.getElementById("generation-url-input"); controller.addURL(input.value).then(() => { input.value = ""; urlDialog.close(); }).catch((error) => A.toast(error.message, "error")); });

@@ -102,6 +102,7 @@ export function createGenerationReferences(win, api) {
       if (index < 0 || target < 0 || target >= items.length) return;
       const item = items.splice(index, 1)[0]; items.splice(target, 0, item);
     },
+    clear() { alive(); release(items); items = []; },
     dispose() { if (!disposed) { disposed = true; release(items); items = []; } },
   };
 }

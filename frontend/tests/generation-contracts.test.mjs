@@ -3,7 +3,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const module = await import('../web/generation-contracts.ts').catch(() => ({}));
-const form = {prompt:'  forest  ', model:'agnes-image-2.5-flash', n:1, sizeMode:'tier', tier:'2K', ratio:'4:3', width:1536, height:1024};
+const form = {prompt:'  forest  ', model:'agnes-image-2.5-flash', n:1, customSize:false, tier:'2K', ratio:'4:3', dimensions:'1536x1024'};
 
 test('generation payload trims prompt and uses the real Base64 delivery contract', () => {
  assert.equal(typeof module.generationPayload, 'function');
@@ -11,20 +11,29 @@ test('generation payload trims prompt and uses the real Base64 delivery contract
 });
 test('generation rejects invalid count, prompt, model and unsupported dimensions', () => {
  assert.equal(typeof module.generationPayload, 'function');
- for (const patch of [{n:0},{n:1.5},{n:''},{n:Infinity},{prompt:' '},{model:''},{tier:'8K'},{ratio:'5:7'},{sizeMode:'other'},{sizeMode:'custom',width:0},{sizeMode:'custom',width:1000000}]) {
+ for (const patch of [{n:0},{n:1.5},{n:''},{n:Infinity},{prompt:' '},{model:''},{tier:'8K'},{ratio:'5:7'},{customSize:true,dimensions:'0x1024'},{customSize:true,dimensions:'1000000x1024'},{customSize:true,dimensions:''},{customSize:true,dimensions:'1536'},{customSize:true,dimensions:'1.5x1024'},{customSize:true,dimensions:'-1x1024'},{customSize:true,dimensions:'1536x1024px'},{customSize:true,dimensions:'1024x0'}]) {
   assert.throws(() => module.generationPayload({...form,...patch}, []));
  }
  assert.equal(module.generationPayload({...form,n:100}, []).n,100);
 });
 test('auto uses first reference and custom dimensions omit independent ratio', () => {
  assert.equal(typeof module.generationPayload, 'function');
- assert.throws(()=>module.generationPayload({...form,sizeMode:'auto'}, []));
+ assert.throws(()=>module.generationPayload({...form,followReferenceSize:true}, []));
  const refs=[{value:'https://images.example/first.png'},{value:'https://images.example/second.png'}];
- const body=module.generationPayload({...form,sizeMode:'auto'},refs);
+ const body=module.generationPayload({...form,followReferenceSize:true},refs);
  assert.equal(body.size,'auto'); assert.equal(body.ratio,undefined);
  assert.deepEqual(body.images, refs.map(x=>x.value));
- const custom=module.generationPayload({...form,sizeMode:'custom'}, []);
+ const custom=module.generationPayload({...form,customSize:true}, []);
  assert.equal(custom.size,'1536x1024'); assert.equal(custom.ratio,undefined);
+ const followedCustom=module.generationPayload({...form,customSize:true,dimensions:'invalid',followReferenceSize:true},refs);
+ assert.equal(followedCustom.size,'auto'); assert.equal(followedCustom.ratio,undefined);
+ assert.equal(module.generationPayload({...form,followReferenceSize:false},refs).size,'2K');
+});
+test('custom resolution accepts x, X and multiplication signs and normalizes dimensions',()=>{
+ for(const dimensions of [' 1536x1024 ','1536 X 1024','1536 × 1024','001536x001024']) {
+  assert.equal(module.generationPayload({...form,customSize:true,dimensions},[]).size,'1536x1024');
+ }
+ assert.equal(module.generationPayload({...form,customSize:true,dimensions:'999999x1'},[]).size,'999999x1');
 });
 test('all native tier and ratio combinations have independently specified expected dimensions',()=>{
  assert.equal(typeof module.expectedGenerationSize, 'function');

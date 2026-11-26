@@ -20,7 +20,8 @@ export function generationResultBlob(encoded, win) {
 export function createGenerationController(win, helpers, onChange) {
   const A = win.Agnes;
   const references = helpers.createGenerationReferences(win, (path, options) => A.api(path, options));
-  const form = { prompt: "", model: "", n: 1, sizeMode: "tier", tier: "1K", ratio: "1:1", width: 1536, height: 1024 };
+  const defaults = { prompt: "", model: "", n: 1, customSize: false, tier: "1K", ratio: "1:1", dimensions: "1536x1024", followReferenceSize: false };
+  const form = Object.assign({}, defaults);
   let models = [], results = [], selected = 0, busy = false, error = "", disposed = false, initialized = false, initialization = null;
   function snapshot() {
     return { form: Object.assign({}, form), models: models.slice(), references: references.items, results: results.slice(), selected, busy, error, initialized };
@@ -39,8 +40,9 @@ export function createGenerationController(win, helpers, onChange) {
         const settings = await A.api("/admin/api/settings");
         if (disposed) return;
         models = (response.data || []).map((item) => item.id).filter((id) => typeof id === "string" && id.trim());
-        if (!form.model) form.model = models[0] || "";
-        if (["1K", "2K", "3K", "4K"].includes(settings.defaultSize)) form.tier = settings.defaultSize;
+        defaults.model = models[0] || "";
+        if (!form.model) form.model = defaults.model;
+        if (["1K", "2K", "3K", "4K"].includes(settings.defaultSize)) form.tier = defaults.tier = settings.defaultSize;
         initialized = true;
         error = "";
       } catch (failure) { error = failure.message || "无法读取模型和默认设置"; }
@@ -85,7 +87,11 @@ export function createGenerationController(win, helpers, onChange) {
     removeReference(id) { idle(); references.remove(id); notify(); },
     moveReference(id, delta) { idle(); references.move(id, delta); notify(); },
     selectResult(index) { if (!disposed && Number.isInteger(index) && index >= 0 && index < results.length) { selected = index; notify(); } },
-    clearPreview() { if (disposed) return; release(results); results = []; selected = 0; notify(); },
+    clearPreview() {
+      if (disposed || busy) return;
+      references.clear(); release(results); results = []; selected = 0; error = "";
+      Object.assign(form, defaults); notify();
+    },
     isBusy() { return busy; },
     dispose() { if (!disposed) { disposed = true; references.dispose(); release(results); results = []; } },
   };

@@ -86,7 +86,8 @@ export const BASE_STYLE = `
 }
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
-html { scroll-padding-top: 80px; }
+html { scroll-padding-top: 80px; scrollbar-gutter: stable; }
+@supports not (scrollbar-gutter: stable) { html { overflow-y: scroll; } }
 body {
   min-height: 100dvh;
   background: var(--bg);

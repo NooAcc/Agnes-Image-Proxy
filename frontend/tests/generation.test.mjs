@@ -36,9 +36,22 @@ test('submit preserves form, sends budgeted request and selects first actual ret
  env.controller.selectResult(2);assert.equal(env.controller.snapshot().selected,2);env.controller.clearPreview();assert.equal(env.controller.snapshot().results.length,0);assert.equal(env.revoked.length,3);
  assert.equal(env.calls.filter(x=>x[1]?.method==='DELETE').length,0);
 });
+test('clear preview resets all form state and frees references and results without deleting archives',async()=>{
+ const env=environment(()=>response());await env.controller.initialize();const defaults=env.controller.snapshot().form;
+ await env.controller.addFiles([new Blob([png])]);await env.controller.addGalleryImage({id:5});await env.controller.addURL('https://example.com/ref');
+ env.controller.setForm({prompt:'reset me',model:'another-model',n:3,customSize:true,tier:'4K',ratio:'16:9',dimensions:'2048x1024',followReferenceSize:true});
+ await env.controller.submit();env.controller.selectResult(2);
+ env.controller.setForm({prompt:''});await assert.rejects(()=>env.controller.submit(),/提示词/);
+ env.controller.clearPreview();const state=env.controller.snapshot();
+ assert.deepEqual(state.form,defaults);assert.deepEqual(state.references,[]);assert.deepEqual(state.results,[]);assert.equal(state.selected,0);assert.equal(state.error,'');assert.equal(state.initialized,true);
+ assert.equal(env.revoked.length,5);assert.equal(new Set(env.revoked).size,5);assert.equal(env.calls.filter(x=>x[1]?.method==='DELETE').length,0);
+ env.controller.clearPreview();assert.equal(env.revoked.length,5);
+ await env.controller.addGalleryImage({id:5});env.controller.setForm({prompt:'after reset'});await env.controller.submit();assert.equal(env.controller.snapshot().results.length,3);
+});
 test('busy duplicate submission and reference mutation are blocked while old image remains',async()=>{
  let resolve;let current=()=>response();const env=environment(()=>current());await env.controller.initialize();env.controller.setForm({prompt:'forest'});await env.controller.submit();
  current=()=>new Promise(r=>{resolve=r});const pending=env.controller.submit();assert.equal(env.controller.snapshot().busy,true);assert.equal(env.controller.snapshot().results.length,3);
+ env.controller.clearPreview();assert.equal(env.controller.snapshot().results.length,3);assert.equal(env.controller.snapshot().form.prompt,'forest');
  await assert.rejects(()=>env.controller.submit());await assert.rejects(()=>env.controller.addGalleryImage({id:1}));env.controller.setForm({prompt:'changed'});assert.equal(env.controller.snapshot().form.prompt,'forest');resolve(response());await pending;assert.equal(env.controller.snapshot().busy,false);
 });
 test('request failure retains old image selection, references and form and permits retry',async()=>{
