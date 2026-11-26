@@ -54,7 +54,7 @@ func TestEnsureSchemaCreatesAndReopens(t *testing.T) {
 	if err := db.QueryRow("SELECT value FROM app_meta WHERE key='schema'").Scan(&version); err != nil {
 		t.Fatalf("read schema: %v", err)
 	}
-	if app != "agnes-go" || version != "6" {
+	if app != "agnes-go" || version != "7" {
 		t.Fatalf("unexpected meta: %q %q", app, version)
 	}
 

@@ -95,12 +95,27 @@ export const RUNTIME_SCRIPT = String.raw`
     return number.toLocaleString("zh-CN");
   }
 
+  // The IANA Etc/GMT names use the POSIX sign convention: -8 is UTC+8.
+  var consoleTimeZone = "Etc/GMT-8";
+  var dayFormatter = new Intl.DateTimeFormat("en", {
+    timeZone: consoleTimeZone, year: "numeric", month: "2-digit", day: "2-digit",
+  });
+
+  function consoleDay(value) {
+    if (value == null || value === "") return "";
+    var date = new Date(value);
+    if (isNaN(date.getTime())) return "";
+    var parts = {};
+    dayFormatter.formatToParts(date).forEach(function (part) { parts[part.type] = part.value; });
+    return parts.year.padStart(4, "0") + "-" + parts.month + "-" + parts.day;
+  }
+
   function fmtTime(value) {
     if (!value) return "—";
     var date = new Date(value);
     if (isNaN(date.getTime())) return String(value);
     return date.toLocaleString("zh-CN", {
-      hour12: false, year: "numeric", month: "2-digit", day: "2-digit",
+      timeZone: consoleTimeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
       hour: "2-digit", minute: "2-digit", second: "2-digit",
     });
   }
@@ -109,7 +124,9 @@ export const RUNTIME_SCRIPT = String.raw`
     if (!value) return "—";
     var date = new Date(value);
     if (isNaN(date.getTime())) return String(value);
-    return date.toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" });
+    return date.toLocaleTimeString("zh-CN", {
+      timeZone: consoleTimeZone, hourCycle: "h23", hour: "2-digit", minute: "2-digit",
+    });
   }
 
   function fmtRelative(value) {
@@ -122,7 +139,7 @@ export const RUNTIME_SCRIPT = String.raw`
     if (delta < 3600e3) return Math.floor(delta / 60e3) + " 分钟前";
     if (delta < 86400e3) return Math.floor(delta / 3600e3) + " 小时前";
     if (delta < 7 * 86400e3) return Math.floor(delta / 86400e3) + " 天前";
-    return date.toLocaleDateString("zh-CN");
+    return date.toLocaleDateString("zh-CN", { timeZone: consoleTimeZone });
   }
 
   function dayShort(day) {
@@ -348,6 +365,7 @@ export const RUNTIME_SCRIPT = String.raw`
     toast: toast,
     confirm: confirmAction,
     fmtNumber: fmtNumber,
+    consoleDay: consoleDay,
     fmtTime: fmtTime,
     fmtShortTime: fmtShortTime,
     fmtRelative: fmtRelative,

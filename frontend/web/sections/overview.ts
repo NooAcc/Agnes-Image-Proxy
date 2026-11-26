@@ -6,7 +6,7 @@ export const OVERVIEW_HTML = `
   <div class="section-head">
     <div class="section-lead">
       <h2>当日概览</h2>
-      <p>按 UTC 日期统计成功请求、失败请求与图片产量；趋势图覆盖所选日期及之前 13 天。</p>
+      <p>按 UTC+8 日期统计成功请求、失败请求与图片产量；趋势图覆盖所选日期及之前 13 天。</p>
     </div>
     <div class="toolbar">
       <label class="label" for="overview-day">日期</label>
@@ -68,7 +68,7 @@ export const OVERVIEW_SCRIPT = String.raw`
 
   var state = { day: "", trend: [], requestId: 0, loaded: false };
   var dayInput = section.querySelector('[data-role="overview-day"]');
-  var today = new Date().toISOString().slice(0, 10);
+  var today = A.consoleDay(Date.now());
   state.day = today;
   if (dayInput) dayInput.value = today;
 
@@ -284,7 +284,7 @@ export const OVERVIEW_SCRIPT = String.raw`
   section.addEventListener("click", function (event) {
     var button = event.target.closest('[data-action="overview-today"]');
     if (!button) return;
-    state.day = new Date().toISOString().slice(0, 10);
+    state.day = A.consoleDay(Date.now());
     if (dayInput) dayInput.value = state.day;
     load();
   });

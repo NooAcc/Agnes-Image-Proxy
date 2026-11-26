@@ -24,13 +24,13 @@ export function loadGalleryCardImage(item, image, failures, showError) {
   image.src = initial;
 }
 
-/** Gallery section: archived output images grouped by UTC day. */
+/** Gallery section: archived output images grouped by UTC+8 day. */
 export const GALLERY_HTML = `
 <section class="panel" data-section="gallery" data-title="图片">
   <div class="section-head">
     <div class="section-lead">
       <h2>图片时间线</h2>
-      <p>每次成功生成并返回给客户端的输出图；按 UTC 日期分组，点击图片查看大图与提示词。</p>
+      <p>每次成功生成并返回给客户端的输出图；按 UTC+8 日期分组，点击图片查看大图与提示词。</p>
     </div>
     <div class="toolbar">
       <button class="btn primary is-unavailable" data-action="enrich-gallery" type="button"
@@ -331,9 +331,7 @@ export const GALLERY_SCRIPT = String.raw`
 
     for (var i = 0; i < state.visible.length; i++) {
       var item = state.visible[i];
-      var day = typeof item.createdAt === "string" && item.createdAt.length >= 10
-        ? item.createdAt.slice(0, 10)
-        : "未知日期";
+      var day = A.consoleDay(item.createdAt) || "未知日期";
       if (day !== state.lastDay) {
         state.lastDay = day;
         grid.append(A.el("h2", "timeline-day", day));

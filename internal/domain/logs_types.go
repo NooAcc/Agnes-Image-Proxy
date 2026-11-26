@@ -36,7 +36,7 @@ type UsageTotals struct {
 	Images    int64 `json:"images"`
 }
 
-// DailyUsage is one UTC day of usage.
+// DailyUsage is one UTC+8 calendar day of usage.
 type DailyUsage struct {
 	Day string `json:"day"`
 	UsageTotals

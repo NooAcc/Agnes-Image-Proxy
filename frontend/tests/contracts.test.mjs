@@ -44,7 +44,7 @@ test("parseAccountImport blocks payloads over 1 MiB", () => {
   assert.match(parsed.errors.map((error) => error.message).join(" "), /1 MiB/i);
 });
 
-test("overviewRanges derives selected and 14-day UTC ranges", () => {
+test("overviewRanges derives selected and 14-day console date ranges", () => {
   assert.deepEqual(overviewRanges("2026-11-25"), {
     selected: { start: "2026-11-25", end: "2026-11-25" },
     trend: { start: "2026-11-12", end: "2026-11-25" },

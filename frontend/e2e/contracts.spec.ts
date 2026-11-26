@@ -2,23 +2,52 @@ import { expect, test } from "@playwright/test";
 import { gotoSection, login, section } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
+test.use({ timezoneId: "UTC" });
 
-function dayString(offsetDays: number): string {
-  return new Date(Date.now() + offsetDays * 86400000).toISOString().slice(0, 10);
-}
-
-test("总览分别请求所选日与 14 天趋势", async ({ page }) => {
+test("总览按 UTC+8 选择今天，分别请求所选日与 14 天趋势", async ({ page }) => {
   const urls: string[] = [];
   page.on("request", (request) => {
     if (request.url().includes("/admin/api/overview")) urls.push(request.url());
   });
+  await page.clock.setFixedTime(new Date("2026-11-26T16:00:00Z"));
   await login(page);
-  const today = dayString(0);
-  const trendStart = dayString(-13);
-  await expect
-    .poll(() => urls.some((url) => url.includes(`start=${today}&end=${today}`)))
-    .toBe(true);
-  expect(urls.some((url) => url.includes(`start=${trendStart}&end=${today}`))).toBe(true);
+  const today = "2026-11-27";
+  const trendStart = "2026-11-14";
+  await expect(page.getByLabel("日期", { exact: true })).toHaveValue(today);
+  await expect.poll(() => urls.some((url) => url.includes(`start=${today}&end=${today}`))).toBe(true);
+  await expect.poll(() => urls.some((url) => url.includes(`start=${trendStart}&end=${today}`))).toBe(true);
+
+  await page.getByLabel("日期", { exact: true }).fill("2026-11-25");
+  await page.getByRole("button", { name: "今天", exact: true }).click();
+  await expect(page.getByLabel("日期", { exact: true })).toHaveValue(today);
+});
+
+test("图片分组与日志时间不受浏览器时区影响", async ({ page }) => {
+  await login(page);
+  const before = "2026-11-26T15:59:59.999999999Z";
+  const midnight = "2026-11-26T16:00:00Z";
+  await page.route(/\/admin\/api\/gallery\?/, (route) => route.fulfill({
+    json: {
+      items: [
+        { id: 2, createdAt: midnight, prompt: "UTC+8 午夜", model: "m" },
+        { id: 1, createdAt: before, prompt: "UTC+8 午夜前", model: "m" },
+      ],
+      nextBefore: null,
+    },
+  }));
+  await gotoSection(page, "gallery");
+  await expect(page.locator(".timeline-day")).toHaveText(["2026-11-27", "2026-11-26"]);
+
+  await page.route(/\/admin\/api\/logs\?/, (route) => route.fulfill({
+    json: {
+      items: [{ id: 1, ts: midnight, category: "request", status: 200, images: 1, ok: true }],
+      nextBefore: null,
+    },
+  }));
+  await gotoSection(page, "logs");
+  await expect(page.getByRole("cell", { name: "2026/11/27 00:00:00" })).toBeVisible();
+  await page.getByRole("button", { name: "查看请求详情" }).click();
+  await expect(page.getByRole("dialog", { name: "请求详情" })).toContainText("2026/11/27 00:00:00");
 });
 
 test("运行中的 401 停止板块请求并带安全目标返回登录", async ({ page }) => {

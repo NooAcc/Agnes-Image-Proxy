@@ -47,7 +47,7 @@ func (s *Store) RecordRequest(ctx context.Context, log domain.RequestLog) error 
 		if normalized.Images > 0 && normalized.Partial {
 			partials = 1
 		}
-		day := normalized.TS.UTC().Format("2006-01-02")
+		day := domain.ConsoleTime(normalized.TS).Format("2006-01-02")
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO model_usage_daily (day, model, requests, successes, partials, failures, images)
 			 VALUES (?, ?, 1, ?, ?, ?, ?)

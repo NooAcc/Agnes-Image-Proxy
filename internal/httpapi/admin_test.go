@@ -260,7 +260,7 @@ func TestAdminLogsOverview(t *testing.T) {
 	env := newAdminEnv(t, adminProber{})
 	ctx := context.Background()
 	if err := env.store.RecordRequest(ctx, domain.RequestLog{
-		RequestID: "req-1", TS: time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC), Category: "request",
+		RequestID: "req-1", TS: time.Date(2026, 11, 23, 16, 0, 0, 0, time.UTC), Category: "request",
 		Stage: "complete", Endpoint: "generations", Model: "model", Status: 200, OK: true,
 		Requested: 2, Images: 2,
 	}); err != nil {
@@ -273,7 +273,8 @@ func TestAdminLogsOverview(t *testing.T) {
 	}
 	var page domain.Page[domain.RequestLog]
 	decodeBody(t, rec, &page)
-	if len(page.Items) != 1 || page.Items[0].RequestID != "req-1" {
+	if len(page.Items) != 1 || page.Items[0].RequestID != "req-1" ||
+		page.Items[0].TS != time.Date(2026, 11, 23, 16, 0, 0, 0, time.UTC) {
 		t.Fatalf("log page = %+v", page)
 	}
 	rec = callHandler(env.handler, adminReq(http.MethodGet, "/admin/api/logs?category=nope", ""))

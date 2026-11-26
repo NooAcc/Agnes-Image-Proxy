@@ -15,7 +15,9 @@ import (
 
 const (
 	metaApplication = "agnes-go"
-	metaVersion     = "6"
+	metaVersion     = "7"
+	// Version 6 uses the same gallery/storage schema as version 7.
+	preUTC8Version = "6"
 )
 
 // appTables lists the tables this application owns. Reset only ever touches
@@ -255,6 +257,10 @@ func verifySchema(ctx context.Context, tx *sql.Tx) error {
 	if err := tx.QueryRowContext(ctx, `SELECT value FROM app_meta WHERE key='schema'`).Scan(&version); err != nil {
 		return incompatibleSchema()
 	}
+	if application == metaApplication && version == preUTC8Version {
+		return apierror.Coded(500, "database schema 6 requires a manual upgrade to schema 7 before startup",
+			"server_error", "incompatible_schema")
+	}
 	if application != metaApplication || version != metaVersion {
 		return incompatibleSchema()
 	}
@@ -323,8 +329,8 @@ func (s *Store) ResetSchema(ctx context.Context, confirmed bool) error {
 	if err != nil {
 		return err
 	}
-	if version != metaVersion {
-		// Legacy schemas are rebuilt without interpreting their original data.
+	if version != metaVersion && version != preUTC8Version {
+		// Older schemas are rebuilt without interpreting their original data.
 		s.galleryGate.Lock()
 		defer s.galleryGate.Unlock()
 		return s.rebuildSchemaLocked(ctx)

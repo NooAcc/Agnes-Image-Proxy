@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/apierror"
+	"github.com/NooAcc/Agnes-Image-Proxy/internal/domain"
 )
 
 const dayLayout = "2006-01-02"
@@ -17,11 +18,14 @@ func (r *router) handleOverview(w http.ResponseWriter, req *http.Request) {
 	values := req.URL.Query()
 	end := values.Get("end")
 	start := values.Get("start")
-	if end == "" {
-		end = time.Now().UTC().Format(dayLayout)
-	}
-	if start == "" {
-		start = time.Now().UTC().AddDate(0, 0, -6).Format(dayLayout)
+	if start == "" || end == "" {
+		today := domain.ConsoleTime(time.Now())
+		if end == "" {
+			end = today.Format(dayLayout)
+		}
+		if start == "" {
+			start = today.AddDate(0, 0, -6).Format(dayLayout)
+		}
 	}
 	overview, err := r.options.Store.Overview(req.Context(), start, end)
 	if err != nil {

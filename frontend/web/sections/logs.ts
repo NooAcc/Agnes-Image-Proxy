@@ -7,7 +7,7 @@ export const LOGS_HTML = `
   <div class="section-head">
     <div class="section-lead">
       <h2>请求日志</h2>
-      <p>按类型读取最近日志，每次加载 50 条；刷新会合并新记录，不清除已加载的历史页。</p>
+      <p>时间统一显示为 UTC+8；按类型读取最近日志，每次加载 50 条。刷新会合并新记录，不清除已加载的历史页。</p>
     </div>
     <div class="toolbar">
       <button class="btn" data-action="load-more-logs" type="button">${icon("download")}加载更多</button>

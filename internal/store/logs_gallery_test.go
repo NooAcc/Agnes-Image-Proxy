@@ -216,8 +216,8 @@ func TestClearLogsKeepsUsage(t *testing.T) {
 func TestOverviewZeroFillAndValidation(t *testing.T) {
 	s, _ := newInitializedSchemaStore(t)
 	ctx := context.Background()
-	day1 := time.Date(2026, 11, 20, 23, 59, 0, 0, time.UTC)
-	day2 := time.Date(2026, 11, 22, 0, 1, 0, 0, time.UTC)
+	day1 := time.Date(2026, 11, 20, 15, 59, 59, 999999999, time.UTC)
+	day2 := time.Date(2026, 11, 21, 16, 0, 0, 0, time.UTC)
 	_ = s.RecordRequest(ctx, requestLog(day1, "request", "complete", "model-a", 2, 2, 0))
 	_ = s.RecordRequest(ctx, requestLog(day2, "request", "complete", "model-b", 1, 0, 1))
 

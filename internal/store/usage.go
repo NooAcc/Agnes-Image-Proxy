@@ -11,7 +11,7 @@ import (
 
 const maxOverviewDays = 366
 
-// Overview returns zero-filled UTC daily usage, model usage and account
+// Overview returns zero-filled UTC+8 daily usage, model usage and account
 // health for an inclusive day range.
 func (s *Store) Overview(ctx context.Context, startDay, endDay string) (domain.Overview, error) {
 	ctx, cancel := s.operation(ctx)

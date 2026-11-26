@@ -66,7 +66,8 @@ export function parseAccountImport(text) {
 }
 
 /**
- * Selected-day and 14-day ranges in backend UTC day arithmetic.
+ * Selected-day and 14-day ranges over console calendar dates (UTC+8).
+ * Use UTC arithmetic only to subtract days from the date label.
  * @param {string} day
  * @returns {{selected: {start: string, end: string}, trend: {start: string, end: string}} | null}
  */
