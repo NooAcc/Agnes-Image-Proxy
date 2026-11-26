@@ -116,37 +116,36 @@ docker run -d --name agnes-proxy --restart unless-stopped \
 
 ## 数据库与图片存储
 
-当前 schema 为 **5**。程序不自动迁移旧库，普通启动遇到非空旧库或版本不符时会拒绝启动，不会自动删除数据。
-已有 **Agnes Go schema 4** 的部署可以按下述 SQL 手动升级并保留数据。
-其他旧版本请改用空库和独立的 `DATA_DIR`，或**先停服并备份**后执行 `reset-db --confirm`。
+当前 schema 为 **6**。程序不会自动迁移或删除数据，版本不符时会拒绝启动。
+从 **Agnes Go schema 5** 升级时，可以按下文手动升级并保留数据。其他旧版本请改用空库和独立的 `DATA_DIR`，或**先停服并备份**后执行 `reset-db --confirm` 重建数据库。
 首次启动空库会自动建表，但**不会自动选择原图存储方式**。
 
-### 手动升级 schema 4 → 5（保留数据）
+### 手动升级 schema 5 → 6（保留数据）
 
-先停止代理并备份 Turso 数据库及图片存储，再用 `turso db shell <数据库名>` 连接正确的数据库。
-先确认 `SELECT key, value FROM app_meta WHERE key IN ('application', 'schema');` 返回 `agnes-go` 和 `4`。
-在同一个 SQL 会话执行以下语句。若任何语句报错，执行 `ROLLBACK;`，不要提交；确认 `rows_updated` 为 `1` 后再执行 `COMMIT;`。
+先停服并备份数据库，再用 `turso db shell <数据库名>` 连接原库。先确认数据库标记：
+
+```sql
+SELECT key, value FROM app_meta WHERE key IN ('application', 'schema');
+```
+
+仅当结果为 `application = agnes-go`、`schema = 5` 时，在**同一个 SQL 会话**执行：
 
 ```sql
 BEGIN IMMEDIATE;
 
-CREATE TABLE generation_keys (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    public_id TEXT NOT NULL UNIQUE CHECK (length(public_id) = 22),
-    secret_salt TEXT NOT NULL CHECK (length(secret_salt) = 43),
-    name TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
+ALTER TABLE request_logs ADD COLUMN api_key_name TEXT NOT NULL DEFAULT '';
+CREATE INDEX idx_gallery_request ON gallery (request_id, id);
 
 UPDATE app_meta
-SET value = '5'
-WHERE key = 'schema' AND value = '4'
+SET value = '6'
+WHERE key = 'schema' AND value = '5'
   AND EXISTS (SELECT 1 FROM app_meta WHERE key = 'application' AND value = 'agnes-go');
 
 SELECT changes() AS rows_updated;
 ```
 
-提交后检查 `SELECT value FROM app_meta WHERE key = 'schema';` 返回 `5`，再启动新版。保留原有的 Turso 连接、`DATA_DIR`、图床配置与 `PROXY_API_KEY`。这条升级路径**不要执行 `reset-db`**。
+确认没有语句报错且 `rows_updated = 1` 后执行 `COMMIT;`，否则执行 `ROLLBACK;`。提交后确认 schema 为 `6`，再启动新版。
+保留原有数据库连接、`DATA_DIR` 和 `PROXY_API_KEY`，**不要执行 `reset-db`**。旧日志的密钥名称无法补录，会显示 `—`；新请求会正常记录。
 
 ### 首次初始化
 
@@ -209,8 +208,9 @@ ImgBed 直链的缓存响应头由图床/CDN 自己配置，本程序无法替�
   不删除 DATA_DIR 根目录里的无关文件，也不删除未登记的远端文件。
 
 重建会清空**账号、生图 API 密钥、设置、日志、图库、存储配置和本地应用图片文件**。
-当前 schema（5）且已选 imgbed 时，先按数据库记录删除已登记的远端原图；任一删除
-失败则命令失败，保留存储凭据与剩余记录，便于重试。重建后回到未初始化状态，可重新选择方式。
+当前 schema（6）且已选 imgbed 时，先按数据库记录删除已登记的远端原图；任一删除失败则命令失败，
+保留存储凭据与剩余记录，便于重试。旧版数据库重建时不会读取旧图库来删除远端原图。
+重建后回到未初始化状态，可重新选择方式。
 未被图库登记的远端孤立文件不会被追踪或删除，命令也不会声称已清理整个图床目录。
 
 ```bash

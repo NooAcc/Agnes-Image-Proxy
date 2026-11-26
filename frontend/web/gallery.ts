@@ -45,6 +45,9 @@ export const GALLERY_HTML = `
     </div>
   </div>
   <div class="filter-bar">
+    <p class="gallery-request-context logs-status" data-role="gallery-request-context" hidden>
+      正在查看该请求的图片 · <a href="#gallery">返回完整时间线</a>
+    </p>
     <div class="search">
       ${icon("search")}
       <input class="input" data-role="gallery-search" type="search" placeholder="搜索已加载图片的提示词、模型或账号…" aria-label="搜索图片">
@@ -58,7 +61,7 @@ export const GALLERY_HTML = `
       <button class="chip" type="button" data-action="filter-tag" data-tag="hentai">动漫色情</button>
       <button class="chip" type="button" data-action="filter-tag" data-tag="unclassified">未分类</button>
     </div>
-    <span class="logs-status" data-role="gallery-status">加载中…</span>
+    <span class="logs-status" data-role="gallery-status" aria-live="polite">加载中…</span>
   </div>
   <div class="empty card" data-role="gallery-empty" hidden>
     ${icon("image")}
@@ -136,6 +139,8 @@ export const GALLERY_SCRIPT = String.raw`
     lastDay: null,
     query: "",
     tag: "",
+    requestId: "",
+    focusRequest: false,
     current: 0,
     generation: 0,
     imageToken: 0,
@@ -240,6 +245,11 @@ export const GALLERY_SCRIPT = String.raw`
   function buildCard(item) {
     var card = A.el("article", "gallery-card");
     card.setAttribute("data-id", String(item.id));
+    if (state.requestId && item.requestId === state.requestId) {
+      card.classList.add("is-request-match");
+      card.tabIndex = -1;
+      card.setAttribute("aria-label", "请求图片：" + (item.prompt || "生成图片"));
+    }
     var media = A.el("div", "gallery-media");
 
     if (item.archived) {
@@ -312,9 +322,10 @@ export const GALLERY_SCRIPT = String.raw`
     state.lastDay = null;
 
     var emptyMessage = state.items.length === 0
-      ? (state.tag ? "该分类下还没有图片。" : "成功生成的输出图会自动出现在这里。")
+      ? (state.requestId ? "该请求没有可显示的图片，图片可能已被删除。" :
+        (state.tag ? "该分类下还没有图片。" : "成功生成的输出图会自动出现在这里。"))
       : "没有匹配的图片，试试其他关键词。";
-    if (emptyText) emptyText.textContent = emptyMessage;
+    if (emptyText) emptyText.textContent = state.loading ? "正在读取图片…" : emptyMessage;
     if (empty) empty.hidden = state.visible.length > 0;
     grid.hidden = state.visible.length === 0;
 
@@ -328,6 +339,15 @@ export const GALLERY_SCRIPT = String.raw`
         grid.append(A.el("h2", "timeline-day", day));
       }
       grid.append(buildCard(item));
+    }
+
+    if (state.focusRequest) {
+      var target = grid.querySelector(".is-request-match");
+      if (target && section.classList.contains("is-active")) {
+        state.focusRequest = false;
+        target.focus({ preventScroll: true });
+        target.scrollIntoView({ block: "center" });
+      }
     }
 
     if (sentinel) {
@@ -350,6 +370,7 @@ export const GALLERY_SCRIPT = String.raw`
     var url = "/admin/api/gallery?limit=24" +
       (state.tag ? "&tag=" + encodeURIComponent(state.tag) : "") +
       (state.before === null ? "" : "&before=" + encodeURIComponent(state.before));
+    if (state.requestId) url += "&requestId=" + encodeURIComponent(state.requestId);
     try {
       var page = await A.api(url);
       if (generation !== state.generation) return;
@@ -366,6 +387,8 @@ export const GALLERY_SCRIPT = String.raw`
       state.loading = false;
       var statusNode = node("gallery-status");
       if (statusNode) statusNode.textContent = "加载失败";
+      var emptyText = node("gallery-empty-text");
+      if (emptyText) emptyText.textContent = "图片加载失败，请刷新重试。";
       if (sentinel) {
         sentinel.classList.add("is-error");
         sentinel.textContent = "加载失败：" + error.message;
@@ -383,22 +406,39 @@ export const GALLERY_SCRIPT = String.raw`
     state.exhausted = false;
     state.loaded = false;
     state.lastDay = null;
-    render();
-    loadPage();
+    return loadPage();
   }
 
   async function refreshNewest() {
+    var requestId = A.galleryRequestId();
+    if (requestId !== state.requestId) {
+      state.requestId = requestId;
+      state.focusRequest = Boolean(requestId);
+      node("gallery-request-context").hidden = !requestId;
+      var search = node("gallery-search");
+      search.closest(".search").hidden = Boolean(requestId);
+      node("gallery-tags").hidden = Boolean(requestId);
+      state.query = search.value = "";
+      state.tag = "";
+      section.querySelectorAll('[data-action="filter-tag"]').forEach(function (chip) {
+        chip.classList.toggle("is-active", chip.getAttribute("data-tag") === "");
+      });
+      window.scrollTo(0, 0);
+      return reset();
+    }
     if (state.loading) return;
     if (!state.loaded) {
       await loadPage();
       return;
     }
     var dialog = node("gallery-dialog");
-    if (dialog && dialog.open) return;
+    if ((dialog && dialog.open) || state.requestId) return;
+    var generation = state.generation;
     try {
       var page = await A.api(
         "/admin/api/gallery?limit=24" + (state.tag ? "&tag=" + encodeURIComponent(state.tag) : ""),
       );
+      if (generation !== state.generation) return;
       var items = (page && page.items) || [];
       var known = {};
       for (var i = 0; i < state.items.length; i++) known[state.items[i].id] = true;
@@ -410,6 +450,7 @@ export const GALLERY_SCRIPT = String.raw`
       var delta = document.documentElement.scrollHeight - height;
       if (delta > 0 && window.scrollY > 0) window.scrollBy(0, delta);
     } catch (error) {
+      if (generation !== state.generation) return;
       var status = node("gallery-status");
       if (status) status.textContent = "自动刷新失败";
     }

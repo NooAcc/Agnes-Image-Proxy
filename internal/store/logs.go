@@ -141,11 +141,11 @@ func insertRequestLog(ctx context.Context, tx *sql.Tx, log domain.RequestLog) er
 	}
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO request_logs (request_id, ts, category, stage, endpoint, path, model, status, ok,
-			requested, images, failed, duration_ms, size_request, size_actual, attempts, partial, delivery_failures)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			requested, images, failed, duration_ms, size_request, size_actual, attempts, partial, delivery_failures, api_key_name)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.RequestID, formatTime(log.TS), log.Category, log.Stage, log.Endpoint, log.Path, log.Model,
 		log.Status, boolToInt(log.OK), log.Requested, log.Images, log.Failed, log.DurationMS,
-		nullString(log.SizeRequest), nullString(log.SizeActual), string(attempts), boolToInt(log.Partial), string(deliveryFailures),
+		nullString(log.SizeRequest), nullString(log.SizeActual), string(attempts), boolToInt(log.Partial), string(deliveryFailures), log.APIKeyName,
 	)
 	return classifyDBError(err)
 }
@@ -165,7 +165,8 @@ func (s *Store) ListLogs(ctx context.Context, query domain.CursorQuery) (domain.
 	}
 
 	sqlQuery := `SELECT id, request_id, ts, category, stage, endpoint, path, model, status, ok,
-		requested, images, failed, duration_ms, size_request, size_actual, attempts, partial, delivery_failures
+		requested, images, failed, duration_ms, size_request, size_actual, attempts, partial, delivery_failures, api_key_name,
+		request_id <> '' AND EXISTS (SELECT 1 FROM gallery WHERE gallery.request_id = request_logs.request_id)
 		FROM request_logs WHERE 1=1`
 	var args []any
 	if query.Before != nil {
@@ -219,7 +220,7 @@ func scanRequestLog(row rowScanner) (domain.RequestLog, error) {
 	)
 	if err := row.Scan(&item.ID, &item.RequestID, &ts, &item.Category, &item.Stage, &item.Endpoint,
 		&item.Path, &item.Model, &item.Status, &ok, &item.Requested, &item.Images, &item.Failed,
-		&item.DurationMS, &sizeReq, &sizeAct, &attempt, &partial, &deliveryFailures); err != nil {
+		&item.DurationMS, &sizeReq, &sizeAct, &attempt, &partial, &deliveryFailures, &item.APIKeyName, &item.HasGalleryImages); err != nil {
 		return domain.RequestLog{}, err
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, ts)

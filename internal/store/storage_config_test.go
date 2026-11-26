@@ -41,8 +41,8 @@ func TestStorageSchemaUninitialized(t *testing.T) {
 	if err := db.QueryRow("SELECT value FROM app_meta WHERE key='schema'").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != "5" {
-		t.Fatalf("schema version = %q, want 5", version)
+	if version != "6" {
+		t.Fatalf("schema version = %q, want 6", version)
 	}
 
 	var count int

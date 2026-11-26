@@ -156,14 +156,14 @@ func NewRuntime(options Options) (*Runtime, error) {
 	sessions := auth.NewSessions(options.APIKey, options.Store, now)
 	limiter := auth.NewLimiter(now)
 	authz := httpapi.NewAuth(httpapi.AuthOptions{
-		APIKey:            options.APIKey,
-		GenerationKeySalt: options.Store.GenerationKeySalt,
-		Sessions:          sessions,
-		Limiter:           limiter,
-		AllowedOrigins:    options.CORSAllowedOrigins,
-		TrustedProxies:    options.TrustedProxies,
-		PublicOrigin:      options.PublicOrigin,
-		Now:               now,
+		APIKey:              options.APIKey,
+		LookupGenerationKey: options.Store.LookupGenerationKey,
+		Sessions:            sessions,
+		Limiter:             limiter,
+		AllowedOrigins:      options.CORSAllowedOrigins,
+		TrustedProxies:      options.TrustedProxies,
+		PublicOrigin:        options.PublicOrigin,
+		Now:                 now,
 	})
 	var assets http.Handler
 	if options.Assets != nil {

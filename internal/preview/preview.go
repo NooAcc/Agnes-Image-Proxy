@@ -593,14 +593,14 @@ func seedLogs(ctx context.Context, st *store.Store, accountID int64, accountName
 	sizeActual := "64x64"
 	logs := []domain.RequestLog{
 		{
-			RequestID: "preview-log-success", TS: now.Add(-4 * time.Minute),
+			RequestID: "preview-seed-1", APIKeyName: "WEB", TS: now.Add(-4 * time.Minute),
 			Endpoint: "generations", Path: "/v1/images/generations", Model: "agnes-image-2.5-flash",
 			Status: 200, Requested: 1, Images: 1, DurationMS: 1200,
 			SizeRequest: &sizeRequest, SizeActual: &sizeActual,
 			Attempts: []domain.Attempt{{Index: 0, AccountID: accountID, AccountName: accountName, Status: 200, DurationMS: 1100}},
 		},
 		{
-			RequestID: "preview-log-partial", TS: now.Add(-2 * time.Hour),
+			RequestID: "preview-log-partial", APIKeyName: "preview-client", TS: now.Add(-2 * time.Hour),
 			Endpoint: "generations", Path: "/v1/images/generations", Model: "agnes-image-2.5-flash",
 			Status: 200, Requested: 3, Images: 2, Failed: 1, DurationMS: 2400,
 			SizeRequest: &sizeRequest, SizeActual: &sizeActual,
@@ -631,7 +631,7 @@ func seedLogs(ctx context.Context, st *store.Store, accountID int64, accountName
 	enrichError := "preview: mock classification timed out"
 	enrichment := []domain.RequestLog{
 		{
-			RequestID: "preview-enrich-success", TS: now.Add(-90 * time.Minute),
+			RequestID: "preview-seed-1", TS: now.Add(-90 * time.Minute),
 			Stage: "archive", Endpoint: "enrich", Status: 200, Images: 1, DurationMS: 450,
 		},
 		{

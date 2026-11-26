@@ -485,7 +485,10 @@ tbody tr { transition: background var(--dur-fast) var(--ease); }
 tbody tr:hover { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .row-error { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--danger); }
-.row-actions { display: flex; justify-content: flex-end; }
+.row-actions { display: flex; justify-content: flex-end; gap: 4px; }
+.log-gallery-row { cursor: pointer; }
+.log-gallery-row:hover, .log-gallery-row:focus-within { background: var(--accent-soft); }
+.log-key-name { max-width: 16ch; overflow-wrap: anywhere; }
 .table-empty td { padding: 0; }
 .table-empty .empty { padding: 30px 16px; }
 
@@ -504,6 +507,12 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   transition: border-color var(--dur-fast) var(--ease), transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
 .gallery-card:hover { border-color: var(--border-strong); transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.gallery-card.is-request-match {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 12px var(--accent-soft);
+}
+.gallery-request-context { margin: 0; }
+.gallery-request-context a { color: var(--accent-text); text-decoration: underline; }
 .gallery-media { position: relative; aspect-ratio: 1 / 1; background: var(--surface-2); overflow: hidden; }
 .gallery-media img { display: block; width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; transition: transform 400ms var(--ease); }
 .gallery-open { display: block; width: 100%; height: 100%; padding: 0; border: 0; background: none; cursor: zoom-in; }

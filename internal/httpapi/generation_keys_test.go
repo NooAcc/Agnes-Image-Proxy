@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/auth"
+	"github.com/NooAcc/Agnes-Image-Proxy/internal/domain"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/httpapi"
 	"github.com/NooAcc/Agnes-Image-Proxy/internal/service"
 )
@@ -18,18 +19,18 @@ func TestGenerationKeyLifecycleAndAdminBoundary(t *testing.T) {
 	build := func(adminKey string) http.Handler {
 		return httpapi.New(httpapi.Options{
 			Auth: httpapi.NewAuth(httpapi.AuthOptions{
-				APIKey: adminKey, GenerationKeySalt: env.store.GenerationKeySalt,
+				APIKey: adminKey, LookupGenerationKey: env.store.LookupGenerationKey,
 				Sessions: auth.NewSessions(adminKey, env.store, time.Now), Limiter: auth.NewLimiter(time.Now),
 			}),
 			Images: service.NewImages(service.ImageOptions{}), Store: env.store,
-			Storage: env.store, Settings: env.store.ReadSettings,
+			Storage: env.store, Settings: env.store.ReadSettings, Logs: env.store,
 		})
 	}
 	const keys = "/admin/api/api-keys"
 	const adminKey = "secret-key"
 	handler := build(adminKey)
 	request := func(method, path, body, bearer string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req := httptest.NewRequest(method, "http://127.0.0.1"+path, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		if bearer != "" {
 			req.Header.Set("Authorization", "Bearer "+bearer)
@@ -115,5 +116,18 @@ func TestGenerationKeyLifecycleAndAdminBoundary(t *testing.T) {
 	}
 	if rec := request("POST", "/v1/images/generations", `{}`, key); rec.Code != 401 {
 		t.Fatalf("revoked credential status = %d", rec.Code)
+	}
+	if rec := request("POST", "/v1/images/generations", `{}`, adminKey); rec.Code != 400 {
+		t.Fatalf("administrator request status = %d", rec.Code)
+	}
+	logs := request("GET", "/admin/api/logs?category=request", "", adminKey)
+	if logs.Code != 200 || strings.Contains(logs.Body.String(), key) || strings.Contains(logs.Body.String(), adminKey) {
+		t.Fatal("logs are unavailable or contain a bearer credential")
+	}
+	var page domain.Page[domain.RequestLog]
+	decodeBody(t, logs, &page)
+	if len(page.Items) != 3 || page.Items[0].APIKeyName != "PROXY_API_KEY" ||
+		page.Items[1].APIKeyName != "客户端" || page.Items[2].APIKeyName != "客户端" {
+		t.Fatalf("unexpected request log attributions: %+v", page.Items)
 	}
 }

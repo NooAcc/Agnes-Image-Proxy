@@ -273,6 +273,10 @@ func (s *Store) ListGallery(ctx context.Context, query domain.CursorQuery) (doma
 		sqlQuery += " AND id < ?"
 		args = append(args, *query.Before)
 	}
+	if query.RequestID != "" {
+		sqlQuery += " AND request_id = ?"
+		args = append(args, query.RequestID)
+	}
 	switch tag {
 	case "":
 	case "unclassified":

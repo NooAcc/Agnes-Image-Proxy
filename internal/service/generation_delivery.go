@@ -210,7 +210,7 @@ func (im *Images) generateDelivered(ctx context.Context, req domain.ImageRequest
 	if len(warnings) > 0 {
 		headers.Set("X-Agnes-Warnings", strings.Join(warnings, ","))
 	}
-	log := domain.RequestLog{RequestID: requestID, TS: started.UTC(), Category: "request", Stage: "complete", Endpoint: req.Endpoint, Model: req.Model, Status: 200, OK: true, Requested: int(n), Images: len(resultImages), Failed: int(n) - succeeded, Partial: partial, DeliveryFailures: deliveryFailures, Attempts: attempts, DurationMS: im.now().Sub(started).Milliseconds(), SizeRequest: strPtr(images.FormatRequestSize(req.Size))}
+	log := domain.RequestLog{RequestID: requestID, APIKeyName: req.APIKeyName, TS: started.UTC(), Category: "request", Stage: "complete", Endpoint: req.Endpoint, Model: req.Model, Status: 200, OK: true, Requested: int(n), Images: len(resultImages), Failed: int(n) - succeeded, Partial: partial, DeliveryFailures: deliveryFailures, Attempts: attempts, DurationMS: im.now().Sub(started).Milliseconds(), SizeRequest: strPtr(images.FormatRequestSize(req.Size))}
 	if len(uniqueSizes) > 0 {
 		log.SizeActual = strPtr(strings.Join(uniqueSizes, ","))
 	}

@@ -20,12 +20,11 @@ export const LOGS_HTML = `
   <div class="filter-bar">
     <div class="search">
       ${icon("search")}
-      <input class="input" data-role="logs-search" type="search" placeholder="搜索已加载日志的模型、账号或错误…" aria-label="搜索已加载日志">
+      <input class="input" data-role="logs-search" type="search" placeholder="搜索已加载日志的模型、API-KEY、账号或错误…" aria-label="搜索已加载日志">
     </div>
     <div class="toolbar" role="group" aria-label="按类型筛选">
-      <button class="btn small" data-category="all" aria-pressed="true" type="button">全部类型</button>
-      <button class="btn small" data-category="request" aria-pressed="false" type="button">常规请求</button>
-      <button class="btn small" data-category="enrich" aria-pressed="false" type="button">图片信息</button>
+      <button class="btn small" data-category="request" aria-pressed="true" type="button">常规请求</button>
+      <button class="btn small" data-category="enrich" aria-pressed="false" type="button">图片请求</button>
     </div>
     <div class="toolbar" role="group" aria-label="按状态筛选">
       <button class="btn small" data-filter="all" aria-pressed="true" type="button">全部</button>
@@ -41,6 +40,7 @@ export const LOGS_HTML = `
           <th scope="col">时间</th>
           <th scope="col">类型</th>
           <th scope="col">端点</th>
+          <th scope="col">API-KEY</th>
           <th scope="col">模型</th>
           <th scope="col">状态</th>
           <th scope="col" class="num">图片</th>
@@ -90,7 +90,9 @@ export const LOGS_SCRIPT = String.raw`
     nextBefore: null,
     loading: false,
     filter: "all",
-    category: "all",
+    categories: { request: true, enrich: false },
+    generation: 0,
+    loadFailed: false,
     query: "",
     at: null,
     loaded: false,
@@ -137,7 +139,7 @@ export const LOGS_SCRIPT = String.raw`
       if (state.filter === "ok" && !entry.ok) return false;
       if (state.filter === "bad" && entry.ok) return false;
       if (!query) return true;
-      var parts = [entry.model, entry.endpoint, entry.path, entry.status, entry.requestId, entry.stage];
+      var parts = [entry.model, entry.endpoint, entry.path, entry.status, entry.requestId, entry.stage, entry.apiKeyName];
       var attempts = attemptsOf(entry);
       for (var i = 0; i < attempts.length; i++) {
         parts.push(attempts[i].accountName, attempts[i].code, attempts[i].message);
@@ -147,13 +149,13 @@ export const LOGS_SCRIPT = String.raw`
   }
 
   function categoryLabel(category) {
-    return category === "enrich" ? "图片信息" : "常规请求";
+    return category === "enrich" ? "图片请求" : "常规请求";
   }
 
   function emptyRow(message) {
     var row = A.el("tr", "table-empty");
     var td = A.el("td");
-    td.colSpan = 10;
+    td.colSpan = 11;
     var empty = A.el("div", "empty");
     empty.append(A.icon("info"));
     empty.append(A.el("strong", null, message));
@@ -168,7 +170,11 @@ export const LOGS_SCRIPT = String.raw`
     body.replaceChildren();
     var entries = visibleEntries();
     if (entries.length === 0) {
-      body.append(emptyRow(state.entries.length === 0 ? "还没有请求记录。" : "没有匹配的请求。"));
+      var message = "没有匹配的请求。";
+      if (!state.categories.request && !state.categories.enrich) message = "请选择要显示的请求类型。";
+      else if (state.entries.length === 0) message = state.loading ? "正在加载请求记录…" :
+        (state.loadFailed ? "日志加载失败，请刷新重试。" : "还没有请求记录。");
+      body.append(emptyRow(message));
       updateStatus();
       return;
     }
@@ -185,6 +191,7 @@ export const LOGS_SCRIPT = String.raw`
       row.append(category);
 
       row.append(cell("端点", entry.endpoint, "mono"));
+      row.append(cell("API-KEY", entry.apiKeyName || "—", "log-key-name"));
       row.append(cell("模型", entry.model, "mono"));
 
       var status = A.el("td");
@@ -208,6 +215,16 @@ export const LOGS_SCRIPT = String.raw`
 
       var actions = A.el("td", "row-actions");
       actions.setAttribute("data-label", "操作");
+      if (entry.hasGalleryImages) {
+        var link = A.el("a", "icon-btn");
+        link.href = "#gallery?requestId=" + encodeURIComponent(entry.requestId);
+        link.setAttribute("data-action", "log-gallery");
+        link.setAttribute("aria-label", "查看请求图片");
+        link.title = "查看请求图片";
+        link.append(A.icon("image"));
+        actions.append(link);
+        row.classList.add("log-gallery-row");
+      }
       var detail = A.el("button", "icon-btn");
       detail.type = "button";
       detail.setAttribute("data-action", "log-detail");
@@ -226,8 +243,9 @@ export const LOGS_SCRIPT = String.raw`
   function updateStatus() {
     var status = node("logs-status");
     if (!status) return;
-    var text = state.at ? "更新于 " + A.fmtShortTime(state.at) : "加载中…";
-    text += " · 已加载 " + state.entries.length + " 条";
+    var text = state.loadFailed ? "加载失败" : state.loading ? "加载中…" :
+      (state.at ? "更新于 " + A.fmtShortTime(state.at) : "");
+    text += (text ? " · " : "") + "已加载 " + state.entries.length + " 条";
     if (state.nextBefore !== null) text += " · 可加载更多";
     status.textContent = text;
     var more = section.querySelector('[data-action="load-more-logs"]');
@@ -236,14 +254,21 @@ export const LOGS_SCRIPT = String.raw`
 
   async function loadPage(options) {
     if (state.loading) return;
+    var requestOn = state.categories.request;
+    var enrichOn = state.categories.enrich;
+    if (!requestOn && !enrichOn) return;
     state.loading = true;
+    state.loadFailed = false;
+    var generation = state.generation;
+    updateStatus();
     var reset = Boolean(options && options.reset);
     var before = reset ? null : state.nextBefore;
     var url = "/admin/api/logs?limit=" + PAGE_SIZE +
-      (state.category === "all" ? "" : "&category=" + encodeURIComponent(state.category)) +
+      (requestOn && enrichOn ? "" : "&category=" + (requestOn ? "request" : "enrich")) +
       (before === null ? "" : "&before=" + encodeURIComponent(before));
     try {
       var page = await A.api(url);
+      if (generation !== state.generation) return;
       var items = (page && page.items) || [];
       if (reset || !state.loaded) {
         state.entries = mergeById(state.entries, items);
@@ -260,14 +285,16 @@ export const LOGS_SCRIPT = String.raw`
         state.nextBefore = page ? page.nextBefore : null;
       }
       state.at = new Date().toISOString();
-      render();
     } catch (error) {
-      var status = node("logs-status");
-      if (status) status.textContent = "刷新失败";
+      if (generation !== state.generation) return;
+      state.loadFailed = true;
       if (!options || !options.silent) A.toast(error.message, "error");
+    } finally {
+      if (generation === state.generation) {
+        state.loading = false;
+        render();
+      }
     }
-    state.loading = false;
-    updateStatus();
   }
 
   async function load(silent) {
@@ -283,16 +310,23 @@ export const LOGS_SCRIPT = String.raw`
     render();
   }
 
-  function setCategory(category) {
-    state.category = category;
-    var buttons = section.querySelectorAll("[data-category]");
-    for (var i = 0; i < buttons.length; i++) {
-      buttons[i].setAttribute("aria-pressed", buttons[i].getAttribute("data-category") === category ? "true" : "false");
-    }
+  function resetPages() {
+    state.generation++;
+    state.loading = false;
+    state.loadFailed = false;
     state.entries = [];
     state.nextBefore = null;
     state.loaded = false;
-    loadPage({ reset: true });
+    state.at = null;
+  }
+
+  function toggleCategory(button) {
+    var category = button.getAttribute("data-category");
+    state.categories[category] = !state.categories[category];
+    button.setAttribute("aria-pressed", String(state.categories[category]));
+    resetPages();
+    load(false);
+    render();
   }
 
   function openDetail(entry) {
@@ -308,6 +342,7 @@ export const LOGS_SCRIPT = String.raw`
       ["阶段", entry.stage || "—"],
       ["端点", entry.endpoint],
       ["路径", entry.path || "—"],
+      ...(entry.category === "request" ? [["API-KEY", entry.apiKeyName || "—"]] : []),
       ["模型", entry.model || "—"],
       ["状态", String(entry.status) + (entry.partial ? "（部分成功）" : "")],
       ["耗时", A.fmtDuration(entry.durationMs)],
@@ -357,7 +392,7 @@ export const LOGS_SCRIPT = String.raw`
   section.addEventListener("click", async function (event) {
     var category = event.target.closest("[data-category]");
     if (category) {
-      setCategory(category.getAttribute("data-category"));
+      toggleCategory(category);
       return;
     }
     var filter = event.target.closest("[data-filter]");
@@ -371,6 +406,11 @@ export const LOGS_SCRIPT = String.raw`
         return String(item.id) === detail.getAttribute("data-id");
       })[0];
       if (entry) openDetail(entry);
+      return;
+    }
+    var row = event.target.closest(".log-gallery-row");
+    if (row && event.button === 0 && !event.target.closest("a, button") && !String(window.getSelection() || "")) {
+      row.querySelector('[data-action="log-gallery"]').click();
       return;
     }
     var more = event.target.closest('[data-action="load-more-logs"]');
@@ -399,8 +439,7 @@ export const LOGS_SCRIPT = String.raw`
       if (!ok) return;
       try {
         await A.api("/admin/api/logs", { method: "DELETE" });
-        state.entries = [];
-        state.nextBefore = null;
+        resetPages();
         state.at = new Date().toISOString();
         render();
         A.toast("日志已清空");

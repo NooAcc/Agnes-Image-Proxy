@@ -60,6 +60,7 @@ func (r *router) listGallery(w http.ResponseWriter, req *http.Request) {
 		apierror.Write(w, err)
 		return
 	}
+	query.RequestID = req.URL.Query().Get("requestId")
 	page, err := r.options.Store.ListGallery(req.Context(), query)
 	if err != nil {
 		apierror.Write(w, err)

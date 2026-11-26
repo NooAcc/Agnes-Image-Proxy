@@ -6,6 +6,8 @@ import "time"
 type RequestLog struct {
 	ID               int64             `json:"id"`
 	RequestID        string            `json:"requestId"`
+	APIKeyName       string            `json:"apiKeyName"`
+	HasGalleryImages bool              `json:"hasGalleryImages"`
 	TS               time.Time         `json:"ts"`
 	Category         string            `json:"category"`
 	Stage            string            `json:"stage"`
@@ -66,10 +68,11 @@ type Overview struct {
 
 // CursorQuery is the shared keyset pagination query.
 type CursorQuery struct {
-	Before   *int64
-	Limit    int
-	Tag      string
-	Category string
+	Before    *int64
+	Limit     int
+	Tag       string
+	Category  string
+	RequestID string
 }
 
 // Page is a keyset-paginated result.

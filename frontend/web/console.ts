@@ -60,8 +60,17 @@ const SHELL_SCRIPT = String.raw`
     titles[id] = node.getAttribute("data-title") || id;
   }
 
+  A.galleryRequestId = function () {
+    var match = /^#gallery\?requestId=([A-Za-z0-9_-]{1,128})$/.exec(location.hash);
+    return match ? match[1] : "";
+  };
+
+  function sectionFromHash() {
+    return A.galleryRequestId() ? "gallery" : location.hash.slice(1);
+  }
+
   function initialSection() {
-    var hash = (location.hash || "").replace(/^#/, "");
+    var hash = sectionFromHash();
     if (titles[hash]) return hash;
     var match = /^\/admin\/([a-z-]+)\/?$/.exec(location.pathname);
     if (match && titles[match[1]]) return match[1];
@@ -124,7 +133,7 @@ const SHELL_SCRIPT = String.raw`
   });
 
   window.addEventListener("hashchange", function () {
-    setSection((location.hash || "#overview").slice(1));
+    setSection(sectionFromHash());
   });
 
   A.navigate = navigate;
@@ -144,7 +153,7 @@ const SHELL_SCRIPT = String.raw`
   var start = initialSection();
   if (location.pathname !== "/admin" && location.pathname !== "/admin/") {
     try {
-      history.replaceState(null, "", "/admin#" + start);
+      history.replaceState(null, "", "/admin#" + (sectionFromHash() === start ? location.hash.slice(1) : start));
     } catch (error) { /* keep the server path when history is unavailable */ }
   }
   setSection(start);

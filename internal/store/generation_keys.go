@@ -84,16 +84,17 @@ func (s *Store) RevokeGenerationKey(ctx context.Context, id int64) error {
 	return nil
 }
 
-// GenerationKeySalt loads private signing material; an empty result means revoked or unknown.
-func (s *Store) GenerationKeySalt(ctx context.Context, publicID string) (string, error) {
+// LookupGenerationKey returns the material required for verification and logging.
+// An empty salt means the key was revoked or is unknown.
+func (s *Store) LookupGenerationKey(ctx context.Context, publicID string) (domain.GenerationKey, error) {
 	ctx, cancel := s.operation(ctx)
 	defer cancel()
-	var salt string
-	err := s.db.QueryRowContext(ctx, `SELECT secret_salt FROM generation_keys WHERE public_id = ?`, publicID).Scan(&salt)
+	var key domain.GenerationKey
+	err := s.db.QueryRowContext(ctx, `SELECT secret_salt, name FROM generation_keys WHERE public_id = ?`, publicID).Scan(&key.Salt, &key.Name)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return domain.GenerationKey{}, nil
 	}
-	return salt, classifyDBError(err)
+	return key, classifyDBError(err)
 }
 
 func scanGenerationKey(row rowScanner) (domain.GenerationKey, error) {

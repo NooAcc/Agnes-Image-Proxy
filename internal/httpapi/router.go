@@ -167,6 +167,14 @@ func (r *router) handleModels(w http.ResponseWriter, req *http.Request) {
 func (r *router) handleImageRequest(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 	requestID := w.Header().Get("X-Request-Id")
+	apiKeyName, _ := ctx.Value(apiKeyNameContextKey{}).(string)
+	if apiKeyName == "" {
+		// The management endpoint accepts either a panel session or the administrator key.
+		apiKeyName = "WEB"
+		if req.Header.Get("Authorization") != "" {
+			apiKeyName = "PROXY_API_KEY"
+		}
+	}
 	if err := r.requireInitialized(ctx); err != nil {
 		apierror.Write(w, err)
 		return
@@ -190,7 +198,7 @@ func (r *router) handleImageRequest(w http.ResponseWriter, req *http.Request) {
 	req.Body = http.MaxBytesReader(w, req.Body, maxDataBodyBytes)
 	parsed, parseErr := images.Parse(ctx, req, settings, reference)
 	if parseErr != nil {
-		r.recordParseFailure(ctx, req, requestID, parseErr)
+		r.recordParseFailure(ctx, req, requestID, apiKeyName, parseErr)
 		apierror.Write(w, parseErr)
 		return
 	}
@@ -199,6 +207,7 @@ func (r *router) handleImageRequest(w http.ResponseWriter, req *http.Request) {
 		apierror.Write(w, apierror.Coded(503, "image delivery is unavailable", "server_error", "service_unavailable"))
 		return
 	}
+	parsed.APIKeyName = apiKeyName
 	result, err := r.options.Images.Generate(ctx, parsed, settings, requestID)
 	if err != nil {
 		apierror.Write(w, err)
@@ -231,7 +240,7 @@ func (r *router) handleImageRequest(w http.ResponseWriter, req *http.Request) {
 
 // recordParseFailure logs a rejected request. It never uses the client
 // request's cancellation and never changes the response.
-func (r *router) recordParseFailure(ctx context.Context, req *http.Request, requestID string, parseErr error) {
+func (r *router) recordParseFailure(ctx context.Context, req *http.Request, requestID, apiKeyName string, parseErr error) {
 	if r.options.Logs == nil {
 		return
 	}
@@ -246,6 +255,7 @@ func (r *router) recordParseFailure(ctx context.Context, req *http.Request, requ
 	}
 	log := domain.RequestLog{
 		RequestID:  requestID,
+		APIKeyName: apiKeyName,
 		TS:         time.Now().UTC(),
 		Category:   "request",
 		Stage:      "parse",

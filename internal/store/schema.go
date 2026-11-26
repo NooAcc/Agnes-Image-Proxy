@@ -15,7 +15,7 @@ import (
 
 const (
 	metaApplication = "agnes-go"
-	metaVersion     = "5"
+	metaVersion     = "6"
 )
 
 // appTables lists the tables this application owns. Reset only ever touches
@@ -47,7 +47,7 @@ var requiredColumns = map[string][]string{
 	"request_logs": {
 		"id", "request_id", "ts", "category", "stage", "endpoint", "path", "model",
 		"status", "ok", "requested", "images", "failed", "duration_ms",
-		"size_request", "size_actual", "attempts", "partial", "delivery_failures",
+		"size_request", "size_actual", "attempts", "partial", "delivery_failures", "api_key_name",
 	},
 	"model_usage_daily": {"day", "model", "requests", "successes", "partials", "failures", "images"},
 	"gallery": {
@@ -131,7 +131,8 @@ var schemaStatements = []string{
 		size_actual TEXT,
 		attempts TEXT NOT NULL DEFAULT '[]',
 		partial INTEGER NOT NULL,
-		delivery_failures TEXT NOT NULL
+		delivery_failures TEXT NOT NULL,
+		api_key_name TEXT NOT NULL
 	)`,
 	`CREATE INDEX idx_request_logs_category ON request_logs (category, id)`,
 	`CREATE INDEX idx_request_logs_ts ON request_logs (ts)`,
@@ -177,6 +178,7 @@ var schemaStatements = []string{
 	)`,
 	`CREATE INDEX idx_gallery_enrich ON gallery (enrich_status, id)`,
 	`CREATE INDEX idx_gallery_created ON gallery (created_at)`,
+	`CREATE INDEX idx_gallery_request ON gallery (request_id, id)`,
 }
 
 // EnsureSchema creates the new-contract schema in an empty database or

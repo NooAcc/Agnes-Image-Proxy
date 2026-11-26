@@ -195,6 +195,7 @@ func (im *Images) failureLog(started time.Time, req domain.ImageRequest, request
 	}
 	return domain.RequestLog{
 		RequestID:   requestID,
+		APIKeyName:  req.APIKeyName,
 		TS:          started.UTC(),
 		Category:    "request",
 		Stage:       "complete",

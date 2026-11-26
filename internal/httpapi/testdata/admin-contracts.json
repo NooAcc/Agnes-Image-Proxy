@@ -67,6 +67,8 @@
   "requestLog": {
     "id": 1,
     "requestId": "0f8fad5b",
+    "apiKeyName": "client-demo",
+    "hasGalleryImages": true,
     "ts": "2026-11-24T10:00:00Z",
     "category": "request",
     "stage": "complete",
@@ -100,6 +102,8 @@
       {
         "id": 1,
         "requestId": "0f8fad5b",
+        "apiKeyName": "client-demo",
+        "hasGalleryImages": true,
         "ts": "2026-11-24T10:00:00Z",
         "category": "request",
         "stage": "complete",

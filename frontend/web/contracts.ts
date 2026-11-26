@@ -105,9 +105,11 @@ export function safeAdminDestination(raw) {
   const value = raw.trim();
   if (!value || /[\u0000-\u001f\u007f]/.test(value)) return fallback;
   if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(value)) return fallback;
+  const galleryHash = /^gallery\?requestId=[A-Za-z0-9_-]{1,128}$/;
+  const validHash = (hash) => sections.includes(hash) || galleryHash.test(hash);
   if (value.charAt(0) === "#") {
     const hashOnly = value.slice(1);
-    return sections.includes(hashOnly) ? "/admin#" + hashOnly : fallback;
+    return validHash(hashOnly) ? "/admin#" + hashOnly : fallback;
   }
   if (value.charAt(0) !== "/") return fallback;
   const hashAt = value.indexOf("#");
@@ -121,7 +123,7 @@ export function safeAdminDestination(raw) {
     if (!match || !sections.includes(match[1])) return fallback;
     pathSection = match[1];
   }
-  const hashSection = sections.includes(hashPart) ? hashPart : null;
+  const hashSection = validHash(hashPart) ? hashPart : null;
   return "/admin#" + (hashSection || pathSection || "overview");
 }
 

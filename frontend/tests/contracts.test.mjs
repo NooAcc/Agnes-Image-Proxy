@@ -59,6 +59,9 @@ test("overviewRanges derives selected and 14-day UTC ranges", () => {
 test("safeAdminDestination only returns allowlisted console destinations", () => {
   assert.equal(safeAdminDestination("/admin"), "/admin#overview");
   assert.equal(safeAdminDestination("/admin/gallery"), "/admin#gallery");
+  assert.equal(safeAdminDestination("/admin#gallery?requestId=preview-seed-1"), "/admin#gallery?requestId=preview-seed-1");
+  assert.equal(safeAdminDestination("#gallery?requestId=preview-seed-1"), "/admin#gallery?requestId=preview-seed-1");
+  assert.equal(safeAdminDestination("/admin#gallery?requestId=//external.example"), "/admin#overview");
   assert.equal(safeAdminDestination("/admin/api-keys"), "/admin#api-keys");
   assert.equal(safeAdminDestination("#api-keys"), "/admin#api-keys");
   assert.equal(safeAdminDestination("/admin#constructor"), "/admin#overview");

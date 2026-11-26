@@ -20,6 +20,7 @@ type ResolvedSize struct {
 
 // ImageRequest is a parsed client image request.
 type ImageRequest struct {
+	APIKeyName     string                     `json:"-"`
 	Endpoint       string                     `json:"endpoint"`
 	Model          string                     `json:"model"`
 	Prompt         string                     `json:"prompt"`

@@ -18,14 +18,16 @@ const SessionCookieName = "agnes_session"
 
 const maxAdminJSONBytes = 1 << 20
 
+type apiKeyNameContextKey struct{}
+
 // AuthOptions wires the authentication boundaries.
 type AuthOptions struct {
-	APIKey            string
-	GenerationKeySalt func(context.Context, string) (string, error)
-	Sessions          *auth.Sessions
-	Limiter           *auth.Limiter
-	AllowedOrigins    []string
-	TrustedProxies    []*net.IPNet
+	APIKey              string
+	LookupGenerationKey func(context.Context, string) (domain.GenerationKey, error)
+	Sessions            *auth.Sessions
+	Limiter             *auth.Limiter
+	AllowedOrigins      []string
+	TrustedProxies      []*net.IPNet
 	// PublicOrigin, when set, is the only origin the admin plane accepts for
 	// cookie mutations. It removes the dependency on trusted proxy headers.
 	PublicOrigin string
@@ -35,16 +37,16 @@ type AuthOptions struct {
 // Auth accepts scoped generation keys only on the data plane. Admin access
 // requires the configured administrator key or a signed session cookie.
 type Auth struct {
-	apiKey            string
-	generationKeys    auth.GenerationKeys
-	generationKeySalt func(context.Context, string) (string, error)
-	sessions          *auth.Sessions
-	limiter           *auth.Limiter
-	allowedOrigins    map[string]bool
-	trustedProxies    []*net.IPNet
-	publicOrigin      string
-	publicScheme      string
-	now               func() time.Time
+	apiKey              string
+	generationKeys      auth.GenerationKeys
+	lookupGenerationKey func(context.Context, string) (domain.GenerationKey, error)
+	sessions            *auth.Sessions
+	limiter             *auth.Limiter
+	allowedOrigins      map[string]bool
+	trustedProxies      []*net.IPNet
+	publicOrigin        string
+	publicScheme        string
+	now                 func() time.Time
 }
 
 // NewAuth builds the authentication middleware set.
@@ -62,16 +64,16 @@ func NewAuth(options AuthOptions) *Auth {
 	publicOrigin, _ := domain.NormalizePublicOrigin(options.PublicOrigin)
 	publicScheme, _, _ := strings.Cut(publicOrigin, "://")
 	return &Auth{
-		apiKey:            options.APIKey,
-		generationKeys:    auth.NewGenerationKeys(options.APIKey),
-		generationKeySalt: options.GenerationKeySalt,
-		sessions:          options.Sessions,
-		limiter:           options.Limiter,
-		allowedOrigins:    origins,
-		trustedProxies:    options.TrustedProxies,
-		publicOrigin:      publicOrigin,
-		publicScheme:      publicScheme,
-		now:               now,
+		apiKey:              options.APIKey,
+		generationKeys:      auth.NewGenerationKeys(options.APIKey),
+		lookupGenerationKey: options.LookupGenerationKey,
+		sessions:            options.Sessions,
+		limiter:             options.Limiter,
+		allowedOrigins:      origins,
+		trustedProxies:      options.TrustedProxies,
+		publicOrigin:        publicOrigin,
+		publicScheme:        publicScheme,
+		now:                 now,
 	}
 }
 
@@ -89,14 +91,16 @@ func (a *Auth) Data(next http.Handler) http.Handler {
 		}
 		key := bearerKey(r)
 		valid := a.adminKeyValid(key)
-		if !valid && a.generationKeySalt != nil {
+		name := "PROXY_API_KEY"
+		if !valid && a.lookupGenerationKey != nil {
 			if id, ok := auth.GenerationKeyID(key); ok {
-				salt, err := a.generationKeySalt(r.Context(), id)
+				stored, err := a.lookupGenerationKey(r.Context(), id)
 				if err != nil {
 					apierror.Write(w, err)
 					return
 				}
-				valid = a.generationKeys.Verify(key, id, salt)
+				valid = a.generationKeys.Verify(key, id, stored.Salt)
+				name = stored.Name
 			}
 		}
 		if !valid {
@@ -104,7 +108,7 @@ func (a *Auth) Data(next http.Handler) http.Handler {
 				WithHeader("WWW-Authenticate", "Bearer"))
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), apiKeyNameContextKey{}, name)))
 	})
 }
 
